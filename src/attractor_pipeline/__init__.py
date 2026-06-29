@@ -67,6 +67,7 @@ from attractor_pipeline.transforms import (
     VariableExpansionTransform,
     apply_transforms,
 )
+from attractor_pipeline.validation import Diagnostic, Severity, validate, validate_or_raise
 
 __all__ = [
     # Parser
@@ -114,6 +115,11 @@ __all__ = [
     "GraphTransform",
     "VariableExpansionTransform",
     "apply_transforms",
+    # Validation
+    "Diagnostic",
+    "Severity",
+    "validate",
+    "validate_or_raise",
     # Conditions
     "evaluate_condition",
     # Events (Spec §9.6)
