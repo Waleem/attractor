@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import subprocess
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from attractor_platform.config import ArtifactPolicy, RetentionPolicy, WorkflowConfig
 from attractor_platform.errors import GitMetadataError, RunSpecError
@@ -32,6 +41,100 @@ class RunEnvironmentRequest(BaseModel):
     mode: Literal["local", "docker", "remote"] = "local"
     name: str = "local"
     image: str = ""
+
+
+def _freeze_value(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return _freeze_value(value.model_dump())
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_freeze_value(item) for item in value)
+    return value
+
+
+def _model_data(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    return value
+
+
+class FrozenRetentionPolicy(RetentionPolicy):
+    """Immutable snapshot of retention policy values stored in a RunSpec."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    keep_events_days: int = Field(default=30, ge=1)
+    keep_artifacts_days: int = Field(default=30, ge=1)
+    retain_workspace_on_failure: bool = False
+
+
+class FrozenArtifactPolicy(ArtifactPolicy):
+    """Immutable snapshot of artifact policy values stored in a RunSpec."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capture: tuple[str, ...] = ("logs", "patches", "summaries")
+    max_bytes: int = Field(default=10_000_000, ge=1)
+
+
+class FrozenWorkflowConfig(WorkflowConfig):
+    """Immutable snapshot of workflow config values stored in a RunSpec."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    display_name: str = ""
+    description: str = ""
+    tags: tuple[str, ...] = ()
+    default_environment: str = ""
+    inputs: Mapping[str, str] = Field(default_factory=dict)
+    approval: Mapping[str, object] = Field(default_factory=dict)
+    write_back: Mapping[str, object] = Field(default_factory=dict)
+    retention: FrozenRetentionPolicy | None = None
+    artifacts: FrozenArtifactPolicy | None = None
+
+    @field_validator("retention", mode="before")
+    @classmethod
+    def _snapshot_retention(cls, value: object) -> object:
+        return _model_data(value)
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _snapshot_artifacts(cls, value: object) -> object:
+        return _model_data(value)
+
+    @field_serializer("inputs", "approval", "write_back")
+    def _serialize_mapping(self, value: Mapping[str, object]) -> dict[str, object]:
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _freeze_nested_values(self) -> FrozenWorkflowConfig:
+        object.__setattr__(self, "inputs", cast(Mapping[str, str], _freeze_value(self.inputs)))
+        object.__setattr__(
+            self,
+            "approval",
+            cast(Mapping[str, object], _freeze_value(self.approval)),
+        )
+        object.__setattr__(
+            self,
+            "write_back",
+            cast(Mapping[str, object], _freeze_value(self.write_back)),
+        )
+        return self
+
+
+def _retention_snapshot(value: RetentionPolicy) -> FrozenRetentionPolicy:
+    return FrozenRetentionPolicy.model_validate(value.model_dump())
+
+
+def _artifact_policy_snapshot(value: ArtifactPolicy) -> FrozenArtifactPolicy:
+    return FrozenArtifactPolicy.model_validate(value.model_dump())
+
+
+def _workflow_config_snapshot(value: WorkflowConfig) -> FrozenWorkflowConfig:
+    return FrozenWorkflowConfig.model_validate(value.model_dump())
 
 
 @dataclass(frozen=True)
@@ -58,15 +161,45 @@ class RunSpec(BaseModel):
     source_commit: str
     source_branch: str
     dirty_state: DirtyState
-    inputs: dict[str, str] = Field(default_factory=dict)
+    inputs: Mapping[str, str] = Field(default_factory=dict)
     actor_label: str = ""
     requested_environment: RunEnvironmentRequest = Field(default_factory=RunEnvironmentRequest)
     effective_environment: RunEnvironmentRequest = Field(default_factory=RunEnvironmentRequest)
     retention: RetentionPolicy
     artifact_policy: ArtifactPolicy
-    approval_policy: dict[str, object] = Field(default_factory=dict)
-    write_back_policy: dict[str, object] = Field(default_factory=dict)
+    approval_policy: Mapping[str, object] = Field(default_factory=dict)
+    write_back_policy: Mapping[str, object] = Field(default_factory=dict)
     workflow_config: WorkflowConfig = Field(default_factory=WorkflowConfig)
+
+    @field_serializer("inputs", "approval_policy", "write_back_policy")
+    def _serialize_mapping(self, value: Mapping[str, object]) -> dict[str, object]:
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _freeze_nested_values(self) -> RunSpec:
+        object.__setattr__(self, "retention", _retention_snapshot(self.retention))
+        object.__setattr__(
+            self,
+            "artifact_policy",
+            _artifact_policy_snapshot(self.artifact_policy),
+        )
+        object.__setattr__(
+            self,
+            "workflow_config",
+            _workflow_config_snapshot(self.workflow_config),
+        )
+        object.__setattr__(self, "inputs", cast(Mapping[str, str], _freeze_value(self.inputs)))
+        object.__setattr__(
+            self,
+            "approval_policy",
+            cast(Mapping[str, object], _freeze_value(self.approval_policy)),
+        )
+        object.__setattr__(
+            self,
+            "write_back_policy",
+            cast(Mapping[str, object], _freeze_value(self.write_back_policy)),
+        )
+        return self
 
 
 def _git(repo_path: Path, *args: str) -> str:

@@ -68,6 +68,27 @@ def _workflow_dir(repo_path: Path, name: str) -> Path:
     return repo_path / ".attractor" / "workflows" / name
 
 
+def _workflows_root(repo_path: Path) -> Path:
+    return (repo_path / ".attractor" / "workflows").resolve()
+
+
+def _ensure_under_workflows_root(repo_path: Path, path: Path) -> None:
+    root = _workflows_root(repo_path)
+    resolved_path = path.resolve()
+    try:
+        resolved_path.relative_to(root)
+    except ValueError as exc:
+        raise WorkflowPackageError(
+            "Workflow package path resolves outside workflows root",
+            detail={
+                "repo_path": str(repo_path),
+                "workflows_root": str(root),
+                "path": str(path),
+                "resolved_path": str(resolved_path),
+            },
+        ) from exc
+
+
 def _invalid_workflow_package(
     repo: Path,
     name: str,
@@ -101,6 +122,9 @@ def load_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
     package_path = _workflow_dir(repo, name)
     dot_path = package_path / "workflow.dot"
     workflow_toml_path = package_path / "workflow.toml"
+    _ensure_under_workflows_root(repo, package_path)
+    _ensure_under_workflows_root(repo, dot_path)
+    _ensure_under_workflows_root(repo, workflow_toml_path)
 
     if not dot_path.exists():
         raise WorkflowPackageError(

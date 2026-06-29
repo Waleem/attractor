@@ -176,6 +176,28 @@ def test_discover_records_unsafe_workflow_name_without_raising(tmp_path) -> None
     assert packages["bad\\name"].error["message"] == "Invalid workflow name"
 
 
+def test_symlinked_workflow_package_cannot_escape_workflows_root(tmp_path) -> None:
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+    workflows_dir = tmp_path / ".attractor" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    symlink_dir = workflows_dir / "escape"
+    try:
+        symlink_dir.symlink_to(outside_dir, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks are not supported: {exc}")
+
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        load_workflow_package(tmp_path, "escape")
+
+    assert "outside workflows root" in str(excinfo.value)
+    packages = {p.name: p for p in discover_workflow_packages(tmp_path)}
+    assert packages["escape"].status == WorkflowValidationStatus.INVALID
+    assert packages["escape"].error is not None
+    assert packages["escape"].error["code"] == "workflow_package_invalid"
+
+
 def test_discover_records_invalid_project_config_without_raising(tmp_path) -> None:
     (tmp_path / ".attractor").mkdir()
     (tmp_path / ".attractor" / "project.toml").write_text(
