@@ -28,8 +28,8 @@ artifacts, and preserve history.
 The source of truth remains the repository. Workflow definitions live in a
 repo-local `.attractor/` directory and can be reviewed through normal code review
 processes. The shared server indexes those files, launches runs, records history,
-coordinates approvals, manages artifacts, and applies approved changes back to
-registered local repos when safe.
+coordinates approvals, manages artifacts, and promotes approved run branches back
+to registered local repos when safe.
 
 The first shared deployment target is a single trusted-LAN server running a
 FastAPI backend, Postgres, artifact storage, and local Docker. No authentication
@@ -626,7 +626,7 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
 |Local execution|`fabro-sandbox` (`local.rs`)|⚠️ `LocalEnvironment` = direct host, **no worktree isolation**|Add git-worktree local mode; P1-P2|
-|Worktree isolation for runs|`fabro-sandbox` (`worktree.rs`)|❌|Build; **P1-P2 [doc gap -- doc leaves local as raw host exec]**|
+|Worktree isolation for runs|`fabro-sandbox` (`worktree.rs`)|❌|Build; **P1-P2 [original draft left local as raw host exec; now placed]**|
 |Docker sandbox per run|`fabro-sandbox` (`docker.rs`)|⚠️ `DockerEnvironment` exists but not wired to runs|Wire to `RunEnvironment.docker`; P2|
 |Cloud sandbox (Daytona)|`fabro-sandbox` (`daytona/`)|❌|`RunEnvironment.remote` adapter; P4|
 |Server-owned environment domain|`fabro-environment`|❌|`project.toml [environments.*]`; P2|
@@ -640,7 +640,7 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |Durable run records|`fabro-store`, `fabro-types`|❌ in-memory `pipeline_manager._runs`|Postgres `RunRecord`; P1-P2|
 |Append-only durable events|`fabro-store`|⚠️ in-memory `events.py` (not persisted)|Durable `RunEvent`; P1-P2|
 |SSE event streaming|`fabro-server`|✅ `server/sse.py` (projection of in-mem)|Repoint to durable events; P2|
-|Git checkpoints per stage (resume/revert/trace)|`fabro-checkpoint`|⚠️ in-memory `Checkpoint`/`CheckpointSaved` only -- **not git-backed**|Build git checkpointing; **P2 [doc gap -- doc lists under "open decisions later"]**|
+|Git checkpoints per stage (resume/revert/trace)|`fabro-checkpoint`|⚠️ in-memory `Checkpoint`/`CheckpointSaved` only -- **not git-backed**|Build git checkpointing; **P2 [original draft deferred to open decisions; now placed]**|
 |Artifact storage + metadata|`fabro-store` (`artifact_store.rs`)|❌|`ArtifactRecord` + fs/object store; P2|
 |Object-native store backend|`fabro-store` (`slate/`, SlateDB)|❌|Optional adapter; P4 (Postgres first)|
 |Telemetry / analytics / crash|`fabro-telemetry`|❌|Optional; P4|
@@ -652,7 +652,7 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |---|---|---|---|
 |Approval / human gates|`fabro-workflow`|✅ `handlers/human.py`|Persist decisions (`ApprovalDecision`); P2|
 |Interview steps (structured input)|`fabro-interview`|✅ `server/interviewer.py`|Surface in GUI; P2-P3|
-|Mid-turn steering of running agent|`fabro-agent` + web `steer-bar`|⚠️ steer queue in `session.py`/`manager.py`, **no API/UI**|Expose via API + console; **P3 [doc gap -- not mentioned]**|
+|Mid-turn steering of running agent|`fabro-agent` + web `steer-bar`|⚠️ steer queue in `session.py`/`manager.py`, **no API/UI**|Expose via API + console; **P3 [unplaced in original draft; now placed]**|
 |Slack interviewer channel|`fabro-slack`|❌|P4 (Settings -> Integrations)|
 
 ### A.5 LLM and model routing
@@ -672,10 +672,10 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |---|---|---|---|
 |Core dev tools (read/write/edit/shell/grep/glob)|`fabro-tool`|✅ `attractor_agent/tools`|-- (Have)|
 |apply_patch tool|`fabro-tool`|✅ `tools/apply_patch.py`|-- (Have)|
-|MCP client (external tool servers)|`fabro-mcp`|❌|Build; **P3 [doc gap -- not mentioned]**|
+|MCP client (external tool servers)|`fabro-mcp`|❌|Build; **P3 [unplaced in original draft; now placed]**|
 |MCP stdio server (expose Fabro as MCP)|`fabro-mcp-server`|❌|P4|
 |Server-managed MCP catalog|`fabro-mcp-store`|❌|P4 (Settings -> Integrations)|
-|User lifecycle hooks (post_tool_use scripts)|`fabro-hooks`|❌ (only LLM middleware hooks)|`project.toml [[run.hooks]]`; **P3 [doc gap]**|
+|User lifecycle hooks (post_tool_use scripts)|`fabro-hooks`|❌ (only LLM middleware hooks)|`project.toml [[run.hooks]]`; **P3 [unplaced in original draft; now placed]**|
 
 ### A.7 Integrations
 
@@ -709,7 +709,7 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Scheduled / cron automations|`fabro-automation`|❌|Build; **P3-P4 [doc gap -- not mentioned]**|
+|Scheduled / cron automations|`fabro-automation`|❌|Build; **P3-P4 [unplaced in original draft; now placed]**|
 |24/7 queued background runs|`fabro-server`|⚠️ runs are asyncio tasks, no queue/persistence|Durable run queue; P2|
 
 ### A.11 Infrastructure -- accounted, no Python analog required ➖
