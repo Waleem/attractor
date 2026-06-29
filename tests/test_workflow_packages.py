@@ -198,6 +198,29 @@ def test_symlinked_workflow_package_cannot_escape_workflows_root(tmp_path) -> No
     assert packages["escape"].error["code"] == "workflow_package_invalid"
 
 
+def test_symlinked_workflows_root_cannot_escape_repo(tmp_path, tmp_path_factory) -> None:
+    attractor_dir = tmp_path / ".attractor"
+    attractor_dir.mkdir()
+    outside_workflows_dir = tmp_path_factory.mktemp("outside-workflows")
+    external_package_dir = outside_workflows_dir / "external"
+    external_package_dir.mkdir()
+    (external_package_dir / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+
+    try:
+        (attractor_dir / "workflows").symlink_to(
+            outside_workflows_dir,
+            target_is_directory=True,
+        )
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks are not supported: {exc}")
+
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        load_workflow_package(tmp_path, "external")
+
+    assert "workflows root resolves outside repo" in str(excinfo.value).lower()
+    assert discover_workflow_packages(tmp_path) == []
+
+
 def test_discover_records_invalid_project_config_without_raising(tmp_path) -> None:
     (tmp_path / ".attractor").mkdir()
     (tmp_path / ".attractor" / "project.toml").write_text(

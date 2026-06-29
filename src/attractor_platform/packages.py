@@ -69,7 +69,18 @@ def _workflow_dir(repo_path: Path, name: str) -> Path:
 
 
 def _workflows_root(repo_path: Path) -> Path:
-    return (repo_path / ".attractor" / "workflows").resolve()
+    root = (repo_path / ".attractor" / "workflows").resolve()
+    try:
+        root.relative_to(repo_path)
+    except ValueError as exc:
+        raise WorkflowPackageError(
+            "Workflows root resolves outside repo",
+            detail={
+                "repo_path": str(repo_path),
+                "workflows_root": str(root),
+            },
+        ) from exc
+    return root
 
 
 def _ensure_under_workflows_root(repo_path: Path, path: Path) -> None:
@@ -188,6 +199,10 @@ def discover_workflow_packages(repo_path: str | Path) -> list[WorkflowPackage]:
     repo = _repo_path(repo_path)
     workflows_dir = repo / ".attractor" / "workflows"
     if not workflows_dir.is_dir():
+        return []
+    try:
+        _workflows_root(repo)
+    except WorkflowPackageError:
         return []
 
     packages: list[WorkflowPackage] = []
