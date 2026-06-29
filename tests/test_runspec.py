@@ -222,30 +222,25 @@ def test_run_spec_is_immutable(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
-def test_run_spec_snapshots_inputs_as_immutable_mapping(tmp_path: Path) -> None:
+def test_run_spec_snapshots_inputs(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     launch_inputs = {"target": "wheel"}
 
     spec = build_run_spec(load_workflow_package(repo, "build"), inputs=launch_inputs)
     launch_inputs["target"] = "sdist"
 
+    assert isinstance(spec.inputs, dict)
     assert spec.inputs == {"target": "wheel"}
-    with pytest.raises(TypeError):
-        spec.inputs["target"] = "sdist"  # type: ignore[index]
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
-@pytest.mark.parametrize("field_name", ["approval_policy", "write_back_policy"])
-def test_run_spec_snapshots_policies_as_immutable_mappings(
-    tmp_path: Path,
-    field_name: str,
-) -> None:
+def test_run_spec_snapshots_policies(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     (repo / ".attractor" / "workflows" / "build" / "workflow.toml").write_text(
         """
         [approval]
         required = true
-        reviewers = ["ops"]
+        metadata = { labels = ["ops"] }
 
         [write_back]
         mode = "branch"
@@ -254,15 +249,24 @@ def test_run_spec_snapshots_policies_as_immutable_mappings(
         encoding="utf-8",
     )
 
-    spec = build_run_spec(load_workflow_package(repo, "build"))
-    policy = getattr(spec, field_name)
+    package = load_workflow_package(repo, "build")
+    spec = build_run_spec(package)
+    package.workflow_config.approval["required"] = False
+    package.workflow_config.approval["metadata"]["labels"].append("mutated")  # type: ignore[index, union-attr]
+    package.workflow_config.write_back["mode"] = "direct"
+    package.workflow_config.write_back["metadata"]["labels"].append("mutated")  # type: ignore[index, union-attr]
 
-    with pytest.raises(TypeError):
-        policy["new"] = "value"  # type: ignore[index]
+    assert isinstance(spec.approval_policy, dict)
+    assert isinstance(spec.write_back_policy, dict)
+    assert spec.approval_policy["required"] is True
+    assert spec.approval_policy["metadata"]["labels"] == ["ops"]  # type: ignore[index]
+    assert spec.write_back_policy["mode"] == "branch"
+    assert spec.write_back_policy["metadata"]["labels"] == ["automation"]  # type: ignore[index]
+    assert spec.model_dump_json()
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
-def test_run_spec_serializes_nested_frozen_policy_mappings(tmp_path: Path) -> None:
+def test_run_spec_serializes_nested_policy_mappings(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     (repo / ".attractor" / "workflows" / "build" / "workflow.toml").write_text(
         """
@@ -286,7 +290,7 @@ def test_run_spec_serializes_nested_frozen_policy_mappings(tmp_path: Path) -> No
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
-def test_run_spec_snapshots_nested_config_as_immutable_values(tmp_path: Path) -> None:
+def test_run_spec_snapshots_nested_config_values(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     (repo / ".attractor" / "workflows" / "build" / "workflow.toml").write_text(
         """
@@ -316,23 +320,24 @@ def test_run_spec_snapshots_nested_config_as_immutable_values(tmp_path: Path) ->
     package.workflow_config.retention.keep_events_days = 99  # type: ignore[union-attr]
     package.workflow_config.artifacts.capture.append("patches")  # type: ignore[union-attr]
 
-    assert spec.workflow_config.tags == ("release",)
+    assert spec.workflow_config.__class__ is WorkflowConfig
+    assert spec.workflow_config.tags == ["release"]
     assert spec.workflow_config.inputs == {"target": "wheel"}
     assert spec.workflow_config.retention is not None
     assert spec.workflow_config.retention.keep_events_days == 7
     assert spec.workflow_config.artifacts is not None
-    assert spec.workflow_config.artifacts.capture == ("logs",)
+    assert spec.workflow_config.artifacts.capture == ["logs"]
+    assert spec.retention.keep_events_days == 7
+    assert spec.artifact_policy.capture == ["logs"]
+    assert spec.model_dump_json()
 
-    with pytest.raises(ValidationError, match="frozen"):
-        spec.retention.keep_events_days = 1  # type: ignore[misc]
-    with pytest.raises(ValidationError, match="frozen"):
-        spec.artifact_policy.max_bytes = 1  # type: ignore[misc]
-    with pytest.raises(ValidationError, match="frozen"):
-        spec.workflow_config.display_name = "changed"  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        spec.workflow_config.inputs["target"] = "changed"  # type: ignore[index]
-    with pytest.raises(TypeError):
-        spec.workflow_config.approval["reviewers"] = []  # type: ignore[index]
+
+@pytest.mark.skipif(not git_available(), reason="git is required")
+def test_run_spec_round_trips_to_json(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    spec = build_run_spec(load_workflow_package(repo, "build"), inputs={"target": "wheel"})
+    payload = spec.model_dump_json()
+    assert '"target":"wheel"' in payload.replace(" ", "")
 
 
 def test_run_environment_request_rejects_unknown_mode() -> None:
@@ -373,4 +378,4 @@ def test_run_spec_can_be_built_directly_for_unit_tests(tmp_path: Path) -> None:
     )
 
     assert spec.run_id.startswith("run_")
-    assert spec.workflow_config.model_dump(mode="json") == WorkflowConfig().model_dump(mode="json")
+    assert spec.workflow_config == WorkflowConfig()
