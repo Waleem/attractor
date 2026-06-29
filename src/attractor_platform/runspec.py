@@ -55,6 +55,21 @@ def _freeze_value(value: object) -> object:
     return value
 
 
+def _thaw_value(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return {
+            field_name: _thaw_value(getattr(value, field_name))
+            for field_name in value.__class__.model_fields
+        }
+    if isinstance(value, Mapping):
+        return {key: _thaw_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_thaw_value(item) for item in value]
+    if isinstance(value, set | frozenset):
+        return [_thaw_value(item) for item in value]
+    return value
+
+
 def _model_data(value: object) -> object:
     if isinstance(value, BaseModel):
         return value.model_dump()
@@ -107,7 +122,7 @@ class FrozenWorkflowConfig(WorkflowConfig):
 
     @field_serializer("inputs", "approval", "write_back")
     def _serialize_mapping(self, value: Mapping[str, object]) -> dict[str, object]:
-        return dict(value)
+        return cast(dict[str, object], _thaw_value(value))
 
     @model_validator(mode="after")
     def _freeze_nested_values(self) -> FrozenWorkflowConfig:
@@ -173,7 +188,15 @@ class RunSpec(BaseModel):
 
     @field_serializer("inputs", "approval_policy", "write_back_policy")
     def _serialize_mapping(self, value: Mapping[str, object]) -> dict[str, object]:
-        return dict(value)
+        return cast(dict[str, object], _thaw_value(value))
+
+    @field_serializer("workflow_config")
+    def _serialize_workflow_config(self, value: WorkflowConfig) -> dict[str, object]:
+        return cast(dict[str, object], _thaw_value(value))
+
+    @field_serializer("retention", "artifact_policy")
+    def _serialize_policy_model(self, value: BaseModel) -> dict[str, object]:
+        return cast(dict[str, object], _thaw_value(value))
 
     @model_validator(mode="after")
     def _freeze_nested_values(self) -> RunSpec:

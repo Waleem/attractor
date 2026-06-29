@@ -262,6 +262,30 @@ def test_run_spec_snapshots_policies_as_immutable_mappings(
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
+def test_run_spec_serializes_nested_frozen_policy_mappings(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    (repo / ".attractor" / "workflows" / "build" / "workflow.toml").write_text(
+        """
+        [approval]
+        required = true
+        metadata = { labels = ["ops"] }
+
+        [write_back]
+        mode = "branch"
+        metadata = { labels = ["automation"] }
+        """,
+        encoding="utf-8",
+    )
+
+    spec = build_run_spec(load_workflow_package(repo, "build"))
+
+    dumped = spec.model_dump(mode="json")
+    assert dumped["approval_policy"]["metadata"]["labels"] == ["ops"]
+    assert dumped["write_back_policy"]["metadata"]["labels"] == ["automation"]
+    assert spec.model_dump_json()
+
+
+@pytest.mark.skipif(not git_available(), reason="git is required")
 def test_run_spec_snapshots_nested_config_as_immutable_values(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     (repo / ".attractor" / "workflows" / "build" / "workflow.toml").write_text(
