@@ -172,6 +172,47 @@ def test_build_run_spec_does_not_policy_check_implicit_requested_environment(
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
+def test_build_run_spec_preserves_explicit_named_environment_request(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    (repo / ".attractor" / "project.toml").write_text(
+        """
+        default_environment = "local"
+        allowed_execution_modes = ["local", "docker"]
+
+        [environments.docker-ci]
+        mode = "docker"
+        image = "python:3.12-slim"
+        """,
+        encoding="utf-8",
+    )
+    package = load_workflow_package(repo, "build")
+
+    spec = build_run_spec(package, requested_environment="docker-ci")
+
+    assert spec.requested_environment == RunEnvironmentRequest(
+        mode="docker",
+        name="docker-ci",
+        image="python:3.12-slim",
+    )
+    assert spec.effective_environment == RunEnvironmentRequest(
+        mode="docker",
+        name="docker-ci",
+        image="python:3.12-slim",
+    )
+
+
+@pytest.mark.skipif(not git_available(), reason="git is required")
+def test_build_run_spec_unknown_requested_environment_raises_run_spec_error(
+    tmp_path: Path,
+) -> None:
+    repo = make_repo(tmp_path)
+    package = load_workflow_package(repo, "build")
+
+    with pytest.raises(RunSpecError, match="not allowed"):
+        build_run_spec(package, requested_environment="staging")
+
+
+@pytest.mark.skipif(not git_available(), reason="git is required")
 def test_run_spec_is_immutable(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     spec = build_run_spec(load_workflow_package(repo, "build"))

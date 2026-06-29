@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -132,6 +132,25 @@ def _resolve_environment(package: WorkflowPackage, requested: str) -> RunEnviron
     return _environment_request(package, selected)
 
 
+def _requested_environment_record(
+    package: WorkflowPackage,
+    requested: str,
+) -> RunEnvironmentRequest:
+    raw = requested or "local"
+    if raw == "local":
+        return RunEnvironmentRequest(mode="local", name=raw)
+    if raw == "docker":
+        return RunEnvironmentRequest(mode="docker", name=raw)
+    if raw == "remote":
+        return RunEnvironmentRequest(mode="remote", name=raw)
+
+    if raw in package.project_config.environments:
+        env = package.project_config.environments[raw]
+        return RunEnvironmentRequest(mode=env.mode, name=raw, image=env.image)
+
+    return RunEnvironmentRequest(mode="local", name=raw)
+
+
 def build_run_spec(
     package: WorkflowPackage,
     *,
@@ -148,11 +167,7 @@ def build_run_spec(
 
     metadata = read_git_metadata(package.repo_path)
     effective_environment = _resolve_environment(package, requested_environment)
-    raw_requested_environment = requested_environment or "local"
-    requested_environment_record = RunEnvironmentRequest(
-        mode=cast(Literal["local", "docker", "remote"], raw_requested_environment),
-        name=raw_requested_environment,
-    )
+    requested_environment_record = _requested_environment_record(package, requested_environment)
 
     return RunSpec(
         repo_id=f"local:{package.repo_path}",
