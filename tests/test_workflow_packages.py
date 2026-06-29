@@ -159,6 +159,23 @@ def test_discover_records_invalid_workflow_without_raising(tmp_path) -> None:
     assert packages["broken"].error["code"] == "workflow_package_invalid"
 
 
+def test_discover_records_unsafe_workflow_name_without_raising(tmp_path) -> None:
+    write_workflow(tmp_path, "good")
+    unsafe_dir = tmp_path / ".attractor" / "workflows" / "bad\\name"
+    unsafe_dir.mkdir(parents=True)
+    (unsafe_dir / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+
+    packages = {p.name: p for p in discover_workflow_packages(tmp_path)}
+
+    assert packages["good"].status == WorkflowValidationStatus.VALID
+    assert packages["bad\\name"].status == WorkflowValidationStatus.INVALID
+    assert packages["bad\\name"].graph is None
+    assert packages["bad\\name"].diagnostics == []
+    assert packages["bad\\name"].error is not None
+    assert packages["bad\\name"].error["code"] == "workflow_package_invalid"
+    assert packages["bad\\name"].error["message"] == "Invalid workflow name"
+
+
 def test_discover_records_invalid_project_config_without_raising(tmp_path) -> None:
     (tmp_path / ".attractor").mkdir()
     (tmp_path / ".attractor" / "project.toml").write_text(

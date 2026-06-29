@@ -68,6 +68,33 @@ def _workflow_dir(repo_path: Path, name: str) -> Path:
     return repo_path / ".attractor" / "workflows" / name
 
 
+def _invalid_workflow_package(
+    repo: Path,
+    name: str,
+    package_path: Path,
+    exc: AttractorPlatformError,
+) -> WorkflowPackage:
+    workflow_toml_path = package_path / "workflow.toml"
+    try:
+        project_config = load_project_config(repo / ".attractor" / "project.toml")
+    except AttractorPlatformError:
+        project_config = ProjectConfig()
+
+    return WorkflowPackage(
+        repo_path=repo,
+        name=name,
+        package_path=package_path,
+        dot_path=package_path / "workflow.dot",
+        toml_path=workflow_toml_path if workflow_toml_path.exists() else None,
+        project_config=project_config,
+        workflow_config=WorkflowConfig(),
+        graph=None,
+        diagnostics=[],
+        status=WorkflowValidationStatus.INVALID,
+        error=exc.to_dict(),
+    )
+
+
 def load_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
     """Load and validate `.attractor/workflows/<name>/workflow.dot`."""
     repo = _repo_path(repo_path)
@@ -129,25 +156,7 @@ def inspect_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackag
     except AttractorPlatformError as exc:
         repo = _repo_path(repo_path)
         package_path = _workflow_dir(repo, name)
-        workflow_toml_path = package_path / "workflow.toml"
-        try:
-            project_config = load_project_config(repo / ".attractor" / "project.toml")
-        except AttractorPlatformError:
-            project_config = ProjectConfig()
-
-        return WorkflowPackage(
-            repo_path=repo,
-            name=name,
-            package_path=package_path,
-            dot_path=package_path / "workflow.dot",
-            toml_path=workflow_toml_path if workflow_toml_path.exists() else None,
-            project_config=project_config,
-            workflow_config=WorkflowConfig(),
-            graph=None,
-            diagnostics=[],
-            status=WorkflowValidationStatus.INVALID,
-            error=exc.to_dict(),
-        )
+        return _invalid_workflow_package(repo, name, package_path, exc)
 
 
 def discover_workflow_packages(repo_path: str | Path) -> list[WorkflowPackage]:
@@ -157,8 +166,12 @@ def discover_workflow_packages(repo_path: str | Path) -> list[WorkflowPackage]:
     if not workflows_dir.is_dir():
         return []
 
-    return [
-        inspect_workflow_package(repo, child.name)
-        for child in sorted(workflows_dir.iterdir(), key=lambda path: path.name)
-        if child.is_dir()
-    ]
+    packages: list[WorkflowPackage] = []
+    for child in sorted(workflows_dir.iterdir(), key=lambda path: path.name):
+        if not child.is_dir():
+            continue
+        try:
+            packages.append(inspect_workflow_package(repo, child.name))
+        except AttractorPlatformError as exc:
+            packages.append(_invalid_workflow_package(repo, child.name, child, exc))
+    return packages
