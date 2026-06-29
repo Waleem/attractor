@@ -619,6 +619,7 @@ import pytest
 from attractor_platform.errors import WorkflowPackageError
 from attractor_platform.packages import (
     WorkflowPackage,
+    WorkflowValidationStatus,
     discover_workflow_packages,
     load_workflow_package,
 )
@@ -680,6 +681,8 @@ def test_load_workflow_package_with_optional_toml(tmp_path) -> None:
     assert package.dot_path.name == "workflow.dot"
     assert package.workflow_config.display_name == "Release Checks"
     assert package.project_config.variables == {"service": "billing"}
+    assert package.status == WorkflowValidationStatus.VALID
+    assert package.graph is not None
     assert package.graph.name == "ReleaseChecks"
     assert package.diagnostics == []
 
@@ -731,6 +734,39 @@ def test_discover_workflow_packages_sorts_by_name(tmp_path) -> None:
     packages = discover_workflow_packages(tmp_path)
 
     assert [package.name for package in packages] == ["alpha", "zeta"]
+    assert [package.status for package in packages] == [
+        WorkflowValidationStatus.VALID,
+        WorkflowValidationStatus.VALID,
+    ]
+
+
+def test_discover_records_invalid_workflow_without_raising(tmp_path) -> None:
+    write_workflow(tmp_path, "good")
+    write_workflow(tmp_path, "broken", dot="not a digraph")
+
+    packages = {p.name: p for p in discover_workflow_packages(tmp_path)}
+
+    assert packages["good"].status == WorkflowValidationStatus.VALID
+    assert packages["broken"].status == WorkflowValidationStatus.INVALID
+    assert packages["broken"].graph is None
+    assert packages["broken"].error is not None
+
+
+def test_discover_records_invalid_project_config_without_raising(tmp_path) -> None:
+    (tmp_path / ".attractor").mkdir()
+    (tmp_path / ".attractor" / "project.toml").write_text(
+        "default_environment = [",
+        encoding="utf-8",
+    )
+    write_workflow(tmp_path, "good")
+
+    packages = discover_workflow_packages(tmp_path)
+
+    assert len(packages) == 1
+    assert packages[0].name == "good"
+    assert packages[0].status == WorkflowValidationStatus.INVALID
+    assert packages[0].graph is None
+    assert packages[0].error is not None
 
 
 def test_discover_returns_empty_when_attractor_dir_missing(tmp_path) -> None:
@@ -757,6 +793,7 @@ Create `src/attractor_platform/packages.py`:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from attractor_pipeline.graph import Graph
@@ -769,7 +806,14 @@ from attractor_platform.config import (
     load_project_config,
     load_workflow_config,
 )
-from attractor_platform.errors import WorkflowPackageError
+from attractor_platform.errors import AttractorPlatformError, WorkflowPackageError
+
+
+class WorkflowValidationStatus(StrEnum):
+    """Validation status for repo-local workflow packages."""
+
+    VALID = "valid"
+    INVALID = "invalid"
 
 
 @dataclass(frozen=True)
@@ -783,8 +827,10 @@ class WorkflowPackage:
     toml_path: Path | None
     project_config: ProjectConfig
     workflow_config: WorkflowConfig
-    graph: Graph
+    graph: Graph | None
     diagnostics: list[Diagnostic]
+    status: WorkflowValidationStatus = WorkflowValidationStatus.VALID
+    error: dict[str, object] | None = None
 
 
 def _workflow_dir(repo_path: Path, name: str) -> Path:
@@ -837,21 +883,50 @@ def load_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
         workflow_config=workflow_config,
         graph=graph,
         diagnostics=diagnostics,
+        status=WorkflowValidationStatus.VALID,
+        error=None,
     )
 
 
+def inspect_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
+    """Load a package without raising; record invalid packages instead."""
+    try:
+        return load_workflow_package(repo_path, name)
+    except AttractorPlatformError as exc:
+        repo = Path(repo_path).expanduser().resolve()
+        package_path = _workflow_dir(repo, name)
+        toml_path = package_path / "workflow.toml"
+        try:
+            project_config = load_project_config(repo / ".attractor" / "project.toml")
+        except AttractorPlatformError:
+            project_config = ProjectConfig()
+        return WorkflowPackage(
+            repo_path=repo,
+            name=name,
+            package_path=package_path,
+            dot_path=package_path / "workflow.dot",
+            toml_path=toml_path if toml_path.exists() else None,
+            project_config=project_config,
+            workflow_config=WorkflowConfig(),
+            graph=None,
+            diagnostics=[],
+            status=WorkflowValidationStatus.INVALID,
+            error=exc.to_dict(),
+        )
+
+
 def discover_workflow_packages(repo_path: str | Path) -> list[WorkflowPackage]:
-    """Discover valid workflow packages under `.attractor/workflows`."""
+    """Discover all workflow packages, recording invalid ones rather than failing."""
     repo = Path(repo_path).expanduser().resolve()
     workflows_dir = repo / ".attractor" / "workflows"
     if not workflows_dir.exists():
         return []
 
-    packages: list[WorkflowPackage] = []
-    for child in sorted(workflows_dir.iterdir(), key=lambda path: path.name):
-        if child.is_dir():
-            packages.append(load_workflow_package(repo, child.name))
-    return packages
+    return [
+        inspect_workflow_package(repo, child.name)
+        for child in sorted(workflows_dir.iterdir(), key=lambda path: path.name)
+        if child.is_dir()
+    ]
 ```
 
 Update `src/attractor_platform/__init__.py`:
@@ -878,7 +953,9 @@ from attractor_platform.errors import (
 )
 from attractor_platform.packages import (
     WorkflowPackage,
+    WorkflowValidationStatus,
     discover_workflow_packages,
+    inspect_workflow_package,
     load_workflow_package,
 )
 
@@ -895,7 +972,9 @@ __all__ = [
     "WorkflowConfig",
     "WorkflowPackage",
     "WorkflowPackageError",
+    "WorkflowValidationStatus",
     "discover_workflow_packages",
+    "inspect_workflow_package",
     "load_project_config",
     "load_workflow_config",
     "load_workflow_package",
@@ -942,7 +1021,8 @@ import pytest
 from pydantic import ValidationError
 
 from attractor_platform.config import ProjectConfig, WorkflowConfig
-from attractor_platform.packages import WorkflowPackage, load_workflow_package
+from attractor_platform.errors import RunSpecError
+from attractor_platform.packages import inspect_workflow_package, load_workflow_package
 from attractor_platform.runspec import (
     DirtyState,
     RunEnvironmentRequest,
@@ -1054,6 +1134,17 @@ def test_run_spec_is_immutable(tmp_path) -> None:
 def test_run_environment_request_rejects_unknown_mode() -> None:
     with pytest.raises(ValidationError):
         RunEnvironmentRequest(mode="kubernetes")
+
+
+def test_build_run_spec_rejects_invalid_discovery_record(tmp_path) -> None:
+    workflow_dir = tmp_path / ".attractor" / "workflows" / "broken"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "workflow.dot").write_text("not a digraph", encoding="utf-8")
+    package = inspect_workflow_package(tmp_path, "broken")
+
+    assert package.graph is None
+    with pytest.raises(RunSpecError, match="invalid workflow package"):
+        build_run_spec(package)
 
 
 def test_run_spec_can_be_built_directly_for_unit_tests(tmp_path) -> None:
@@ -1224,6 +1315,12 @@ def build_run_spec(
     requested_environment: str = "",
 ) -> RunSpec:
     """Build an immutable `RunSpec` from a loaded workflow package."""
+    if package.graph is None:
+        raise RunSpecError(
+            "Cannot build RunSpec for invalid workflow package",
+            detail={"workflow": package.name},
+        )
+
     metadata = read_git_metadata(package.repo_path)
     effective_environment = _resolve_environment(package, requested_environment)
 
@@ -1240,9 +1337,8 @@ def build_run_spec(
         inputs=inputs or {},
         actor_label=actor_label,
         requested_environment=RunEnvironmentRequest(
-            mode=effective_environment.mode,
-            name=effective_environment.name,
-            image=effective_environment.image,
+            mode=requested_environment or "local",
+            name=requested_environment or "local",
         ),
         effective_environment=effective_environment,
         retention=package.workflow_config.retention or package.project_config.retention,
@@ -1277,7 +1373,9 @@ from attractor_platform.errors import (
 )
 from attractor_platform.packages import (
     WorkflowPackage,
+    WorkflowValidationStatus,
     discover_workflow_packages,
+    inspect_workflow_package,
     load_workflow_package,
 )
 from attractor_platform.runspec import (
@@ -1306,8 +1404,10 @@ __all__ = [
     "WorkflowConfig",
     "WorkflowPackage",
     "WorkflowPackageError",
+    "WorkflowValidationStatus",
     "build_run_spec",
     "discover_workflow_packages",
+    "inspect_workflow_package",
     "load_project_config",
     "load_workflow_config",
     "load_workflow_package",
@@ -1356,13 +1456,13 @@ from attractor_pipeline import (
     HandlerResult,
     Outcome,
     PipelineStatus,
+    run_pipeline,
     validate,
     validate_or_raise,
 )
 from attractor_pipeline.engine.runner import Handler
 from attractor_pipeline.graph import Graph, Node
 from attractor_pipeline.parser import parse_dot
-from attractor_pipeline import run_pipeline
 
 
 class LocalTestHandler(Handler):
@@ -1404,7 +1504,7 @@ def test_library_run_pipeline_still_executes_without_docker(tmp_path) -> None:
     registry = HandlerRegistry()
     registry.register("local.test", LocalTestHandler())
 
-    result = asyncio.run(run_pipeline(graph, registry=registry, logs_root=tmp_path))
+    result = asyncio.run(run_pipeline(graph, registry, logs_root=tmp_path))
 
     assert result.status == PipelineStatus.COMPLETED
     assert result.context["ran_without_docker"] is True
@@ -1433,7 +1533,7 @@ Run:
 pytest tests/test_phase1_regressions.py -v
 ```
 
-Expected: The first test may FAIL because `validate` and `validate_or_raise` are not exported from `attractor_pipeline.__init__`; the library and CLI path tests should PASS.
+Expected: The `validate`/`validate_or_raise` export test FAILs until Step 3; the library and CLI path tests PASS.
 
 - [ ] **Step 3: Export validation helpers from the public pipeline package**
 
