@@ -144,6 +144,34 @@ def test_build_run_spec_preserves_requested_and_effective_environment(tmp_path: 
 
 
 @pytest.mark.skipif(not git_available(), reason="git is required")
+def test_build_run_spec_does_not_policy_check_implicit_requested_environment(
+    tmp_path: Path,
+) -> None:
+    repo = make_repo(tmp_path)
+    (repo / ".attractor" / "project.toml").write_text(
+        """
+        default_environment = "docker-ci"
+        allowed_execution_modes = ["docker"]
+
+        [environments.docker-ci]
+        mode = "docker"
+        image = "python:3.12-slim"
+        """,
+        encoding="utf-8",
+    )
+    package = load_workflow_package(repo, "build")
+
+    spec = build_run_spec(package)
+
+    assert spec.requested_environment == RunEnvironmentRequest(mode="local", name="local")
+    assert spec.effective_environment == RunEnvironmentRequest(
+        mode="docker",
+        name="docker-ci",
+        image="python:3.12-slim",
+    )
+
+
+@pytest.mark.skipif(not git_available(), reason="git is required")
 def test_run_spec_is_immutable(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     spec = build_run_spec(load_workflow_package(repo, "build"))

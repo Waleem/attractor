@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -148,9 +148,10 @@ def build_run_spec(
 
     metadata = read_git_metadata(package.repo_path)
     effective_environment = _resolve_environment(package, requested_environment)
-    requested_environment_record = _environment_request(
-        package,
-        requested_environment or "local",
+    raw_requested_environment = requested_environment or "local"
+    requested_environment_record = RunEnvironmentRequest(
+        mode=cast(Literal["local", "docker", "remote"], raw_requested_environment),
+        name=raw_requested_environment,
     )
 
     return RunSpec(
