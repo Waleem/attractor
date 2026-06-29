@@ -17,6 +17,13 @@ from attractor_platform.errors import (
     RunSpecError,
     WorkflowPackageError,
 )
+from attractor_platform.packages import (
+    WorkflowPackage,
+    WorkflowValidationStatus,
+    discover_workflow_packages,
+    inspect_workflow_package,
+    load_workflow_package,
+)
 
 __all__ = [
     "ArtifactPolicy",
@@ -29,7 +36,12 @@ __all__ = [
     "RetentionPolicy",
     "RunSpecError",
     "WorkflowConfig",
+    "WorkflowPackage",
     "WorkflowPackageError",
+    "WorkflowValidationStatus",
+    "discover_workflow_packages",
+    "inspect_workflow_package",
     "load_project_config",
+    "load_workflow_package",
     "load_workflow_config",
 ]
