@@ -7,9 +7,9 @@ from attractor_platform.packages import (
     WorkflowPackage,
     WorkflowValidationStatus,
     discover_workflow_packages,
+    inspect_workflow_package,
     load_workflow_package,
 )
-
 
 VALID_DOT = """
 digraph ReleaseChecks {
@@ -39,6 +39,25 @@ def test_load_workflow_package_requires_workflow_dot(tmp_path) -> None:
 
     assert excinfo.value.code.value == "workflow_package_invalid"
     assert "workflow.dot is required" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", ["", "/absolute", "../escape", "nested/name", "nested\\name"])
+def test_load_workflow_package_rejects_unsafe_workflow_names(tmp_path, name: str) -> None:
+    escape_dir = tmp_path / ".attractor" / "escape"
+    escape_dir.mkdir(parents=True)
+    (escape_dir / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        load_workflow_package(tmp_path, name)
+
+    assert "Invalid workflow name" in str(excinfo.value)
+
+
+def test_inspect_workflow_package_rejects_unsafe_workflow_names(tmp_path) -> None:
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        inspect_workflow_package(tmp_path, "../escape")
+
+    assert "Invalid workflow name" in str(excinfo.value)
 
 
 def test_load_workflow_package_with_optional_toml(tmp_path) -> None:

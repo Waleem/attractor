@@ -18,6 +18,8 @@ from attractor_platform.config import (
 )
 from attractor_platform.errors import AttractorPlatformError, WorkflowPackageError
 
+_PATH_SEPARATORS = ("/", "\\")
+
 
 class WorkflowValidationStatus(StrEnum):
     """Validation status for repo-local workflow packages."""
@@ -47,7 +49,22 @@ def _repo_path(repo_path: str | Path) -> Path:
     return Path(repo_path).expanduser().resolve()
 
 
+def _validate_workflow_name(name: str) -> None:
+    path = Path(name)
+    if (
+        not name
+        or path.is_absolute()
+        or ".." in path.parts
+        or any(separator in name for separator in _PATH_SEPARATORS)
+    ):
+        raise WorkflowPackageError(
+            "Invalid workflow name",
+            detail={"workflow": name},
+        )
+
+
 def _workflow_dir(repo_path: Path, name: str) -> Path:
+    _validate_workflow_name(name)
     return repo_path / ".attractor" / "workflows" / name
 
 
@@ -106,6 +123,7 @@ def load_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
 
 def inspect_workflow_package(repo_path: str | Path, name: str) -> WorkflowPackage:
     """Load a package without raising platform errors."""
+    _validate_workflow_name(name)
     try:
         return load_workflow_package(repo_path, name)
     except AttractorPlatformError as exc:
