@@ -85,6 +85,7 @@ class DurableRunExecutor:
         self.active_tasks: dict[str, asyncio.Task[PipelineResult]] = {}
         self._completed_results: dict[str, PipelineResult] = {}
         self._completed_failures: dict[str, Exception] = {}
+        self._captured_terminal_artifacts: set[str] = set()
 
     @classmethod
     def for_tests(
@@ -486,6 +487,12 @@ class DurableRunExecutor:
                 timestamp=dt.datetime.now(dt.UTC),
             )
 
+    async def _capture_artifacts_once(self, run_id: str, logs_root: Path) -> None:
+        if run_id in self._captured_terminal_artifacts or not logs_root.exists():
+            return
+        await self._capture_artifacts(run_id, logs_root)
+        self._captured_terminal_artifacts.add(run_id)
+
     async def _update_run_record(
         self,
         run_id: str,
@@ -530,8 +537,7 @@ class DurableRunExecutor:
         error_category: str | None = None,
         error_message: str | None = None,
     ) -> PipelineResult:
-        if logs_root.exists():
-            await self._capture_artifacts(run_id, logs_root)
+        await self._capture_artifacts_once(run_id, logs_root)
 
         if terminal_event_type is None and result.status == PipelineStatus.FAILED:
             terminal_event_type = "run.failed"
@@ -633,7 +639,7 @@ class DurableRunExecutor:
         finalizer_task = asyncio.create_task(finalizer, name=f"durable-run-finalize-{run_id}")
         while True:
             try:
-                return await asyncio.shield(finalizer_task)
+                return await self._await_terminal_task(run_id, finalizer_task)
             except asyncio.CancelledError:
                 self._clear_current_task_cancellation()
                 if finalizer_task.done():
@@ -645,7 +651,7 @@ class DurableRunExecutor:
                             )
                             while True:
                                 try:
-                                    return await asyncio.shield(fallback_task)
+                                    return await self._await_terminal_task(run_id, fallback_task)
                                 except asyncio.CancelledError:
                                     self._clear_current_task_cancellation()
                                     if fallback_task.done():
@@ -667,11 +673,24 @@ class DurableRunExecutor:
                         self._store_completed_failure(run_id, exc)
                         raise
 
+    async def _await_terminal_task(
+        self,
+        run_id: str,
+        task: asyncio.Task[PipelineResult],
+    ) -> PipelineResult:
+        try:
+            return await asyncio.shield(task)
+        except Exception as exc:
+            self._store_completed_failure(run_id, exc)
+            raise
+
     def _store_completed_result(self, run_id: str, result: PipelineResult) -> None:
+        self._captured_terminal_artifacts.discard(run_id)
         self._completed_failures.pop(run_id, None)
         self._completed_results[run_id] = result
 
     def _store_completed_failure(self, run_id: str, exc: Exception) -> None:
+        self._captured_terminal_artifacts.discard(run_id)
         self._completed_results.pop(run_id, None)
         self._completed_failures[run_id] = exc
 

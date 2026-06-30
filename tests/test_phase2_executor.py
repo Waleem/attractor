@@ -426,6 +426,9 @@ async def test_terminal_append_cancellation_recovers_and_records_terminal_event(
     second_wait = await executor.wait(run_id)
     run = await repository.get_run(run_id)
     event_types = [event.event_type for event in repository.events[run_id]]
+    failure_artifacts = [
+        artifact for artifact in repository.artifacts[run_id] if artifact.name == "failure.txt"
+    ]
 
     assert result.status == PipelineStatus.FAILED
     assert result.error is not None
@@ -435,6 +438,7 @@ async def test_terminal_append_cancellation_recovers_and_records_terminal_event(
     assert run.status == RunStatus.FAILED.value
     assert "pipeline.failed" in event_types
     assert "run.failed" in event_types
+    assert len(failure_artifacts) == 1
     assert run_id not in executor.active_tasks
 
 
@@ -511,6 +515,70 @@ async def test_terminal_append_cancellation_exhaustion_raises_without_terminal_r
     assert "run.failed" not in event_types
     assert terminal_append_attempts >= 3
     assert run_id not in executor.active_tasks
+
+
+async def test_terminal_artifact_persistence_failure_is_cached_for_repeated_waits(
+    tmp_path: Path,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="writer", prompt="run"]
+          missing [shape=box, handler="nonexistent_handler", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> missing -> done
+        }
+        """,
+    )
+    executor, repository = _make_executor(tmp_path)
+
+    class _WritingHandler:
+        async def execute(self, node, context, graph, logs_root, abort_signal=None):
+            del node, context, graph, abort_signal
+            assert logs_root is not None
+            (logs_root / "failure.txt").write_text("failure trace", encoding="utf-8")
+            return HandlerResult(status=Outcome.SUCCESS, output="ok")
+
+    original_create_artifact = repository.create_artifact
+    artifact_attempts = 0
+
+    async def _failing_create_artifact(**kwargs: Any) -> _FakeArtifact:
+        nonlocal artifact_attempts
+        artifact_attempts += 1
+        raise RuntimeError("artifact boom")
+
+    repository_any = cast(Any, repository)
+    repository_any.create_artifact = _failing_create_artifact
+    executor._handlers.register("writer", _WritingHandler())
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+
+    with pytest.raises(RuntimeError, match="artifact boom") as first_error:
+        await executor.wait(run_id)
+    with pytest.raises(RuntimeError, match="artifact boom") as second_error:
+        await executor.wait(run_id)
+
+    run = await repository.get_run(run_id)
+    event_types = [event.event_type for event in repository.events[run_id]]
+
+    assert type(second_error.value) is type(first_error.value)
+    assert str(second_error.value) == str(first_error.value)
+    assert run is not None
+    assert run.status == RunStatus.RUNNING.value
+    assert "run.failed" not in event_types
+    assert artifact_attempts >= 2
+    assert run_id not in executor.active_tasks
+
+    repository_any.create_artifact = original_create_artifact
 
 
 async def test_external_cancellation_reaches_terminal_cancelled_state(
