@@ -7,6 +7,18 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 
+def _validate_artifact_segment(label: str, value: str) -> None:
+    path = Path(value)
+    if (
+        value in {"", "."}
+        or path.is_absolute()
+        or ".." in path.parts
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError(f"{label} must be a single relative path segment")
+
+
 @dataclass(frozen=True)
 class StoredArtifact:
     run_id: str
@@ -31,10 +43,16 @@ class FileSystemArtifactStore:
         data: bytes,
         media_type: str,
     ) -> StoredArtifact:
-        if Path(name).is_absolute() or ".." in Path(name).parts:
-            raise ValueError("artifact name must be relative and contained")
+        _validate_artifact_segment("artifact run_id", run_id)
+        _validate_artifact_segment("artifact kind", kind)
+        _validate_artifact_segment("artifact name", name)
         digest = hashlib.sha256(data).hexdigest()
         target = self._root / run_id / kind / digest / name
+        target = target.resolve()
+        try:
+            target.relative_to(self._root)
+        except ValueError as exc:
+            raise ValueError("artifact path must be contained by artifact root") from exc
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return StoredArtifact(

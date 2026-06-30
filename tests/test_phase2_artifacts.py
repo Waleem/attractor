@@ -50,9 +50,19 @@ def test_filesystem_artifact_store_rejects_non_file_uri(tmp_path) -> None:
 def test_artifact_store_rejects_path_escape_names(tmp_path) -> None:
     store = FileSystemArtifactStore(tmp_path)
 
-    try:
+    with pytest.raises(ValueError, match="artifact name"):
         store.write_bytes("run_1", "log", "../secret.txt", b"x", "text/plain")
-    except ValueError as exc:
-        assert "artifact name" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+
+
+def test_artifact_store_rejects_path_escape_run_ids(tmp_path) -> None:
+    store = FileSystemArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError, match="artifact run_id"):
+        store.write_bytes("..", "log", "stdout.txt", b"x", "text/plain")
+
+
+def test_artifact_store_rejects_path_escape_kinds(tmp_path) -> None:
+    store = FileSystemArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError, match="artifact kind"):
+        store.write_bytes("run_1", "../log", "stdout.txt", b"x", "text/plain")
