@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from attractor_platform.git import GitRunner, WorktreeManager
 
 
@@ -37,9 +39,16 @@ def test_worktree_manager_refuses_dirty_registered_repo(tmp_path) -> None:
     manager = WorktreeManager(GitRunner(), tmp_path / "worktrees")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_path, text=True).strip()
 
-    try:
+    with pytest.raises(RuntimeError, match="dirty"):
         manager.prepare(repo_path, run_id="run_dirty", base_commit=base)
-    except RuntimeError as exc:
-        assert "dirty" in str(exc).lower()
-    else:
-        raise AssertionError("expected dirty repo failure")
+
+
+def test_worktree_manager_rejects_run_id_that_would_escape_root(tmp_path: Path) -> None:
+    repo_path = make_repo(tmp_path / "repo")
+    manager = WorktreeManager(GitRunner(), tmp_path / "worktrees")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_path, text=True).strip()
+
+    with pytest.raises(RuntimeError, match="unsafe"):
+        manager.prepare(repo_path, run_id="../escape", base_commit=base)
+
+    assert not (tmp_path / "escape").exists()

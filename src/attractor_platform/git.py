@@ -53,10 +53,21 @@ class WorktreeManager:
         if self._git.status_porcelain(repo):
             raise RuntimeError("registered repo is dirty; must be clean before server worktree run")
         if self._git.commit(repo) != base_commit:
-            raise RuntimeError("registered repo HEAD does not match RunSpec source commit")
+            raise RuntimeError(
+                "base mismatch: registered repo HEAD does not match RunSpec source commit"
+            )
         branch = f"attractor/runs/{run_id}"
-        if not SAFE_REF.match(branch):
+        if (
+            not SAFE_REF.match(branch)
+            or ".." in branch
+            or branch.startswith("/")
+            or branch.endswith("/")
+        ):
             raise RuntimeError("unsafe managed branch name")
-        path = self._root / run_id
+        path = (self._root / run_id).resolve()
+        try:
+            path.relative_to(self._root)
+        except ValueError as exc:
+            raise RuntimeError("unsafe managed worktree path") from exc
         self._git.run(repo, "worktree", "add", "-b", branch, str(path), base_commit)
         return PreparedWorktree(repo_path=repo, path=path, branch=branch, base_commit=base_commit)
