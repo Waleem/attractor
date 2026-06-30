@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,12 @@ class FileSystemArtifactStore:
         )
 
     def read_bytes(self, uri: str) -> bytes:
-        path = Path(uri.removeprefix("file://")).resolve()
+        parsed = urlparse(uri)
+        if parsed.scheme != "file":
+            raise ValueError("artifact URI must be a file URI")
+        if parsed.netloc not in {"", "localhost"}:
+            raise ValueError("artifact URI must refer to a local file")
+
+        path = Path(url2pathname(parsed.path)).resolve()
         path.relative_to(self._root)
         return path.read_bytes()
