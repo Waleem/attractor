@@ -411,6 +411,87 @@ async def test_external_cancellation_reaches_terminal_cancelled_state(
     assert second_wait.status == PipelineStatus.CANCELLED
 
 
+async def test_repeated_external_cancellation_still_records_terminal_cancelled_result(
+    tmp_path: Path,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="blocker", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> done
+        }
+        """,
+    )
+    executor, repository = _make_executor(tmp_path)
+    started = asyncio.Event()
+    terminal_recording_started = asyncio.Event()
+    allow_terminal_recording = asyncio.Event()
+
+    class _BlockingHandler:
+        async def execute(self, node, context, graph, logs_root, abort_signal=None):
+            del node, context, graph, logs_root, abort_signal
+            started.set()
+            await asyncio.sleep(60)
+            return HandlerResult(status=Outcome.SUCCESS, output="unreachable")
+
+    original_append_event = repository.append_event
+
+    async def _blocking_append_event(
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        actor_label: str = "",
+        timestamp: Any | None = None,
+    ) -> _FakeEvent:
+        if event_type == "run.cancelled":
+            terminal_recording_started.set()
+            await allow_terminal_recording.wait()
+        return await original_append_event(
+            run_id,
+            event_type,
+            payload,
+            actor_label=actor_label,
+            timestamp=timestamp,
+        )
+
+    repository_any = cast(Any, repository)
+    repository_any.append_event = _blocking_append_event
+    executor._handlers.register("blocker", _BlockingHandler())
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    wait_task = asyncio.create_task(executor.wait(run_id))
+    executor.active_tasks[run_id].cancel()
+
+    await asyncio.wait_for(terminal_recording_started.wait(), timeout=2.0)
+    executor.active_tasks[run_id].cancel()
+    allow_terminal_recording.set()
+
+    result = await asyncio.wait_for(wait_task, timeout=2.0)
+    run = await repository.get_run(run_id)
+    event_types = [event.event_type for event in repository.events[run_id]]
+
+    assert result.status == PipelineStatus.CANCELLED
+    assert run is not None
+    assert run.status == RunStatus.CANCELLED.value
+    assert "run.cancelled" in event_types
+    assert run_id not in executor.active_tasks
+
+    second_wait = await executor.wait(run_id)
+    assert second_wait.status == PipelineStatus.CANCELLED
+
+
 async def test_checkpoint_failure_does_not_persist_orphaned_event_and_marks_run_failed(
     tmp_path: Path,
 ) -> None:
