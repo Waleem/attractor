@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import uuid
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
@@ -179,6 +180,9 @@ class DurableRunExecutor:
         result: PipelineResult | None = None
         logs_root = self._artifact_root / "_runtime" / run_id
         logs_root.mkdir(parents=True, exist_ok=True)
+        event_queue: asyncio.Queue[PipelineEvent | object] | None = None
+        writer_task: asyncio.Task[None] | None = None
+        writer_closed = False
 
         try:
             await self._update_run_record(run_id, status=RunStatus.PREPARING)
@@ -214,7 +218,7 @@ class DurableRunExecutor:
                 actor_label=run_spec.actor_label,
             )
 
-            event_queue: asyncio.Queue[PipelineEvent | object] = asyncio.Queue()
+            event_queue = asyncio.Queue()
             writer_task = asyncio.create_task(
                 self._write_pipeline_events(
                     run_id=run_id,
@@ -232,6 +236,10 @@ class DurableRunExecutor:
                     raise RuntimeError(f"Workflow package has no graph: {package.name}")
 
                 def _on_event(event: PipelineEvent) -> None:
+                    if writer_task is not None and writer_task.done():
+                        exc = writer_task.exception()
+                        if exc is not None:
+                            raise RuntimeError("pipeline event writer failed") from exc
                     event_queue.put_nowait(event)
 
                 async with WorktreeLocalRunEnvironment(prepared).activate():
@@ -243,42 +251,60 @@ class DurableRunExecutor:
                         on_event=_on_event,
                     )
             finally:
-                event_queue.put_nowait(_QUEUE_SENTINEL)
-                await writer_task
+                if not writer_closed:
+                    await self._close_event_writer(event_queue, writer_task)
+                    writer_closed = True
 
-            await self._capture_artifacts(run_id, logs_root)
-            final_status = _run_status_for_result(result)
-            await self._update_run_record(
-                run_id,
-                status=final_status,
-                completed_at=dt.datetime.now(dt.UTC),
-                error_category="pipeline" if result.error else None,
-                error_message=result.error,
+            assert result is not None
+            return await self._record_terminal_result(
+                run_id=run_id,
+                run_spec=run_spec,
+                prepared=prepared,
+                logs_root=logs_root,
+                result=result,
             )
-            self._completed_results[run_id] = result
-            return result
+        except asyncio.CancelledError:
+            self._clear_current_task_cancellation()
+            if not writer_closed:
+                await self._close_event_writer(event_queue, writer_task)
+                writer_closed = True
+
+            cancelled = PipelineResult(
+                status=PipelineStatus.CANCELLED,
+                error="Run cancelled",
+            )
+            return await self._record_terminal_result(
+                run_id=run_id,
+                run_spec=run_spec,
+                prepared=prepared,
+                logs_root=logs_root,
+                result=cancelled,
+                terminal_event_type="run.cancelled",
+                terminal_payload={"reason": "external cancellation"},
+                error_category="CancelledError",
+                error_message="Run cancelled",
+            )
         except Exception as exc:  # noqa: BLE001
+            if not writer_closed:
+                with suppress(Exception):
+                    await self._close_event_writer(event_queue, writer_task)
+                writer_closed = True
+
             result = PipelineResult(
                 status=PipelineStatus.FAILED,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            await self.repository.append_event(
-                run_id,
-                "run.failed",
-                {"error": result.error or "unknown"},
-                actor_label=run_spec.actor_label,
-            )
-            await self._update_run_record(
-                run_id,
-                status=RunStatus.FAILED,
-                worktree_path=str(prepared.path) if prepared is not None else None,
-                managed_branch=prepared.branch if prepared is not None else None,
-                completed_at=dt.datetime.now(dt.UTC),
+            return await self._record_terminal_result(
+                run_id=run_id,
+                run_spec=run_spec,
+                prepared=prepared,
+                logs_root=logs_root,
+                result=result,
+                terminal_event_type="run.failed",
+                terminal_payload={"error": result.error or "unknown"},
                 error_category=type(exc).__name__,
                 error_message=str(exc),
             )
-            self._completed_results[run_id] = result
-            return result
         finally:
             self.active_tasks.pop(run_id, None)
 
@@ -293,6 +319,8 @@ class DurableRunExecutor:
         base_commit: str,
     ) -> None:
         stage_indices: dict[str, int] = {}
+        existing_events = await self.repository.list_events(run_id, after_sequence=0, limit=100)
+        last_sequence = existing_events[-1].sequence if existing_events else 0
 
         while True:
             item = await event_queue.get()
@@ -304,12 +332,7 @@ class DurableRunExecutor:
             if isinstance(event, (StageStarted, StageCompleted, StageFailed, StageRetrying)):
                 stage_indices[event.name] = event.index
 
-            event_record = await self.repository.append_event(
-                run_id=run_id,
-                event_type=event_type,
-                payload=payload,
-                actor_label=actor_label,
-            )
+            expected_sequence = last_sequence + 1
 
             if isinstance(event, CheckpointSaved):
                 checkpoint = await asyncio.to_thread(
@@ -319,7 +342,7 @@ class DurableRunExecutor:
                     workflow_name=workflow_name,
                     node_id=event.node_id,
                     stage_index=stage_indices.get(event.node_id, 0),
-                    event_sequence=event_record.sequence,
+                    event_sequence=expected_sequence,
                     base_commit=base_commit,
                 )
                 await self.repository.create_checkpoint(
@@ -331,6 +354,18 @@ class DurableRunExecutor:
                     ref_name=checkpoint.ref_name,
                     timestamp=dt.datetime.now(dt.UTC),
                 )
+
+            event_record = await self.repository.append_event(
+                run_id=run_id,
+                event_type=event_type,
+                payload=payload,
+                actor_label=actor_label,
+            )
+            if event_record.sequence != expected_sequence:
+                raise RuntimeError(
+                    "event sequence advanced unexpectedly during checkpoint persistence"
+                )
+            last_sequence = event_record.sequence
 
     async def _capture_artifacts(self, run_id: str, logs_root: Path) -> None:
         for file_path in sorted(path for path in logs_root.rglob("*") if path.is_file()):
@@ -385,6 +420,62 @@ class DurableRunExecutor:
             run.error_message = error_message
             run.updated_at = dt.datetime.now(dt.UTC)
             await session.flush()
+
+    async def _record_terminal_result(
+        self,
+        *,
+        run_id: str,
+        run_spec: RunSpec,
+        prepared: PreparedWorktree | None,
+        logs_root: Path,
+        result: PipelineResult,
+        terminal_event_type: str | None = None,
+        terminal_payload: dict[str, Any] | None = None,
+        error_category: str | None = None,
+        error_message: str | None = None,
+    ) -> PipelineResult:
+        if logs_root.exists():
+            await self._capture_artifacts(run_id, logs_root)
+
+        if terminal_event_type is not None and terminal_payload is not None:
+            await self.repository.append_event(
+                run_id,
+                terminal_event_type,
+                terminal_payload,
+                actor_label=run_spec.actor_label,
+            )
+
+        await self._update_run_record(
+            run_id,
+            status=_run_status_for_result(result),
+            worktree_path=str(prepared.path) if prepared is not None else None,
+            managed_branch=prepared.branch if prepared is not None else None,
+            completed_at=dt.datetime.now(dt.UTC),
+            error_category=error_category if error_category is not None else (
+                "pipeline" if result.error else None
+            ),
+            error_message=error_message if error_message is not None else result.error,
+        )
+        self._completed_results[run_id] = result
+        return result
+
+    async def _close_event_writer(
+        self,
+        event_queue: asyncio.Queue[PipelineEvent | object] | None,
+        writer_task: asyncio.Task[None] | None,
+    ) -> None:
+        if event_queue is None or writer_task is None:
+            return
+        if not writer_task.done():
+            event_queue.put_nowait(_QUEUE_SENTINEL)
+        await writer_task
+
+    def _clear_current_task_cancellation(self) -> None:
+        current = asyncio.current_task()
+        if current is None:
+            return
+        while current.cancelling():
+            current.uncancel()
 
 
 def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
