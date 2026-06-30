@@ -23,6 +23,12 @@ def test_worktree_manager_creates_managed_branch_without_mutating_repo(tmp_path)
     repo_path = make_repo(tmp_path / "repo")
     root = tmp_path / "worktrees"
     manager = WorktreeManager(GitRunner(), root)
+    original_branch = subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path, text=True
+    ).strip()
+    original_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_path, text=True
+    ).strip()
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_path, text=True).strip()
 
     prepared = manager.prepare(repo_path, run_id="run_abc", base_commit=base)
@@ -31,6 +37,16 @@ def test_worktree_manager_creates_managed_branch_without_mutating_repo(tmp_path)
     assert prepared.branch == "attractor/runs/run_abc"
     assert prepared.path.exists()
     assert not (repo_path / "generated.txt").exists()
+    assert (
+        subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path, text=True
+        ).strip()
+        == original_branch
+    )
+    assert (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_path, text=True).strip()
+        == original_head
+    )
 
 
 def test_worktree_manager_refuses_dirty_registered_repo(tmp_path) -> None:
@@ -43,12 +59,16 @@ def test_worktree_manager_refuses_dirty_registered_repo(tmp_path) -> None:
         manager.prepare(repo_path, run_id="run_dirty", base_commit=base)
 
 
-def test_worktree_manager_rejects_run_id_that_would_escape_root(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "run_id",
+    [".", "foo.", "a.lock", ".hidden", "a//b", "../escape"],
+)
+def test_worktree_manager_rejects_invalid_run_id(tmp_path: Path, run_id: str) -> None:
     repo_path = make_repo(tmp_path / "repo")
     manager = WorktreeManager(GitRunner(), tmp_path / "worktrees")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_path, text=True).strip()
 
     with pytest.raises(RuntimeError, match="unsafe"):
-        manager.prepare(repo_path, run_id="../escape", base_commit=base)
+        manager.prepare(repo_path, run_id=run_id, base_commit=base)
 
     assert not (tmp_path / "escape").exists()

@@ -57,17 +57,22 @@ class WorktreeManager:
                 "base mismatch: registered repo HEAD does not match RunSpec source commit"
             )
         branch = f"attractor/runs/{run_id}"
-        if (
-            not SAFE_REF.match(branch)
-            or ".." in branch
-            or branch.startswith("/")
-            or branch.endswith("/")
-        ):
-            raise RuntimeError("unsafe managed branch name")
         path = (self._root / run_id).resolve()
         try:
             path.relative_to(self._root)
         except ValueError as exc:
             raise RuntimeError("unsafe managed worktree path") from exc
+        if not SAFE_REF.match(branch) or not self._is_valid_branch_name(repo, branch):
+            raise RuntimeError("unsafe managed branch name")
         self._git.run(repo, "worktree", "add", "-b", branch, str(path), base_commit)
         return PreparedWorktree(repo_path=repo, path=path, branch=branch, base_commit=base_commit)
+
+    def _is_valid_branch_name(self, repo_path: Path, branch: str) -> bool:
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
