@@ -264,34 +264,68 @@ class DurableRunExecutor:
                 logs_root=logs_root,
                 result=result,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            external_cancellation = self._current_task_cancel_requested()
             self._clear_current_task_cancellation()
-            async def _finalize_cancelled() -> PipelineResult:
+            if external_cancellation:
+                async def _finalize_cancelled() -> PipelineResult:
+                    nonlocal writer_closed
+
+                    if not writer_closed:
+                        await self._close_event_writer(event_queue, writer_task)
+                        writer_closed = True
+
+                    cancelled = PipelineResult(
+                        status=PipelineStatus.CANCELLED,
+                        error="Run cancelled",
+                    )
+                    return await self._record_terminal_result(
+                        run_id=run_id,
+                        run_spec=run_spec,
+                        prepared=prepared,
+                        logs_root=logs_root,
+                        result=cancelled,
+                        terminal_event_type="run.cancelled",
+                        terminal_payload={"reason": "external cancellation"},
+                        error_category="CancelledError",
+                        error_message="Run cancelled",
+                    )
+
+                return await self._await_terminal_finalization(
+                    run_id=run_id,
+                    finalizer=_finalize_cancelled(),
+                )
+
+            failure_message = str(exc) or "Terminal finalization cancelled"
+            failure_error = f"CancelledError: {failure_message}"
+
+            async def _finalize_internal_cancellation() -> PipelineResult:
                 nonlocal writer_closed
 
                 if not writer_closed:
-                    await self._close_event_writer(event_queue, writer_task)
+                    with suppress(Exception):
+                        await self._close_event_writer(event_queue, writer_task)
                     writer_closed = True
 
-                cancelled = PipelineResult(
-                    status=PipelineStatus.CANCELLED,
-                    error="Run cancelled",
+                failed = PipelineResult(
+                    status=PipelineStatus.FAILED,
+                    error=failure_error,
                 )
                 return await self._record_terminal_result(
                     run_id=run_id,
                     run_spec=run_spec,
                     prepared=prepared,
                     logs_root=logs_root,
-                    result=cancelled,
-                    terminal_event_type="run.cancelled",
-                    terminal_payload={"reason": "external cancellation"},
+                    result=failed,
+                    terminal_event_type="run.failed",
+                    terminal_payload={"error": failed.error or "unknown"},
                     error_category="CancelledError",
-                    error_message="Run cancelled",
+                    error_message=failure_message,
                 )
 
             return await self._await_terminal_finalization(
                 run_id=run_id,
-                finalizer=_finalize_cancelled(),
+                finalizer=_finalize_internal_cancellation(),
             )
         except Exception as exc:  # noqa: BLE001
             failure_category = type(exc).__name__
@@ -458,6 +492,10 @@ class DurableRunExecutor:
         if logs_root.exists():
             await self._capture_artifacts(run_id, logs_root)
 
+        if terminal_event_type is None and result.status == PipelineStatus.FAILED:
+            terminal_event_type = "run.failed"
+            terminal_payload = {"error": result.error or "unknown"}
+
         if terminal_event_type is not None and terminal_payload is not None:
             await self.repository.append_event(
                 run_id,
@@ -505,7 +543,14 @@ class DurableRunExecutor:
             except asyncio.CancelledError:
                 self._clear_current_task_cancellation()
                 if finalizer_task.done():
-                    continue
+                    if finalizer_task.cancelled():
+                        result = PipelineResult(
+                            status=PipelineStatus.FAILED,
+                            error="Terminal finalization cancelled",
+                        )
+                        self._completed_results[run_id] = result
+                        return result
+                    return finalizer_task.result()
 
     def _clear_current_task_cancellation(self) -> None:
         current = asyncio.current_task()
@@ -513,6 +558,10 @@ class DurableRunExecutor:
             return
         while current.cancelling():
             current.uncancel()
+
+    def _current_task_cancel_requested(self) -> bool:
+        current = asyncio.current_task()
+        return current is not None and current.cancelling() > 0
 
 
 def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
