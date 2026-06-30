@@ -656,6 +656,119 @@ async def test_terminal_artifact_retry_via_finalization_skips_already_persisted_
     ]
 
 
+async def test_terminal_row_retry_does_not_duplicate_terminal_event_after_persist(
+    tmp_path: Path,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="writer", prompt="run"]
+          missing [shape=box, handler="nonexistent_handler", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> missing -> done
+        }
+        """,
+    )
+    executor, repository = _make_executor(tmp_path)
+
+    class _WritingHandler:
+        async def execute(self, node, context, graph, logs_root, abort_signal=None):
+            del node, context, graph, abort_signal
+            assert logs_root is not None
+            (logs_root / "failure.txt").write_text("failure trace", encoding="utf-8")
+            return HandlerResult(status=Outcome.SUCCESS, output="ok")
+
+    original_append_event = repository.append_event
+    terminal_append_attempts = 0
+
+    async def _tracking_append_event(
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        actor_label: str = "",
+        timestamp: Any | None = None,
+    ) -> _FakeEvent:
+        nonlocal terminal_append_attempts
+        if event_type == "run.failed":
+            terminal_append_attempts += 1
+        return await original_append_event(
+            run_id,
+            event_type,
+            payload,
+            actor_label=actor_label,
+            timestamp=timestamp,
+        )
+
+    original_update_run_record = executor._update_run_record
+    terminal_update_attempts = 0
+
+    async def _cancelling_terminal_update(
+        run_id: str,
+        *,
+        status: RunStatus | None = None,
+        worktree_path: str | None = None,
+        managed_branch: str | None = None,
+        started_at: Any | None = None,
+        completed_at: Any | None = None,
+        error_category: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        nonlocal terminal_update_attempts
+        if status == RunStatus.FAILED and completed_at is not None:
+            terminal_update_attempts += 1
+            if terminal_update_attempts == 1:
+                raise asyncio.CancelledError("terminal row update cancelled")
+        await original_update_run_record(
+            run_id,
+            status=status,
+            worktree_path=worktree_path,
+            managed_branch=managed_branch,
+            started_at=started_at,
+            completed_at=completed_at,
+            error_category=error_category,
+            error_message=error_message,
+        )
+
+    repository_any = cast(Any, repository)
+    repository_any.append_event = _tracking_append_event
+    executor_any = cast(Any, executor)
+    executor_any._update_run_record = _cancelling_terminal_update
+    executor._handlers.register("writer", _WritingHandler())
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+
+    result = await asyncio.wait_for(executor.wait(run_id), timeout=2.0)
+    second_wait = await executor.wait(run_id)
+    run = await repository.get_run(run_id)
+    terminal_events = [
+        event for event in repository.events[run_id] if event.event_type == "run.failed"
+    ]
+
+    assert result.status == PipelineStatus.FAILED
+    assert result.error is not None
+    assert "nonexistent_handler" in result.error
+    assert second_wait == result
+    assert run is not None
+    assert run.status == RunStatus.FAILED.value
+    assert run.completed_at is not None
+    assert run.error_category == "pipeline"
+    assert run.error_message is not None
+    assert "nonexistent_handler" in run.error_message
+    assert terminal_append_attempts == 1
+    assert terminal_update_attempts == 2
+    assert len(terminal_events) == 1
+    assert run_id not in executor.active_tasks
+
+
 async def test_external_cancellation_reaches_terminal_cancelled_state(
     tmp_path: Path,
 ) -> None:

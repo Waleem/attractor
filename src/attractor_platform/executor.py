@@ -8,7 +8,7 @@ import hashlib
 import uuid
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -49,6 +49,22 @@ from attractor_platform.storage.repositories import PlatformRepository
 _QUEUE_SENTINEL = object()
 
 
+@dataclass(frozen=True)
+class _PersistedTerminalEvent:
+    result_status: PipelineStatus
+    result_error: str | None
+    event_type: str
+    payload: tuple[tuple[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class _PersistedTerminalResult:
+    event: _PersistedTerminalEvent
+    result: PipelineResult
+    error_category: str | None
+    error_message: str | None
+
+
 class _NoopHandler:
     async def execute(
         self,
@@ -87,6 +103,7 @@ class DurableRunExecutor:
         self._completed_failures: dict[str, Exception] = {}
         self._captured_terminal_artifacts: set[tuple[str, str]] = set()
         self._captured_terminal_artifact_files: dict[tuple[str, str], set[str]] = {}
+        self._persisted_terminal_results: dict[str, _PersistedTerminalResult] = {}
 
     @classmethod
     def for_tests(
@@ -547,17 +564,29 @@ class DurableRunExecutor:
     ) -> PipelineResult:
         await self._capture_artifacts_once(run_id, logs_root)
 
-        if terminal_event_type is None and result.status == PipelineStatus.FAILED:
-            terminal_event_type = "run.failed"
-            terminal_payload = {"error": result.error or "unknown"}
-
-        if terminal_event_type is not None and terminal_payload is not None:
-            await self.repository.append_event(
-                run_id,
-                terminal_event_type,
-                terminal_payload,
-                actor_label=run_spec.actor_label,
+        persisted_terminal = self._persisted_terminal_results.get(run_id)
+        if persisted_terminal is not None:
+            result = persisted_terminal.result
+            terminal_event_type = persisted_terminal.event.event_type
+            terminal_payload = dict(persisted_terminal.event.payload)
+            error_category = persisted_terminal.error_category
+            error_message = persisted_terminal.error_message
+        else:
+            terminal_event_type, terminal_payload = self._resolve_terminal_event(
+                result=result,
+                terminal_event_type=terminal_event_type,
+                terminal_payload=terminal_payload,
             )
+        await self._persist_terminal_event_if_needed(
+            run_id=run_id,
+            result=result,
+            actor_label=run_spec.actor_label,
+            terminal_event_type=terminal_event_type,
+            terminal_payload=terminal_payload,
+            error_category=error_category,
+            error_message=error_message,
+            retry_on_cancellation=False,
+        )
 
         await self._update_run_record(
             run_id,
@@ -596,30 +625,29 @@ class DurableRunExecutor:
         error_category: str | None = None,
         error_message: str | None = None,
     ) -> PipelineResult:
-        if terminal_event_type is None and result.status == PipelineStatus.FAILED:
-            terminal_event_type = "run.failed"
-            terminal_payload = {"error": result.error or "unknown"}
-
-        if terminal_event_type is not None and terminal_payload is not None:
-            last_cancellation: asyncio.CancelledError | None = None
-            for attempt in range(2):
-                try:
-                    await self.repository.append_event(
-                        run_id,
-                        terminal_event_type,
-                        terminal_payload,
-                        actor_label=run_spec.actor_label,
-                    )
-                    break
-                except asyncio.CancelledError as exc:
-                    last_cancellation = exc
-                    self._clear_current_task_cancellation()
-                    if attempt == 1:
-                        failure = RuntimeError(
-                            "terminal event persistence failed during terminal finalization"
-                        )
-                        self._store_completed_failure(run_id, failure)
-                        raise failure from last_cancellation
+        persisted_terminal = self._persisted_terminal_results.get(run_id)
+        if persisted_terminal is not None:
+            result = persisted_terminal.result
+            terminal_event_type = persisted_terminal.event.event_type
+            terminal_payload = dict(persisted_terminal.event.payload)
+            error_category = persisted_terminal.error_category
+            error_message = persisted_terminal.error_message
+        else:
+            terminal_event_type, terminal_payload = self._resolve_terminal_event(
+                result=result,
+                terminal_event_type=terminal_event_type,
+                terminal_payload=terminal_payload,
+            )
+        await self._persist_terminal_event_if_needed(
+            run_id=run_id,
+            result=result,
+            actor_label=run_spec.actor_label,
+            terminal_event_type=terminal_event_type,
+            terminal_payload=terminal_payload,
+            error_category=error_category,
+            error_message=error_message,
+            retry_on_cancellation=True,
+        )
 
         await self._update_run_record(
             run_id,
@@ -694,6 +722,7 @@ class DurableRunExecutor:
 
     def _store_completed_result(self, run_id: str, result: PipelineResult) -> None:
         self._clear_artifact_capture_state(run_id)
+        self._persisted_terminal_results.pop(run_id, None)
         self._completed_failures.pop(run_id, None)
         self._completed_results[run_id] = result
 
@@ -719,6 +748,73 @@ class DurableRunExecutor:
     def _current_task_cancel_requested(self) -> bool:
         current = asyncio.current_task()
         return current is not None and current.cancelling() > 0
+
+    def _resolve_terminal_event(
+        self,
+        *,
+        result: PipelineResult,
+        terminal_event_type: str | None,
+        terminal_payload: dict[str, Any] | None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        if terminal_event_type is None and result.status == PipelineStatus.FAILED:
+            return "run.failed", {"error": result.error or "unknown"}
+        return terminal_event_type, terminal_payload
+
+    async def _persist_terminal_event_if_needed(
+        self,
+        *,
+        run_id: str,
+        result: PipelineResult,
+        actor_label: str,
+        terminal_event_type: str | None,
+        terminal_payload: dict[str, Any] | None,
+        error_category: str | None,
+        error_message: str | None,
+        retry_on_cancellation: bool,
+    ) -> None:
+        persistence_key = _terminal_event_persistence_key(
+            result=result,
+            terminal_event_type=terminal_event_type,
+            terminal_payload=terminal_payload,
+        )
+        if persistence_key is None:
+            return
+        persisted_terminal = self._persisted_terminal_results.get(run_id)
+        if persisted_terminal is not None and persisted_terminal.event == persistence_key:
+            return
+
+        attempts = 2 if retry_on_cancellation else 1
+        last_cancellation: asyncio.CancelledError | None = None
+        for attempt in range(attempts):
+            try:
+                assert terminal_event_type is not None
+                assert terminal_payload is not None
+                await self.repository.append_event(
+                    run_id,
+                    terminal_event_type,
+                    terminal_payload,
+                    actor_label=actor_label,
+                )
+                self._persisted_terminal_results[run_id] = _PersistedTerminalResult(
+                    event=persistence_key,
+                    result=result,
+                    error_category=error_category if error_category is not None else (
+                        "pipeline" if result.error else None
+                    ),
+                    error_message=error_message if error_message is not None else result.error,
+                )
+                return
+            except asyncio.CancelledError as exc:
+                last_cancellation = exc
+                self._clear_current_task_cancellation()
+                if not retry_on_cancellation or attempt == attempts - 1:
+                    if retry_on_cancellation:
+                        failure = RuntimeError(
+                            "terminal event persistence failed during terminal finalization"
+                        )
+                        self._store_completed_failure(run_id, failure)
+                        raise failure from last_cancellation
+                    raise
 
 
 def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
@@ -796,3 +892,34 @@ def _media_type(path: Path) -> str:
     if path.suffix == ".txt":
         return "text/plain"
     return "application/octet-stream"
+
+
+def _terminal_event_persistence_key(
+    *,
+    result: PipelineResult,
+    terminal_event_type: str | None,
+    terminal_payload: dict[str, Any] | None,
+) -> _PersistedTerminalEvent | None:
+    if terminal_event_type is None or terminal_payload is None:
+        return None
+    return _PersistedTerminalEvent(
+        result_status=result.status,
+        result_error=result.error,
+        event_type=terminal_event_type,
+        payload=tuple(
+            sorted(
+                (key, _freeze_terminal_payload_value(value))
+                for key, value in terminal_payload.items()
+            )
+        ),
+    )
+
+
+def _freeze_terminal_payload_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple(
+            sorted((key, _freeze_terminal_payload_value(item)) for key, item in value.items())
+        )
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_terminal_payload_value(item) for item in value)
+    return value
