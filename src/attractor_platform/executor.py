@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
@@ -294,6 +294,19 @@ class DurableRunExecutor:
                 return await self._await_terminal_finalization(
                     run_id=run_id,
                     finalizer=_finalize_cancelled(),
+                    on_finalizer_cancelled=lambda: self._persist_terminal_result_fallback(
+                        run_id=run_id,
+                        run_spec=run_spec,
+                        prepared=prepared,
+                        result=PipelineResult(
+                            status=PipelineStatus.CANCELLED,
+                            error="Run cancelled",
+                        ),
+                        terminal_event_type="run.cancelled",
+                        terminal_payload={"reason": "external cancellation"},
+                        error_category="CancelledError",
+                        error_message="Run cancelled",
+                    ),
                 )
 
             failure_message = str(exc) or "Terminal finalization cancelled"
@@ -326,6 +339,19 @@ class DurableRunExecutor:
             return await self._await_terminal_finalization(
                 run_id=run_id,
                 finalizer=_finalize_internal_cancellation(),
+                on_finalizer_cancelled=lambda: self._persist_terminal_result_fallback(
+                    run_id=run_id,
+                    run_spec=run_spec,
+                    prepared=prepared,
+                    result=PipelineResult(
+                        status=PipelineStatus.FAILED,
+                        error="Terminal finalization cancelled",
+                    ),
+                    terminal_event_type="run.failed",
+                    terminal_payload={"error": "Terminal finalization cancelled"},
+                    error_category="CancelledError",
+                    error_message="Terminal finalization cancelled",
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             failure_category = type(exc).__name__
@@ -359,6 +385,19 @@ class DurableRunExecutor:
             return await self._await_terminal_finalization(
                 run_id=run_id,
                 finalizer=_finalize_failed(),
+                on_finalizer_cancelled=lambda: self._persist_terminal_result_fallback(
+                    run_id=run_id,
+                    run_spec=run_spec,
+                    prepared=prepared,
+                    result=PipelineResult(
+                        status=PipelineStatus.FAILED,
+                        error="Terminal finalization cancelled",
+                    ),
+                    terminal_event_type="run.failed",
+                    terminal_payload={"error": "Terminal finalization cancelled"},
+                    error_category=failure_category,
+                    error_message="Terminal finalization cancelled",
+                ),
             )
         finally:
             self.active_tasks.pop(run_id, None)
@@ -529,11 +568,58 @@ class DurableRunExecutor:
             event_queue.put_nowait(_QUEUE_SENTINEL)
         await writer_task
 
+    async def _persist_terminal_result_fallback(
+        self,
+        *,
+        run_id: str,
+        run_spec: RunSpec,
+        prepared: PreparedWorktree | None,
+        result: PipelineResult,
+        terminal_event_type: str | None = None,
+        terminal_payload: dict[str, Any] | None = None,
+        error_category: str | None = None,
+        error_message: str | None = None,
+    ) -> PipelineResult:
+        if terminal_event_type is None and result.status == PipelineStatus.FAILED:
+            terminal_event_type = "run.failed"
+            terminal_payload = {"error": result.error or "unknown"}
+
+        await self._update_run_record(
+            run_id,
+            status=_run_status_for_result(result),
+            worktree_path=str(prepared.path) if prepared is not None else None,
+            managed_branch=prepared.branch if prepared is not None else None,
+            completed_at=dt.datetime.now(dt.UTC),
+            error_category=error_category if error_category is not None else (
+                "pipeline" if result.error else None
+            ),
+            error_message=error_message if error_message is not None else result.error,
+        )
+        self._completed_results[run_id] = result
+
+        if terminal_event_type is not None and terminal_payload is not None:
+            for attempt in range(2):
+                try:
+                    await self.repository.append_event(
+                        run_id,
+                        terminal_event_type,
+                        terminal_payload,
+                        actor_label=run_spec.actor_label,
+                    )
+                    break
+                except asyncio.CancelledError:
+                    self._clear_current_task_cancellation()
+                    if attempt == 1:
+                        return result
+
+        return result
+
     async def _await_terminal_finalization(
         self,
         *,
         run_id: str,
         finalizer: Coroutine[Any, Any, PipelineResult],
+        on_finalizer_cancelled: Callable[[], Coroutine[Any, Any, PipelineResult]] | None = None,
     ) -> PipelineResult:
         # External cancellation should not interrupt terminal durable writes once cleanup starts.
         finalizer_task = asyncio.create_task(finalizer, name=f"durable-run-finalize-{run_id}")
@@ -544,6 +630,20 @@ class DurableRunExecutor:
                 self._clear_current_task_cancellation()
                 if finalizer_task.done():
                     if finalizer_task.cancelled():
+                        if on_finalizer_cancelled is not None:
+                            fallback_task = asyncio.create_task(
+                                on_finalizer_cancelled(),
+                                name=f"durable-run-finalize-fallback-{run_id}",
+                            )
+                            while True:
+                                try:
+                                    return await asyncio.shield(fallback_task)
+                                except asyncio.CancelledError:
+                                    self._clear_current_task_cancellation()
+                                    if fallback_task.done():
+                                        if fallback_task.cancelled():
+                                            break
+                                        return fallback_task.result()
                         result = PipelineResult(
                             status=PipelineStatus.FAILED,
                             error="Terminal finalization cancelled",

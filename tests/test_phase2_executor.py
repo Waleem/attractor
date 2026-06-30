@@ -388,6 +388,7 @@ async def test_terminal_append_cancellation_does_not_hang_wait(
             return HandlerResult(status=Outcome.SUCCESS, output="ok")
 
     original_append_event = repository.append_event
+    terminal_append_cancellations = 0
 
     async def _cancelling_append_event(
         run_id: str,
@@ -396,7 +397,9 @@ async def test_terminal_append_cancellation_does_not_hang_wait(
         actor_label: str = "",
         timestamp: Any | None = None,
     ) -> _FakeEvent:
-        if event_type == "run.failed":
+        nonlocal terminal_append_cancellations
+        if event_type == "run.failed" and terminal_append_cancellations < 2:
+            terminal_append_cancellations += 1
             raise asyncio.CancelledError("terminal event persistence cancelled")
         return await original_append_event(
             run_id,
@@ -429,9 +432,9 @@ async def test_terminal_append_cancellation_does_not_hang_wait(
     assert "Terminal finalization cancelled" in result.error
     assert second_wait == result
     assert run is not None
-    assert run.status == RunStatus.RUNNING.value
+    assert run.status == RunStatus.FAILED.value
     assert "pipeline.failed" in event_types
-    assert "run.failed" not in event_types
+    assert "run.failed" in event_types
     assert run_id not in executor.active_tasks
 
 
