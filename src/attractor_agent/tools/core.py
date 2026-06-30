@@ -21,7 +21,7 @@ import contextvars
 import fnmatch
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from attractor_agent.environment import (
@@ -139,13 +139,22 @@ def reset_allowed_roots(token: contextvars.Token[tuple[Path, ...]]) -> None:
     _allowed_roots_var.reset(token)
 
 
-def _check_path_allowed(file_path: Path) -> str | None:
-    """Validate that a resolved path is within allowed roots.
+def _check_path_allowed(
+    file_path: Path | PurePosixPath,
+    environment: ExecutionEnvironment,
+) -> str | None:
+    """Validate that a path is within allowed roots for the active environment.
 
     Returns None if allowed, or an error message if not.
     """
-    resolved = file_path.resolve()
-    roots = get_allowed_roots()
+    roots: tuple[Path | PurePosixPath, ...]
+    if isinstance(environment, LocalEnvironment):
+        resolved: Path | PurePosixPath = Path(file_path).resolve()
+        roots = tuple(get_allowed_roots())
+    else:
+        resolved = PurePosixPath(str(file_path))
+        roots = tuple(PurePosixPath(str(root)) for root in get_allowed_roots())
+
     for root in roots:
         try:
             resolved.relative_to(root)
@@ -154,6 +163,32 @@ def _check_path_allowed(file_path: Path) -> str | None:
             continue
     roots_str = ", ".join(str(r) for r in roots)
     return f"Error: Path '{resolved}' is outside allowed directories. Allowed roots: {roots_str}"
+
+
+async def _resolve_environment_path(
+    path: str,
+    environment: ExecutionEnvironment,
+) -> Path | PurePosixPath:
+    """Resolve a tool path against the active environment's working directory."""
+    if isinstance(environment, LocalEnvironment):
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(await environment.working_directory()) / candidate
+        return candidate.resolve()
+
+    candidate = PurePosixPath(path)
+    if not candidate.is_absolute():
+        candidate = PurePosixPath(await environment.working_directory()) / candidate
+    return candidate
+
+
+async def _resolve_environment_working_dir(
+    working_dir: str | None,
+    environment: ExecutionEnvironment,
+) -> Path | PurePosixPath:
+    """Resolve an explicit or default shell working directory."""
+    base_dir = working_dir if working_dir is not None else await environment.working_directory()
+    return await _resolve_environment_path(base_dir, environment)
 
 
 # ------------------------------------------------------------------ #
@@ -244,18 +279,19 @@ async def _read_file(
     limit: int = 2000,
 ) -> str:
     """Read a file with optional line offset and limit."""
-    file_path = Path(path).expanduser().resolve()
-
-    # Security: path confinement check (skip for non-local environments
-    # where the container IS the sandbox)
     environment = _env()
+    file_path = await _resolve_environment_path(path, environment)
+
+    # Security: path confinement check
+    error = _check_path_allowed(file_path, environment)
+    if error:
+        raise PermissionError(error)
+
     if isinstance(environment, LocalEnvironment):
-        error = _check_path_allowed(file_path)
-        if error:
-            raise PermissionError(error)
-        if not file_path.exists():
+        local_path = Path(file_path)
+        if not local_path.exists():
             raise FileNotFoundError(f"File not found: {path}")
-        if not file_path.is_file():
+        if not local_path.is_file():
             raise IsADirectoryError(f"Not a file: {path}")
 
     text = await environment.read_file(str(file_path))
@@ -316,14 +352,13 @@ READ_FILE = _make_tool(
 
 async def _write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories as needed."""
-    file_path = Path(path).expanduser().resolve()
-
-    # Security: path confinement (skip for non-local -- container IS sandbox)
     environment = _env()
-    if isinstance(environment, LocalEnvironment):
-        error = _check_path_allowed(file_path)
-        if error:
-            raise PermissionError(error)
+    file_path = await _resolve_environment_path(path, environment)
+
+    # Security: path confinement
+    error = _check_path_allowed(file_path, environment)
+    if error:
+        raise PermissionError(error)
 
     await environment.write_file(str(file_path), content)
 
@@ -366,15 +401,17 @@ async def _edit_file(
     replace_all: bool = False,
 ) -> str:
     """Replace a string in a file."""
-    file_path = Path(path).expanduser().resolve()
-
-    # Security: path confinement (skip for non-local -- container IS sandbox)
     environment = _env()
+    file_path = await _resolve_environment_path(path, environment)
+
+    # Security: path confinement
+    error = _check_path_allowed(file_path, environment)
+    if error:
+        raise PermissionError(error)
+
     if isinstance(environment, LocalEnvironment):
-        error = _check_path_allowed(file_path)
-        if error:
-            raise PermissionError(error)
-        if not file_path.exists():
+        local_path = Path(file_path)
+        if not local_path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
     text = await environment.read_file(str(file_path))
@@ -469,17 +506,17 @@ async def _shell(
         raise PermissionError(blocked)
 
     # Security: validate working_dir is within allowed roots
-    cwd = working_dir or os.getcwd()
-    cwd_path = Path(cwd).expanduser().resolve()
-    path_error = _check_path_allowed(cwd_path)
+    environment = _env()
+    cwd_path = await _resolve_environment_working_dir(working_dir, environment)
+    path_error = _check_path_allowed(cwd_path, environment)
     if path_error:
         raise PermissionError(f"Shell working_dir outside allowed roots: {path_error}")
     filtered_env = _filter_env()
 
-    result = await _env().exec_shell(
+    result = await environment.exec_shell(
         command,
         timeout=effective_timeout,
-        working_dir=cwd,
+        working_dir=str(cwd_path),
         env=filtered_env,
     )
 
@@ -563,7 +600,12 @@ async def _grep(
     if not isinstance(environment, LocalEnvironment):
         import shlex
 
-        cmd = f"grep -rn -E {shlex.quote(pattern)} {shlex.quote(path)}"
+        search_path = await _resolve_environment_path(path, environment)
+        path_error = _check_path_allowed(search_path, environment)
+        if path_error:
+            raise PermissionError(path_error)
+
+        cmd = f"grep -rn -E {shlex.quote(pattern)} {shlex.quote(str(search_path))}"
         if include:
             cmd += f" --include={shlex.quote(include)}"
         cmd += f" | head -{max_results}"
@@ -579,10 +621,11 @@ async def _grep(
     # host filesystem for performance, bypassing ExecutionEnvironment.exec_shell.
     # The same is true for _glob() and _list_dir().  Path confinement via
     # _check_path_allowed() is enforced below as the security boundary.
-    search_path = Path(path).expanduser().resolve()
+    search_path_value = await _resolve_environment_path(path, environment)
+    search_path = Path(search_path_value)
 
     # Security: path confinement (mirrors _read_file / _list_dir)
-    path_error = _check_path_allowed(search_path)
+    path_error = _check_path_allowed(search_path, environment)
     if path_error:
         raise PermissionError(path_error)
 
@@ -684,7 +727,11 @@ async def _glob(
     """
     environment = _env()
     if not isinstance(environment, LocalEnvironment):
-        results = await environment.glob(pattern, path)
+        search_path = await _resolve_environment_path(path, environment)
+        path_error = _check_path_allowed(search_path, environment)
+        if path_error:
+            raise PermissionError(path_error)
+        results = await environment.glob(pattern, str(search_path))
         if not results:
             return f"No files matching '{pattern}' in {path}"
         output = "\n".join(results[:max_results])
@@ -693,7 +740,12 @@ async def _glob(
         return output
 
     # Local mode: fast host-side implementation
-    search_path = Path(path).expanduser().resolve()
+    search_path_value = await _resolve_environment_path(path, environment)
+    search_path = Path(search_path_value)
+
+    path_error = _check_path_allowed(search_path, environment)
+    if path_error:
+        raise PermissionError(path_error)
 
     if not search_path.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -761,12 +813,11 @@ async def _list_dir(path: str = ".", depth: int = 1) -> str:
         N = N levels deep (capped at 5)
     """
     depth = min(depth, 5)  # Cap to prevent enormous output
-    dir_path = Path(path).expanduser().resolve()
-
-    # Security: path confinement (skip for non-local -- container IS sandbox)
     environment = _env()
+    dir_path_value = await _resolve_environment_path(path, environment)
     if isinstance(environment, LocalEnvironment):
-        error = _check_path_allowed(dir_path)
+        dir_path = Path(dir_path_value)
+        error = _check_path_allowed(dir_path, environment)
         if error:
             return error
         if not dir_path.exists():
@@ -774,8 +825,11 @@ async def _list_dir(path: str = ".", depth: int = 1) -> str:
         if not dir_path.is_dir():
             return f"Error: Not a directory: {path}"
     else:
+        error = _check_path_allowed(dir_path_value, environment)
+        if error:
+            return error
         # Non-local: delegate to environment abstraction (flat listing only)
-        entries = await environment.list_dir(str(dir_path))
+        entries = await environment.list_dir(str(dir_path_value))
         if not entries:
             return f"{path}/\n  (empty)"
         formatted = "\n".join(f"  {e}" for e in entries)
@@ -841,21 +895,22 @@ async def _read_many_files(paths: list[str]) -> str:
         return "(no files requested)"
 
     parts: list[str] = []
+    environment = _env()
     for path in paths:
         header = f"=== file: {path} ==="
-        file_path = Path(path).expanduser().resolve()
+        file_path = await _resolve_environment_path(path, environment)
 
-        # Security + existence checks for local environments
-        environment = _env()
+        # Security + existence checks for the active environment
+        error = _check_path_allowed(file_path, environment)
+        if error:
+            parts.append(f"{header}\n{error}\n")
+            continue
         if isinstance(environment, LocalEnvironment):
-            error = _check_path_allowed(file_path)
-            if error:
-                parts.append(f"{header}\n{error}\n")
-                continue
-            if not file_path.exists():
+            local_path = Path(file_path)
+            if not local_path.exists():
                 parts.append(f"{header}\nError: File not found: {path}\n")
                 continue
-            if not file_path.is_file():
+            if not local_path.is_file():
                 parts.append(f"{header}\nError: Not a file: {path}\n")
                 continue
 
