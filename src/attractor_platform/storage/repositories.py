@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql import Select
 
 from attractor_platform.redaction import redact_mapping
 from attractor_platform.storage.db import session_scope
@@ -21,7 +22,17 @@ from attractor_platform.storage.models import (
 )
 
 
+def _select_run_for_append_lock(run_id: str) -> Select[tuple[RunRecordModel]]:
+    return select(RunRecordModel).where(RunRecordModel.id == run_id).with_for_update()
+
+
 class PlatformRepository:
+    """Repository methods return scalar-loaded ORM instances from committed transactions.
+
+    Callers should not rely on lazy relationships after a method returns because the
+    repository-owned session is already closed.
+    """
+
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
@@ -152,6 +163,9 @@ class PlatformRepository:
         timestamp: dt.datetime | None = None,
     ) -> RunEventModel:
         async with session_scope(self._session_factory) as session:
+            locked_run = await session.scalar(_select_run_for_append_lock(run_id))
+            if locked_run is None:
+                raise KeyError(f"Run not found: {run_id}")
             max_sequence = await session.scalar(
                 select(func.max(RunEventModel.sequence)).where(RunEventModel.run_id == run_id)
             )
@@ -318,37 +332,3 @@ class PlatformRepository:
             session.add(writeback)
             await session.flush()
             return writeback
-
-    async def create_minimal_run_for_test(self, run_id: str) -> RunRecordModel:
-        now = dt.datetime.now(dt.UTC)
-        repo_id = f"{run_id}_repo"
-        workflow_id = f"{run_id}_workflow"
-        await self.register_repo(
-            repo_id=repo_id,
-            name="test",
-            local_path=f"/tmp/{run_id}",
-            default_branch="main",
-            current_commit="0" * 40,
-            dirty_state="clean",
-            timestamp=now,
-        )
-        await self.upsert_workflow(
-            workflow_id=workflow_id,
-            repo_id=repo_id,
-            name="test",
-            dot_path=f"/tmp/{run_id}/workflow.dot",
-            toml_path=None,
-            status="valid",
-            diagnostics={},
-            timestamp=now,
-        )
-        return await self.create_run(
-            run_id=run_id,
-            repo_id=repo_id,
-            workflow_id=workflow_id,
-            run_spec={},
-            actor_label="",
-            source_commit="0" * 40,
-            source_branch="main",
-            timestamp=now,
-        )

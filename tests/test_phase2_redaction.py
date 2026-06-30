@@ -13,6 +13,18 @@ def test_redact_text_masks_common_secret_shapes() -> None:
     assert "normal=value" in redacted
 
 
+def test_redact_text_masks_colon_and_json_like_secret_shapes() -> None:
+    text = 'api_key: sk-secret token: abc123 "token": "json-secret" password: hunter2 normal=value'
+
+    redacted = redact_text(text)
+
+    assert "sk-secret" not in redacted
+    assert "abc123" not in redacted
+    assert "json-secret" not in redacted
+    assert "hunter2" not in redacted
+    assert "normal=value" in redacted
+
+
 def test_redact_mapping_recurses() -> None:
     payload = {
         "safe": "ok",

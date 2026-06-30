@@ -6,8 +6,16 @@ from typing import Any
 
 SECRET_KEY_FRAGMENTS = ("api_key", "apikey", "token", "secret", "password", "credential")
 SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b([a-z0-9_-]*(?:api[_-]?key|token|secret|password|credential)[a-z0-9_-]*)"
-    r"\s*=\s*([^\s]+)"
+    r"(?ix)"
+    r"(?P<prefix>"
+    r"(?P<key_quote>[\"']?)"
+    r"(?P<key>[a-z0-9_-]*(?:api[_-]?key|token|secret|password|credential)[a-z0-9_-]*)"
+    r"(?P=key_quote)"
+    r"\s*(?:=|:)\s*"
+    r")"
+    r"(?P<value_quote>[\"']?)"
+    r"(?P<value>[^\s,\"'}\]]+)"
+    r"(?P=value_quote)"
 )
 
 
@@ -17,7 +25,11 @@ def is_secret_key(key: str) -> bool:
 
 
 def redact_text(value: str) -> str:
-    return SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
+    return SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group('prefix')}{match.group('value_quote')}[REDACTED]"
+        f"{match.group('value_quote')}",
+        value,
+    )
 
 
 def redact_value(key: str, value: Any) -> Any:
