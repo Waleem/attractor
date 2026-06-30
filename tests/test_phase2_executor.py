@@ -361,7 +361,7 @@ async def test_failed_run_captures_runtime_artifacts_and_clears_active_task(
     assert executor._artifact_store.read_bytes(failure_artifact.uri) == b"failure trace"
 
 
-async def test_terminal_append_cancellation_does_not_hang_wait(
+async def test_terminal_append_cancellation_recovers_and_records_terminal_event(
     tmp_path: Path,
 ) -> None:
     repo_path = _init_repo_with_workflow(
@@ -435,6 +435,81 @@ async def test_terminal_append_cancellation_does_not_hang_wait(
     assert run.status == RunStatus.FAILED.value
     assert "pipeline.failed" in event_types
     assert "run.failed" in event_types
+    assert run_id not in executor.active_tasks
+
+
+async def test_terminal_append_cancellation_exhaustion_raises_without_terminal_result(
+    tmp_path: Path,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="writer", prompt="run"]
+          missing [shape=box, handler="nonexistent_handler", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> missing -> done
+        }
+        """,
+    )
+    executor, repository = _make_executor(tmp_path)
+
+    class _WritingHandler:
+        async def execute(self, node, context, graph, logs_root, abort_signal=None):
+            del node, context, graph, abort_signal
+            assert logs_root is not None
+            (logs_root / "failure.txt").write_text("failure trace", encoding="utf-8")
+            return HandlerResult(status=Outcome.SUCCESS, output="ok")
+
+    original_append_event = repository.append_event
+    terminal_append_attempts = 0
+
+    async def _always_cancelling_append_event(
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        actor_label: str = "",
+        timestamp: Any | None = None,
+    ) -> _FakeEvent:
+        nonlocal terminal_append_attempts
+        if event_type == "run.failed":
+            terminal_append_attempts += 1
+            raise asyncio.CancelledError("terminal event persistence cancelled")
+        return await original_append_event(
+            run_id,
+            event_type,
+            payload,
+            actor_label=actor_label,
+            timestamp=timestamp,
+        )
+
+    repository_any = cast(Any, repository)
+    repository_any.append_event = _always_cancelling_append_event
+    executor._handlers.register("writer", _WritingHandler())
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+
+    with pytest.raises(RuntimeError, match="terminal event persistence"):
+        await asyncio.wait_for(executor.wait(run_id), timeout=2.0)
+    with pytest.raises(RuntimeError, match="terminal event persistence"):
+        await executor.wait(run_id)
+
+    run = await repository.get_run(run_id)
+    event_types = [event.event_type for event in repository.events[run_id]]
+
+    assert run is not None
+    assert run.status == RunStatus.RUNNING.value
+    assert "pipeline.failed" in event_types
+    assert "run.failed" not in event_types
+    assert terminal_append_attempts >= 3
     assert run_id not in executor.active_tasks
 
 

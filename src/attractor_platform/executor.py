@@ -84,6 +84,7 @@ class DurableRunExecutor:
         self._handlers.register("noop", _NoopHandler())
         self.active_tasks: dict[str, asyncio.Task[PipelineResult]] = {}
         self._completed_results: dict[str, PipelineResult] = {}
+        self._completed_failures: dict[str, Exception] = {}
 
     @classmethod
     def for_tests(
@@ -166,10 +167,11 @@ class DurableRunExecutor:
         task = self.active_tasks.get(run_id)
         if task is not None:
             return await task
-        try:
+        if run_id in self._completed_results:
             return self._completed_results[run_id]
-        except KeyError as exc:
-            raise KeyError(f"Unknown run id: {run_id}") from exc
+        if run_id in self._completed_failures:
+            raise self._completed_failures[run_id]
+        raise KeyError(f"Unknown run id: {run_id}")
 
     async def _run_one(
         self,
@@ -554,7 +556,7 @@ class DurableRunExecutor:
             ),
             error_message=error_message if error_message is not None else result.error,
         )
-        self._completed_results[run_id] = result
+        self._store_completed_result(run_id, result)
         return result
 
     async def _close_event_writer(
@@ -584,6 +586,27 @@ class DurableRunExecutor:
             terminal_event_type = "run.failed"
             terminal_payload = {"error": result.error or "unknown"}
 
+        if terminal_event_type is not None and terminal_payload is not None:
+            last_cancellation: asyncio.CancelledError | None = None
+            for attempt in range(2):
+                try:
+                    await self.repository.append_event(
+                        run_id,
+                        terminal_event_type,
+                        terminal_payload,
+                        actor_label=run_spec.actor_label,
+                    )
+                    break
+                except asyncio.CancelledError as exc:
+                    last_cancellation = exc
+                    self._clear_current_task_cancellation()
+                    if attempt == 1:
+                        failure = RuntimeError(
+                            "terminal event persistence failed during terminal finalization"
+                        )
+                        self._store_completed_failure(run_id, failure)
+                        raise failure from last_cancellation
+
         await self._update_run_record(
             run_id,
             status=_run_status_for_result(result),
@@ -595,22 +618,7 @@ class DurableRunExecutor:
             ),
             error_message=error_message if error_message is not None else result.error,
         )
-        self._completed_results[run_id] = result
-
-        if terminal_event_type is not None and terminal_payload is not None:
-            for attempt in range(2):
-                try:
-                    await self.repository.append_event(
-                        run_id,
-                        terminal_event_type,
-                        terminal_payload,
-                        actor_label=run_spec.actor_label,
-                    )
-                    break
-                except asyncio.CancelledError:
-                    self._clear_current_task_cancellation()
-                    if attempt == 1:
-                        return result
+        self._store_completed_result(run_id, result)
 
         return result
 
@@ -643,14 +651,29 @@ class DurableRunExecutor:
                                     if fallback_task.done():
                                         if fallback_task.cancelled():
                                             break
-                                        return fallback_task.result()
-                        result = PipelineResult(
-                            status=PipelineStatus.FAILED,
-                            error="Terminal finalization cancelled",
+                                        try:
+                                            return fallback_task.result()
+                                        except Exception as exc:
+                                            self._store_completed_failure(run_id, exc)
+                                            raise
+                        failure = RuntimeError(
+                            "Terminal finalization cancelled before terminal event persisted"
                         )
-                        self._completed_results[run_id] = result
-                        return result
-                    return finalizer_task.result()
+                        self._store_completed_failure(run_id, failure)
+                        raise failure from None
+                    try:
+                        return finalizer_task.result()
+                    except Exception as exc:
+                        self._store_completed_failure(run_id, exc)
+                        raise
+
+    def _store_completed_result(self, run_id: str, result: PipelineResult) -> None:
+        self._completed_failures.pop(run_id, None)
+        self._completed_results[run_id] = result
+
+    def _store_completed_failure(self, run_id: str, exc: Exception) -> None:
+        self._completed_results.pop(run_id, None)
+        self._completed_failures[run_id] = exc
 
     def _clear_current_task_cancellation(self) -> None:
         current = asyncio.current_task()
