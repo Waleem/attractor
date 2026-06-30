@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextvars
 import fnmatch
 import os
+import posixpath
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -152,8 +153,10 @@ def _check_path_allowed(
         resolved: Path | PurePosixPath = Path(file_path).resolve()
         roots = tuple(get_allowed_roots())
     else:
-        resolved = PurePosixPath(str(file_path))
-        roots = tuple(PurePosixPath(str(root)) for root in get_allowed_roots())
+        resolved = _normalize_non_local_path(PurePosixPath(str(file_path)))
+        roots = tuple(
+            _normalize_non_local_path(PurePosixPath(str(root))) for root in get_allowed_roots()
+        )
 
     for root in roots:
         try:
@@ -163,6 +166,11 @@ def _check_path_allowed(
             continue
     roots_str = ", ".join(str(r) for r in roots)
     return f"Error: Path '{resolved}' is outside allowed directories. Allowed roots: {roots_str}"
+
+
+def _normalize_non_local_path(path: PurePosixPath) -> PurePosixPath:
+    """Normalize a container path lexically without touching the host filesystem."""
+    return PurePosixPath(posixpath.normpath(str(path)))
 
 
 async def _resolve_environment_path(
@@ -179,7 +187,7 @@ async def _resolve_environment_path(
     candidate = PurePosixPath(path)
     if not candidate.is_absolute():
         candidate = PurePosixPath(await environment.working_directory()) / candidate
-    return candidate
+    return _normalize_non_local_path(candidate)
 
 
 async def _resolve_environment_working_dir(

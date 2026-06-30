@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -124,6 +125,42 @@ async def test_non_local_environment_preserves_container_relative_paths() -> Non
         assert "hello" in await _read_file("note.txt")
         assert (await _shell("pwd")).strip() == "/workspace/run-1"
         assert environment.shell_working_dirs == ["/workspace/run-1"]
+    finally:
+        reset_allowed_roots(roots_token)
+        reset_environment(environment_token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed_roots", [["/workspace"], ["/workspace/run-1"]])
+async def test_non_local_environment_rejects_parent_traversal_for_file_paths(
+    allowed_roots: list[str | Path],
+) -> None:
+    environment = StubContainerEnvironment()
+    environment_token = set_environment(environment)
+    roots_token = set_allowed_roots(allowed_roots)
+    try:
+        with pytest.raises(PermissionError, match="outside allowed directories"):
+            await _write_file("../../etc/passwd", "x")
+
+        assert environment.writes == {}
+    finally:
+        reset_allowed_roots(roots_token)
+        reset_environment(environment_token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed_roots", [["/workspace"], ["/workspace/run-1"]])
+async def test_non_local_environment_rejects_parent_traversal_for_shell_working_dir(
+    allowed_roots: list[str | Path],
+) -> None:
+    environment = StubContainerEnvironment()
+    environment_token = set_environment(environment)
+    roots_token = set_allowed_roots(allowed_roots)
+    try:
+        with pytest.raises(PermissionError, match="Shell working_dir outside allowed roots"):
+            await _shell("pwd", working_dir="../../etc")
+
+        assert environment.shell_working_dirs == []
     finally:
         reset_allowed_roots(roots_token)
         reset_environment(environment_token)
