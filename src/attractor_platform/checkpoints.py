@@ -57,6 +57,7 @@ class GitCheckpointService:
             f"refs/attractor/runs/{safe_ref_part(run_id)}/checkpoints/"
             f"{stage_index:04d}-{safe_ref_part(node_id)}"
         )
+        self._validate_ref_name(path, ref_name)
         self._git.run(path, "update-ref", ref_name, commit_sha)
         return GitCheckpoint(
             run_id=run_id,
@@ -65,3 +66,9 @@ class GitCheckpointService:
             commit_sha=commit_sha,
             ref_name=ref_name,
         )
+
+    def _validate_ref_name(self, repo_path: Path, ref_name: str) -> None:
+        try:
+            self._git.run(repo_path, "check-ref-format", ref_name)
+        except RuntimeError as exc:
+            raise RuntimeError(f"invalid checkpoint ref name: {ref_name}") from exc
