@@ -698,7 +698,6 @@ class DurableRunExecutor:
         self._completed_results[run_id] = result
 
     def _store_completed_failure(self, run_id: str, exc: Exception) -> None:
-        self._clear_artifact_capture_state(run_id)
         self._completed_results.pop(run_id, None)
         self._completed_failures[run_id] = exc
 

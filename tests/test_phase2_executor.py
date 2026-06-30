@@ -581,7 +581,7 @@ async def test_terminal_artifact_persistence_failure_is_cached_for_repeated_wait
     repository_any.create_artifact = original_create_artifact
 
 
-async def test_terminal_artifact_retry_skips_already_persisted_artifacts(
+async def test_terminal_artifact_retry_via_finalization_skips_already_persisted_artifacts(
     tmp_path: Path,
 ) -> None:
     executor, repository = _make_executor(tmp_path)
@@ -619,8 +619,8 @@ async def test_terminal_artifact_retry_skips_already_persisted_artifacts(
 
     failed_result = PipelineResult(status=PipelineStatus.FAILED, error="boom")
 
-    with pytest.raises(RuntimeError, match="artifact boom"):
-        await executor._record_terminal_result(
+    async def _finalize_failed_result() -> PipelineResult:
+        return await executor._record_terminal_result(
             run_id=run_id,
             run_spec=cast(Any, SimpleNamespace(actor_label="tester")),
             prepared=None,
@@ -632,19 +632,23 @@ async def test_terminal_artifact_retry_skips_already_persisted_artifacts(
             error_message="boom",
         )
 
-    result = await executor._record_terminal_result(
+    with pytest.raises(RuntimeError, match="artifact boom"):
+        await executor._await_terminal_finalization(
+            run_id=run_id,
+            finalizer=_finalize_failed_result(),
+        )
+
+    with pytest.raises(RuntimeError, match="artifact boom"):
+        await executor.wait(run_id)
+
+    result = await executor._await_terminal_finalization(
         run_id=run_id,
-        run_spec=cast(Any, SimpleNamespace(actor_label="tester")),
-        prepared=None,
-        logs_root=logs_root,
-        result=failed_result,
-        terminal_event_type="run.failed",
-        terminal_payload={"error": "boom"},
-        error_category="RuntimeError",
-        error_message="boom",
+        finalizer=_finalize_failed_result(),
     )
+    second_wait = await executor.wait(run_id)
 
     assert result is failed_result
+    assert second_wait is failed_result
     assert artifact_attempts == ["alpha.txt", "beta.txt", "beta.txt"]
     assert [artifact.name for artifact in repository.artifacts[run_id]] == [
         "alpha.txt",
