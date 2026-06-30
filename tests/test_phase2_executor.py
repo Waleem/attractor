@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from attractor_pipeline.engine.runner import HandlerResult, Outcome, PipelineStatus
+from attractor_pipeline.engine.runner import HandlerResult, Outcome, PipelineResult, PipelineStatus
 from attractor_platform.checkpoints import GitCheckpoint
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import create_session_factory
@@ -579,6 +579,77 @@ async def test_terminal_artifact_persistence_failure_is_cached_for_repeated_wait
     assert run_id not in executor.active_tasks
 
     repository_any.create_artifact = original_create_artifact
+
+
+async def test_terminal_artifact_retry_skips_already_persisted_artifacts(
+    tmp_path: Path,
+) -> None:
+    executor, repository = _make_executor(tmp_path)
+    logs_root = tmp_path / "artifacts" / "_runtime" / "run_partial_artifacts"
+    logs_root.mkdir(parents=True)
+    (logs_root / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (logs_root / "beta.txt").write_text("beta", encoding="utf-8")
+
+    run_id = "run_partial_artifacts"
+    await repository.create_run(
+        run_id=run_id,
+        repo_id="repo_test",
+        workflow_id="wf_test",
+        run_spec={},
+        actor_label="tester",
+        source_commit="deadbeef",
+        source_branch="main",
+        timestamp=None,
+    )
+
+    original_create_artifact = repository.create_artifact
+    artifact_attempts: list[str] = []
+    fail_on_beta = True
+
+    async def _partially_failing_create_artifact(**kwargs: Any) -> _FakeArtifact:
+        nonlocal fail_on_beta
+        artifact_attempts.append(str(kwargs["name"]))
+        if fail_on_beta and kwargs["name"] == "beta.txt":
+            fail_on_beta = False
+            raise RuntimeError("artifact boom")
+        return await original_create_artifact(**kwargs)
+
+    repository_any = cast(Any, repository)
+    repository_any.create_artifact = _partially_failing_create_artifact
+
+    failed_result = PipelineResult(status=PipelineStatus.FAILED, error="boom")
+
+    with pytest.raises(RuntimeError, match="artifact boom"):
+        await executor._record_terminal_result(
+            run_id=run_id,
+            run_spec=cast(Any, SimpleNamespace(actor_label="tester")),
+            prepared=None,
+            logs_root=logs_root,
+            result=failed_result,
+            terminal_event_type="run.failed",
+            terminal_payload={"error": "boom"},
+            error_category="RuntimeError",
+            error_message="boom",
+        )
+
+    result = await executor._record_terminal_result(
+        run_id=run_id,
+        run_spec=cast(Any, SimpleNamespace(actor_label="tester")),
+        prepared=None,
+        logs_root=logs_root,
+        result=failed_result,
+        terminal_event_type="run.failed",
+        terminal_payload={"error": "boom"},
+        error_category="RuntimeError",
+        error_message="boom",
+    )
+
+    assert result is failed_result
+    assert artifact_attempts == ["alpha.txt", "beta.txt", "beta.txt"]
+    assert [artifact.name for artifact in repository.artifacts[run_id]] == [
+        "alpha.txt",
+        "beta.txt",
+    ]
 
 
 async def test_external_cancellation_reaches_terminal_cancelled_state(

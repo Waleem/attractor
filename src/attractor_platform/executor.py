@@ -85,7 +85,8 @@ class DurableRunExecutor:
         self.active_tasks: dict[str, asyncio.Task[PipelineResult]] = {}
         self._completed_results: dict[str, PipelineResult] = {}
         self._completed_failures: dict[str, Exception] = {}
-        self._captured_terminal_artifacts: set[str] = set()
+        self._captured_terminal_artifacts: set[tuple[str, str]] = set()
+        self._captured_terminal_artifact_files: dict[tuple[str, str], set[str]] = {}
 
     @classmethod
     def for_tests(
@@ -465,8 +466,13 @@ class DurableRunExecutor:
             last_sequence = event_record.sequence
 
     async def _capture_artifacts(self, run_id: str, logs_root: Path) -> None:
+        capture_key = _artifact_capture_key(run_id, logs_root)
+        captured_files = self._captured_terminal_artifact_files.setdefault(capture_key, set())
         for file_path in sorted(path for path in logs_root.rglob("*") if path.is_file()):
             relative_path = file_path.relative_to(logs_root)
+            relative_key = relative_path.as_posix()
+            if relative_key in captured_files:
+                continue
             kind, name = _artifact_identity(relative_path)
             stored = self._artifact_store.write_bytes(
                 run_id=run_id,
@@ -486,12 +492,14 @@ class DurableRunExecutor:
                 sha256=stored.sha256,
                 timestamp=dt.datetime.now(dt.UTC),
             )
+            captured_files.add(relative_key)
 
     async def _capture_artifacts_once(self, run_id: str, logs_root: Path) -> None:
-        if run_id in self._captured_terminal_artifacts or not logs_root.exists():
+        capture_key = _artifact_capture_key(run_id, logs_root)
+        if capture_key in self._captured_terminal_artifacts or not logs_root.exists():
             return
         await self._capture_artifacts(run_id, logs_root)
-        self._captured_terminal_artifacts.add(run_id)
+        self._captured_terminal_artifacts.add(capture_key)
 
     async def _update_run_record(
         self,
@@ -685,14 +693,22 @@ class DurableRunExecutor:
             raise
 
     def _store_completed_result(self, run_id: str, result: PipelineResult) -> None:
-        self._captured_terminal_artifacts.discard(run_id)
+        self._clear_artifact_capture_state(run_id)
         self._completed_failures.pop(run_id, None)
         self._completed_results[run_id] = result
 
     def _store_completed_failure(self, run_id: str, exc: Exception) -> None:
-        self._captured_terminal_artifacts.discard(run_id)
+        self._clear_artifact_capture_state(run_id)
         self._completed_results.pop(run_id, None)
         self._completed_failures[run_id] = exc
+
+    def _clear_artifact_capture_state(self, run_id: str) -> None:
+        capture_keys = [key for key in self._captured_terminal_artifacts if key[0] == run_id]
+        for capture_key in capture_keys:
+            self._captured_terminal_artifacts.discard(capture_key)
+        file_keys = [key for key in self._captured_terminal_artifact_files if key[0] == run_id]
+        for file_key in file_keys:
+            self._captured_terminal_artifact_files.pop(file_key, None)
 
     def _clear_current_task_cancellation(self) -> None:
         current = asyncio.current_task()
@@ -767,6 +783,10 @@ def _artifact_identity(relative_path: Path) -> tuple[str, str]:
     if len(relative_path.parts) == 1:
         return "run", relative_path.name
     return relative_path.parts[0], relative_path.name
+
+
+def _artifact_capture_key(run_id: str, logs_root: Path) -> tuple[str, str]:
+    return run_id, str(logs_root.resolve())
 
 
 def _media_type(path: Path) -> str:
