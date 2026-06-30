@@ -36,6 +36,12 @@ class GitCheckpointService:
         base_commit: str,
     ) -> GitCheckpoint:
         path = Path(worktree_path)
+        ref_name = (
+            f"refs/attractor/runs/{safe_ref_part(run_id)}/checkpoints/"
+            f"{stage_index:04d}-{safe_ref_part(node_id)}"
+        )
+        self._validate_ref_name(path, ref_name)
+
         self._git.run(path, "add", "-A")
 
         if self._git.status_porcelain(path):
@@ -53,11 +59,6 @@ class GitCheckpointService:
             self._git.run(path, "commit", "-m", subject, "-m", body)
 
         commit_sha = self._git.commit(path)
-        ref_name = (
-            f"refs/attractor/runs/{safe_ref_part(run_id)}/checkpoints/"
-            f"{stage_index:04d}-{safe_ref_part(node_id)}"
-        )
-        self._validate_ref_name(path, ref_name)
         self._git.run(path, "update-ref", ref_name, commit_sha)
         return GitCheckpoint(
             run_id=run_id,

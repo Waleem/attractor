@@ -78,3 +78,6 @@ def test_git_checkpoint_service_rejects_invalid_checkpoint_ref(
             event_sequence=7,
             base_commit=base_commit,
         )
+
+    head_after = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    assert head_after == base_commit
