@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import importlib
+
+PHASE2_MODULES = [
+    "attractor_platform.artifacts",
+    "attractor_platform.checkpoints",
+    "attractor_platform.executor",
+    "attractor_platform.git",
+    "attractor_platform.redaction",
+    "attractor_platform.run_environment",
+    "attractor_platform.storage.db",
+    "attractor_platform.storage.models",
+    "attractor_platform.storage.repositories",
+    "attractor_server.platform_app",
+    "attractor_server.platform_sse",
+]
+
 
 def test_phase2_modules_are_importable() -> None:
-    import attractor_platform.artifacts
-    import attractor_platform.checkpoints
-    import attractor_platform.executor
-    import attractor_platform.git
-    import attractor_platform.redaction
-    import attractor_platform.run_environment
-    import attractor_platform.storage.db
-    import attractor_platform.storage.models
-    import attractor_platform.storage.repositories
-    import attractor_server.platform_app
-    import attractor_server.platform_sse
+    for module_name in PHASE2_MODULES:
+        assert importlib.import_module(module_name)
