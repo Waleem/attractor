@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -639,15 +640,24 @@ async def register_repo(request: Request) -> JSONResponse:
 
     now = dt.datetime.now(dt.UTC)
     repo_id = _repo_identifier(repo_path)
-    repo = await services.repository.register_repo(
-        repo_id=repo_id,
-        name=name,
-        local_path=str(repo_path),
-        default_branch=metadata.branch,
-        current_commit=metadata.commit,
-        dirty_state=metadata.dirty_state.value,
-        timestamp=now,
-    )
+    register_repo_kwargs = {
+        "repo_id": repo_id,
+        "name": name,
+        "local_path": str(repo_path),
+        "default_branch": metadata.branch,
+        "current_commit": metadata.commit,
+        "dirty_state": metadata.dirty_state.value,
+        "timestamp": now,
+    }
+    register_repo_parameters = inspect.signature(
+        services.repository.register_repo,
+    ).parameters
+    if "project_config_status" in register_repo_parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in register_repo_parameters.values()
+    ):
+        register_repo_kwargs["project_config_status"] = "valid"
+    repo = await services.repository.register_repo(**register_repo_kwargs)
     for package in packages:
         await services.repository.upsert_workflow(
             workflow_id=_workflow_identifier(repo_id, package.name),

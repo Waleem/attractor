@@ -115,6 +115,7 @@ class _InMemoryPlatformRepository:
         current_commit: str,
         dirty_state: str,
         timestamp: dt.datetime,
+        project_config_status: str = "valid",
     ) -> _Repo:
         existing = self.repos.get(repo_id)
         repo = _Repo(
@@ -124,7 +125,7 @@ class _InMemoryPlatformRepository:
             default_branch=default_branch,
             current_commit=current_commit,
             dirty_state=dirty_state,
-            project_config_status="valid",
+            project_config_status=project_config_status,
             created_at=existing.created_at if existing is not None else timestamp,
             updated_at=timestamp,
             last_indexed_at=timestamp,
@@ -290,6 +291,30 @@ class _FakeExecutor:
         return run_id
 
 
+class _RepositoryStylePlatformRepository(_InMemoryPlatformRepository):
+    async def register_repo(
+        self,
+        repo_id: str,
+        name: str,
+        local_path: str,
+        default_branch: str,
+        current_commit: str,
+        dirty_state: str,
+        timestamp: dt.datetime,
+        project_config_status: str = "unknown",
+    ) -> _Repo:
+        return await super().register_repo(
+            repo_id=repo_id,
+            name=name,
+            local_path=local_path,
+            default_branch=default_branch,
+            current_commit=current_commit,
+            dirty_state=dirty_state,
+            timestamp=timestamp,
+            project_config_status=project_config_status,
+        )
+
+
 @dataclass
 class _Harness:
     client: httpx.AsyncClient
@@ -398,6 +423,27 @@ async def test_register_repo_and_list_workflows(
     assert repo_detail.json()["local_path"] == str(sample_repo.resolve())
     assert project_config.status_code == 200
     assert project_config.json()["config"]["default_environment"] == "local"
+
+
+async def test_register_repo_persists_project_config_status_with_repository_contract(
+    sample_repo: Path,
+) -> None:
+    repository = _RepositoryStylePlatformRepository()
+    executor = _FakeExecutor(repository)
+    app = create_platform_app(session_factory=cast(Any, None), executor=cast(Any, executor))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        repo = await _register_repo(client, sample_repo)
+        repo_id = repo["id"]
+
+        repos = await client.get("/api/repos")
+        repo_detail = await client.get(f"/api/repos/{repo_id}")
+
+    assert repo["project_config_status"] == "valid"
+    assert repos.status_code == 200
+    assert repos.json()["items"][0]["project_config_status"] == "valid"
+    assert repo_detail.status_code == 200
+    assert repo_detail.json()["project_config_status"] == "valid"
 
 
 async def test_launch_run_returns_durable_id(

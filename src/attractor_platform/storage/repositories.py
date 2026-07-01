@@ -45,6 +45,7 @@ class PlatformRepository:
         current_commit: str,
         dirty_state: str,
         timestamp: dt.datetime,
+        project_config_status: str = "unknown",
     ) -> RegisteredRepoModel:
         async with session_scope(self._session_factory) as session:
             repo = await session.get(RegisteredRepoModel, repo_id)
@@ -56,6 +57,7 @@ class PlatformRepository:
                     default_branch=default_branch,
                     current_commit=current_commit,
                     dirty_state=dirty_state,
+                    project_config_status=project_config_status,
                     created_at=timestamp,
                     updated_at=timestamp,
                     last_indexed_at=timestamp,
@@ -67,6 +69,7 @@ class PlatformRepository:
                 repo.default_branch = default_branch
                 repo.current_commit = current_commit
                 repo.dirty_state = dirty_state
+                repo.project_config_status = project_config_status
                 repo.updated_at = timestamp
                 repo.last_indexed_at = timestamp
             await session.flush()
