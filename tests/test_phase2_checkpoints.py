@@ -42,6 +42,10 @@ def test_git_checkpoint_service_creates_checkpoint_ref(tmp_path: Path) -> None:
         ["git", "rev-parse", checkpoint.ref_name], cwd=repo, text=True
     ).strip()
     assert ref_commit == checkpoint.commit_sha
+    checkpoint_file = subprocess.check_output(
+        ["git", "show", f"{checkpoint.commit_sha}:generated.txt"], cwd=repo, text=True
+    )
+    assert checkpoint_file == "generated\n"
 
 
 @pytest.mark.parametrize(
