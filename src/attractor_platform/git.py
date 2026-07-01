@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+QUALIFIED_REF = re.compile(r"(^|/)refs/(heads|tags|remotes|notes|replace|bisect)/")
 PROTECTED_BRANCHES = {"main", "master", "develop"}
 
 
@@ -81,6 +82,8 @@ class GitRunner:
     def _ensure_valid_branch_name(self, repo_path: Path, branch: str, *, label: str) -> None:
         if not branch or not SAFE_REF.match(branch):
             raise RuntimeError(f"unsafe {label} name")
+        if branch.startswith("refs/") or QUALIFIED_REF.search(branch):
+            raise RuntimeError(f"invalid {label} name: {branch!r}")
         result = subprocess.run(
             ["git", "check-ref-format", "--branch", branch],
             cwd=repo_path,

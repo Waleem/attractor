@@ -417,6 +417,29 @@ async def test_writeback_rejects_protected_main(
     assert harness.repository.writebacks[-1].status == "failed"
 
 
+async def test_writeback_rejects_qualified_target_ref_without_creating_nested_ref(
+    harness: _Harness,
+    git_scenario: _GitScenario,
+) -> None:
+    response = await harness.client.post(
+        "/api/runs/run_1/writeback",
+        json={"target_branch": "refs/heads/main", "actor_label": "alice"},
+    )
+
+    assert response.status_code == 409
+    assert "target branch" in response.json()["error"]
+    assert harness.repository.runs["run_1"].status == RunStatus.WRITEBACK_FAILED.value
+    assert harness.repository.writebacks[-1].status == "failed"
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/refs/heads/main"],
+            cwd=git_scenario.repo_path,
+            check=False,
+        ).returncode
+        == 1
+    )
+
+
 async def test_writeback_rejects_existing_target_without_overwrite(
     harness: _Harness,
     git_scenario: _GitScenario,
