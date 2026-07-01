@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime as dt
 import hashlib
 import uuid
@@ -37,6 +38,7 @@ from attractor_pipeline.engine.runner import (
 )
 from attractor_pipeline.graph import Graph, Node
 from attractor_pipeline.handlers import register_default_handlers
+from attractor_pipeline.handlers.human import Answer, HumanHandler, Question
 from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
 from attractor_platform.git import GitRunner, PreparedWorktree, WorktreeManager
@@ -44,7 +46,12 @@ from attractor_platform.packages import WorkflowPackage, load_workflow_package
 from attractor_platform.run_environment import WorktreeLocalRunEnvironment
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
-from attractor_platform.storage.models import ArtifactModel, RunRecordModel, RunStatus
+from attractor_platform.storage.models import (
+    ApprovalDecisionModel,
+    ArtifactModel,
+    RunRecordModel,
+    RunStatus,
+)
 from attractor_platform.storage.repositories import PlatformRepository
 
 _QUEUE_SENTINEL = object()
@@ -66,6 +73,19 @@ class _PersistedTerminalResult:
     error_message: str | None
 
 
+@dataclass(frozen=True)
+class _RunInterviewerContext:
+    run_id: str
+    actor_label: str
+
+
+@dataclass
+class _PendingApprovalWaiter:
+    run_id: str
+    approval_id: str
+    wake_event: asyncio.Event
+
+
 class _NoopHandler:
     async def execute(
         self,
@@ -77,6 +97,17 @@ class _NoopHandler:
     ) -> HandlerResult:
         del node, context, graph, logs_root, abort_signal
         return HandlerResult(status=Outcome.SUCCESS, output="noop")
+
+
+class _ServerRunInterviewer:
+    def __init__(self, executor: DurableRunExecutor) -> None:
+        self._executor = executor
+
+    async def ask(self, question: Question) -> Answer:
+        return await self._executor._request_human_approval(question)
+
+    async def ask_question(self, question: Question) -> Answer:
+        return await self.ask(question)
 
 
 class DurableRunExecutor:
@@ -98,6 +129,10 @@ class DurableRunExecutor:
         self._checkpoint_service = GitCheckpointService(self._git)
         self._handlers = HandlerRegistry()
         register_default_handlers(self._handlers)
+        self._handlers.register(
+            "wait.human",
+            cast(Any, HumanHandler(interviewer=_ServerRunInterviewer(self))),
+        )
         self._handlers.register("noop", _NoopHandler())
         self.active_tasks: dict[str, asyncio.Task[PipelineResult]] = {}
         self._completed_results: dict[str, PipelineResult] = {}
@@ -105,6 +140,10 @@ class DurableRunExecutor:
         self._captured_terminal_artifacts: set[tuple[str, str]] = set()
         self._captured_terminal_artifact_files: dict[tuple[str, str], set[str]] = {}
         self._persisted_terminal_results: dict[str, _PersistedTerminalResult] = {}
+        self._approval_waiters: dict[str, _PendingApprovalWaiter] = {}
+        self._run_interviewer_context: contextvars.ContextVar[_RunInterviewerContext | None] = (
+            contextvars.ContextVar("durable_run_interviewer_context", default=None)
+        )
 
     @classmethod
     def for_tests(
@@ -193,6 +232,13 @@ class DurableRunExecutor:
             raise self._completed_failures[run_id]
         raise KeyError(f"Unknown run id: {run_id}")
 
+    def notify_approval_decision(self, run_id: str, approval_id: str) -> bool:
+        waiter = self._approval_waiters.get(approval_id)
+        if waiter is None or waiter.run_id != run_id:
+            return False
+        waiter.wake_event.set()
+        return True
+
     async def _run_one(
         self,
         run_id: str,
@@ -265,14 +311,22 @@ class DurableRunExecutor:
                             raise RuntimeError("pipeline event writer failed") from exc
                     event_queue.put_nowait(event)
 
-                async with WorktreeLocalRunEnvironment(prepared).activate():
-                    result = await run_pipeline(
-                        graph,
-                        self._handlers,
-                        context=dict(run_spec.inputs),
-                        logs_root=logs_root,
-                        on_event=_on_event,
-                    )
+                run_context = _RunInterviewerContext(
+                    run_id=run_id,
+                    actor_label=run_spec.actor_label,
+                )
+                context_token = self._run_interviewer_context.set(run_context)
+                try:
+                    async with WorktreeLocalRunEnvironment(prepared).activate():
+                        result = await run_pipeline(
+                            graph,
+                            self._handlers,
+                            context=dict(run_spec.inputs),
+                            logs_root=logs_root,
+                            on_event=_on_event,
+                        )
+                finally:
+                    self._run_interviewer_context.reset(context_token)
             finally:
                 if not writer_closed:
                     await self._close_event_writer(event_queue, writer_task)
@@ -950,6 +1004,82 @@ class DurableRunExecutor:
             )
 
         return False
+
+    async def _request_human_approval(self, question: Question) -> Answer:
+        run_context = self._run_interviewer_context.get()
+        if run_context is None:
+            raise RuntimeError("Server-run interviewer requires an active run context")
+
+        approval_id = f"approval_{uuid.uuid4().hex}"
+        waiter = _PendingApprovalWaiter(
+            run_id=run_context.run_id,
+            approval_id=approval_id,
+            wake_event=asyncio.Event(),
+        )
+        self._approval_waiters[approval_id] = waiter
+        timestamp = dt.datetime.now(dt.UTC)
+
+        try:
+            await self.repository.create_approval(
+                approval_id=approval_id,
+                run_id=run_context.run_id,
+                node_id=question.stage or None,
+                question=question.text,
+                timestamp=timestamp,
+            )
+            await self.repository.append_event(
+                run_context.run_id,
+                "approval.requested",
+                {
+                    "approval_id": approval_id,
+                    "node_id": question.stage,
+                    "question": question.text,
+                    "status": "pending",
+                },
+                actor_label=run_context.actor_label,
+                timestamp=timestamp,
+            )
+            await self._update_run_record(
+                run_context.run_id,
+                status=RunStatus.WAITING_FOR_APPROVAL,
+            )
+            await waiter.wake_event.wait()
+            approval = await self._get_approval_decision(approval_id)
+            if approval is None or approval.status != "decided" or approval.answer is None:
+                raise RuntimeError(f"Approval decision missing for {approval_id}")
+            await self.repository.append_event(
+                run_context.run_id,
+                "approval.decided",
+                {
+                    "approval_id": approval.id,
+                    "node_id": approval.node_id or question.stage,
+                    "question": approval.question,
+                    "answer": approval.answer,
+                    "actor_label": approval.actor_label,
+                    "status": approval.status,
+                },
+                actor_label=approval.actor_label,
+            )
+            await self._update_run_record(
+                run_context.run_id,
+                status=RunStatus.RUNNING,
+            )
+            selected_option = (
+                approval.answer
+                if question.options is not None and approval.answer in question.options
+                else None
+            )
+            return Answer(
+                value=approval.answer,
+                selected_option=selected_option,
+                text=approval.answer,
+            )
+        finally:
+            self._approval_waiters.pop(approval_id, None)
+
+    async def _get_approval_decision(self, approval_id: str) -> ApprovalDecisionModel | None:
+        async with session_scope(self._session_factory) as session:
+            return await session.get(ApprovalDecisionModel, approval_id)
 
 
 def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
