@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import inspect
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from starlette.routing import Route
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
+from attractor_platform.git import GitRunner
 from attractor_platform.packages import (
     WorkflowPackage,
     discover_workflow_packages,
@@ -38,6 +40,7 @@ from attractor_platform.storage.models import (
     RunRecordModel,
     RunStatus,
     WorkflowPackageModel,
+    WriteBackModel,
 )
 from attractor_platform.storage.repositories import PlatformRepository
 from attractor_server.platform_sse import durable_run_event_stream, parse_sse_after_sequence
@@ -171,6 +174,21 @@ def _serialize_checkpoint(checkpoint: Any) -> dict[str, Any]:
         "commit_sha": checkpoint.commit_sha,
         "ref_name": checkpoint.ref_name,
         "created_at": _serialize_timestamp(getattr(checkpoint, "created_at", None)),
+    }
+
+
+def _serialize_writeback(writeback: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(writeback, "id", None),
+        "run_id": getattr(writeback, "run_id", None),
+        "source_branch": writeback.source_branch,
+        "target_branch": writeback.target_branch,
+        "actor_label": writeback.actor_label,
+        "status": writeback.status,
+        "commit_sha": writeback.commit_sha,
+        "error_message": writeback.error_message,
+        "created_at": _serialize_timestamp(getattr(writeback, "created_at", None)),
+        "applied_at": _serialize_timestamp(getattr(writeback, "applied_at", None)),
     }
 
 
@@ -961,6 +979,108 @@ async def cancel_run(request: Request) -> JSONResponse:
     return _json_error(f"Run {run_id} has no active executor task in this process", 409)
 
 
+def _executor_git_runner(executor: Any) -> GitRunner:
+    git = getattr(executor, "git", None)
+    if isinstance(git, GitRunner):
+        return git
+    private_git = getattr(executor, "_git", None)
+    if isinstance(private_git, GitRunner):
+        return private_git
+    return GitRunner()
+
+
+def _run_source_commit(run: Any) -> str | None:
+    run_spec = getattr(run, "run_spec", None)
+    if isinstance(run_spec, dict):
+        source_commit = run_spec.get("source_commit")
+        if isinstance(source_commit, str) and source_commit:
+            return source_commit
+    source_commit = getattr(run, "source_commit", None)
+    return source_commit if isinstance(source_commit, str) and source_commit else None
+
+
+async def _persist_writeback_result(
+    services: _PlatformServices,
+    *,
+    run: Any,
+    target_branch: str,
+    actor_label: str,
+    status: str,
+    commit_sha: str | None,
+    error_message: str | None,
+    timestamp: dt.datetime,
+) -> Any:
+    source_branch = getattr(run, "managed_branch", None) or ""
+    writeback = await services.repository.create_writeback(
+        writeback_id=f"wb_{uuid.uuid4().hex}",
+        run_id=run.id,
+        source_branch=source_branch,
+        target_branch=target_branch,
+        actor_label=actor_label,
+        status=status,
+        commit_sha=commit_sha,
+        error_message=error_message,
+        timestamp=timestamp,
+    )
+    if isinstance(writeback, WriteBackModel) and status == "applied":
+        writeback.applied_at = timestamp
+    event_type = "writeback.applied" if status == "applied" else "writeback.failed"
+    await services.repository.append_event(
+        run_id=run.id,
+        event_type=event_type,
+        payload={
+            "source_branch": source_branch,
+            "target_branch": target_branch,
+            "commit_sha": commit_sha,
+            "error_message": error_message,
+        },
+        actor_label=actor_label,
+        timestamp=timestamp,
+    )
+    await services.repository.update_run_status(
+        run.id,
+        RunStatus.WRITEBACK_APPLIED if status == "applied" else RunStatus.WRITEBACK_FAILED,
+        error_category=None if status == "applied" else "writeback_failed",
+        error_message=error_message if status != "applied" else None,
+    )
+    return writeback
+
+
+async def _record_writeback_failure(
+    services: _PlatformServices,
+    *,
+    run: Any,
+    target_branch: str,
+    actor_label: str,
+    error_message: str,
+) -> JSONResponse:
+    try:
+        await _persist_writeback_result(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            status="failed",
+            commit_sha=None,
+            error_message=error_message,
+            timestamp=dt.datetime.now(dt.UTC),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(
+            f"Write-back failed and failure persistence also failed: {exc}",
+            500,
+        )
+    return JSONResponse(
+        {
+            "error": error_message,
+            "run_id": run.id,
+            "target_branch": target_branch,
+            "status": "failed",
+        },
+        status_code=409,
+    )
+
+
 async def request_writeback(request: Request) -> JSONResponse:
     services = _services(request)
     run_id = request.path_params["run_id"]
@@ -976,16 +1096,88 @@ async def request_writeback(request: Request) -> JSONResponse:
     actor_label = body.get("actor_label")
     if not isinstance(actor_label, str) or not actor_label:
         return _json_error("Missing 'actor_label' field", 400)
+    target_branch = body.get("target_branch")
+    if not isinstance(target_branch, str) or not target_branch:
+        return _json_error("Missing 'target_branch' field", 400)
+    overwrite = body.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        return _json_error("'overwrite' must be a boolean", 400)
+    allow_protected = body.get("allow_protected", False)
+    if not isinstance(allow_protected, bool):
+        return _json_error("'allow_protected' must be a boolean", 400)
 
-    return JSONResponse(
-        {
-            "error": "Write-back promotion is not implemented until Task 12",
-            "run_id": run_id,
-            "actor_label": actor_label,
-            "status": "not_implemented",
-        },
-        status_code=501,
-    )
+    repo = await _get_repo(services, run.repo_id)
+    if repo is None:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message=f"Registered repo {run.repo_id} is missing",
+        )
+    worktree_path = getattr(run, "worktree_path", None)
+    if not isinstance(worktree_path, str) or not worktree_path:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message="Managed worktree path is missing",
+        )
+    managed_branch = getattr(run, "managed_branch", None)
+    if not isinstance(managed_branch, str) or not managed_branch:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message="Managed branch is missing",
+        )
+    source_commit = _run_source_commit(run)
+    if source_commit is None:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message="RunSpec.source_commit is missing",
+        )
+
+    try:
+        commit_sha = _executor_git_runner(services.executor).promote_branch(
+            repo.local_path,
+            worktree_path=worktree_path,
+            managed_branch=managed_branch,
+            source_commit=source_commit,
+            target_branch=target_branch,
+            overwrite=overwrite,
+            allow_protected=allow_protected,
+        )
+    except RuntimeError as exc:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message=str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(f"Unexpected write-back failure: {exc}", 500)
+
+    try:
+        writeback = await _persist_writeback_result(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            status="applied",
+            commit_sha=commit_sha,
+            error_message=None,
+            timestamp=dt.datetime.now(dt.UTC),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(f"Write-back applied but persistence failed: {exc}", 500)
+    return JSONResponse(_serialize_writeback(writeback))
 
 
 async def system_health(request: Request) -> JSONResponse:

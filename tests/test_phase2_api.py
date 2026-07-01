@@ -558,7 +558,7 @@ async def test_cancel_writeback_and_capacity_surfaces(
     assert missing_cancel.status_code == 404
     assert missing_writeback.status_code == 404
     assert writeback_missing_actor.status_code == 400
-    assert writeback.status_code == 501
-    assert "Task 12" in writeback.json()["error"]
+    assert writeback.status_code == 400
+    assert "target_branch" in writeback.json()["error"]
     assert capacity.status_code == 200
     assert capacity.json()["active_runs"] == 0
