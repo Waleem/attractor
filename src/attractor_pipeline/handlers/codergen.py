@@ -61,7 +61,7 @@ class CodergenHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         # Build prompt from node's prompt attribute + goal
         prompt = self._expand_prompt(node, context, graph)

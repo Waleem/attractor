@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 
 import uvicorn
 
@@ -37,7 +38,62 @@ def main() -> None:
         default=None,
         help="Default LLM model",
     )
+    parser.add_argument(
+        "--platform",
+        action="store_true",
+        help="Run the Phase 2 operations platform API instead of the legacy pipeline API",
+    )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("ATTRACTOR_DATABASE_URL"),
+        help="Platform database URL (defaults to ATTRACTOR_DATABASE_URL or local SQLite)",
+    )
+    parser.add_argument(
+        "--worktree-root",
+        default=os.environ.get("ATTRACTOR_WORKTREE_ROOT", ".attractor-worktrees"),
+        help="Platform managed worktree root",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        default=os.environ.get("ATTRACTOR_ARTIFACT_ROOT", ".attractor-artifacts"),
+        help="Platform artifact root",
+    )
     args = parser.parse_args()
+
+    if args.platform:
+        from attractor_platform.executor import DurableRunExecutor
+        from attractor_platform.storage.db import (
+            DatabaseSettings,
+            create_platform_engine,
+            create_session_factory,
+        )
+        from attractor_server.platform_app import create_platform_app
+
+        engine = create_platform_engine(
+            DatabaseSettings(url=args.database_url)
+            if args.database_url
+            else DatabaseSettings.from_env()
+        )
+        session_factory = create_session_factory(engine)
+        executor = DurableRunExecutor(
+            session_factory=session_factory,
+            worktree_root=Path(args.worktree_root),
+            artifact_root=Path(args.artifact_root),
+        )
+        app = create_platform_app(session_factory=session_factory, executor=executor)
+
+        print(f"Attractor platform server starting on http://{args.host}:{args.port}")
+        print()
+        print("Endpoints:")
+        print(f"  POST http://{args.host}:{args.port}/api/repos")
+        print(f"  GET  http://{args.host}:{args.port}/api/repos")
+        print(f"  POST http://{args.host}:{args.port}/api/runs")
+        print(f"  GET  http://{args.host}:{args.port}/api/runs")
+        print(f"  GET  http://{args.host}:{args.port}/api/system/health")
+        print()
+
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        return
 
     # Create manager with configured handlers
     manager = PipelineManager(max_concurrent=args.max_concurrent)

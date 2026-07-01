@@ -9,13 +9,10 @@ from __future__ import annotations
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeVar
 
 import anyio
 
 from .errors import RateLimitError, SDKError
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -47,7 +44,7 @@ class RetryPolicy:
 OnRetryCallback = Callable[[int, SDKError, float], Awaitable[None] | None]
 
 
-async def retry_with_policy(
+async def retry_with_policy[T](
     fn: Callable[[], Awaitable[T]],
     policy: RetryPolicy,
     on_retry: OnRetryCallback | None = None,

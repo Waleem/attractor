@@ -96,7 +96,7 @@ class ParallelHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         """Execute parallel branches for all outgoing edges."""
         if self._handlers is None:
@@ -294,7 +294,7 @@ class ParallelHandler:
         parent_context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
         emitter: EventEmitter | None = None,
     ) -> BranchResult:
         """Run a single parallel branch."""
@@ -385,7 +385,7 @@ class FanInHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         """Collect and evaluate parallel branch results."""
         # Find branch results in context (set by ParallelHandler).

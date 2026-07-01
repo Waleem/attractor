@@ -54,7 +54,12 @@ class TestShellTimeoutClamping:
     async def test_timeout_clamped_to_max(self) -> None:
         """When timeout exceeds max_command_timeout, it is clamped."""
         from attractor_agent.tools import core
-        from attractor_agent.tools.core import _shell, set_max_command_timeout
+        from attractor_agent.tools.core import (
+            _shell,
+            reset_environment,
+            set_environment,
+            set_max_command_timeout,
+        )
 
         original = core._max_command_timeout_s
 
@@ -64,15 +69,17 @@ class TestShellTimeoutClamping:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=".")
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
         try:
             set_max_command_timeout(60_000)  # 60 seconds max
-            with (
-                patch("attractor_agent.tools.core._environment", mock_env),
-                patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-            ):
-                await _shell("echo hi", timeout=120)  # 120s > 60s max
+            environment_token = set_environment(mock_env)
+            try:
+                with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                    await _shell("echo hi", timeout=120)  # 120s > 60s max
+            finally:
+                reset_environment(environment_token)
 
             call_kwargs = mock_env.exec_shell.call_args
             assert call_kwargs[1]["timeout"] == 60  # clamped to 60
@@ -83,7 +90,12 @@ class TestShellTimeoutClamping:
     async def test_timeout_ms_clamped_to_max(self) -> None:
         """timeout_ms is also clamped after conversion."""
         from attractor_agent.tools import core
-        from attractor_agent.tools.core import _shell, set_max_command_timeout
+        from attractor_agent.tools.core import (
+            _shell,
+            reset_environment,
+            set_environment,
+            set_max_command_timeout,
+        )
 
         original = core._max_command_timeout_s
 
@@ -93,15 +105,17 @@ class TestShellTimeoutClamping:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=".")
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
         try:
             set_max_command_timeout(30_000)  # 30 seconds max
-            with (
-                patch("attractor_agent.tools.core._environment", mock_env),
-                patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-            ):
-                await _shell("echo hi", timeout_ms=120_000)  # 120s > 30s max
+            environment_token = set_environment(mock_env)
+            try:
+                with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                    await _shell("echo hi", timeout_ms=120_000)  # 120s > 30s max
+            finally:
+                reset_environment(environment_token)
 
             call_kwargs = mock_env.exec_shell.call_args
             assert call_kwargs[1]["timeout"] == 30  # clamped to 30
@@ -111,7 +125,7 @@ class TestShellTimeoutClamping:
     @pytest.mark.asyncio
     async def test_timeout_below_max_unchanged(self) -> None:
         """Timeouts below the max are not affected by clamping."""
-        from attractor_agent.tools.core import _shell
+        from attractor_agent.tools.core import _shell, reset_environment, set_environment
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -119,13 +133,15 @@ class TestShellTimeoutClamping:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=".")
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
-        with (
-            patch("attractor_agent.tools.core._environment", mock_env),
-            patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-        ):
-            await _shell("echo hi", timeout=30)  # well under 600s default
+        environment_token = set_environment(mock_env)
+        try:
+            with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                await _shell("echo hi", timeout=30)  # well under 600s default
+        finally:
+            reset_environment(environment_token)
 
         call_kwargs = mock_env.exec_shell.call_args
         assert call_kwargs[1]["timeout"] == 30

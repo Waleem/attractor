@@ -33,7 +33,7 @@ class StartHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         return HandlerResult(
             status=Outcome.SUCCESS,
@@ -54,7 +54,7 @@ class ExitHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         return HandlerResult(
             status=Outcome.SUCCESS,
@@ -80,7 +80,7 @@ class ConditionalHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         # Return as context_updates — spec §3.3 step 4: engine owns context mutation.
         updates: dict[str, Any] = {}
@@ -111,7 +111,7 @@ class ToolHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         # Read command: spec §4.10 uses "tool_command" attribute; "command" and "prompt"
         # are accepted as fallbacks for backward compatibility.

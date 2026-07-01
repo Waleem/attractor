@@ -76,7 +76,7 @@ class ManagerHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         """Run the supervisor loop."""
         if self._child_handlers is None:

@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import anyio
 
@@ -875,9 +875,9 @@ async def run_pipeline(
                 completed_nodes,
             )
             if action == "fail":
-                return _emit_terminal(payload)  # type: ignore[arg-type]
+                return _emit_terminal(cast(PipelineResult, payload))
             if action == "redirect":
-                current_node = payload  # type: ignore[assignment]
+                current_node = cast(Node, payload)
                 continue
             # action == "no_retry_target": intentional fall-through to normal
             # edge selection. The gate failed but no retry_target is configured,
@@ -896,9 +896,9 @@ async def run_pipeline(
                 start_time,
             )
             if agg_action == "fail":
-                return _emit_terminal(agg_payload)  # type: ignore[arg-type]
+                return _emit_terminal(cast(PipelineResult, agg_payload))
             if agg_action == "redirect":
-                current_node = agg_payload  # type: ignore[assignment]
+                current_node = cast(Node, agg_payload)
                 continue
             if agg_action == "no_retry_target":
                 return _emit_terminal(
@@ -924,9 +924,9 @@ async def run_pipeline(
                     completed_nodes,
                 )
                 if action == "fail":
-                    return _emit_terminal(payload)  # type: ignore[arg-type]
+                    return _emit_terminal(cast(PipelineResult, payload))
                 if action == "redirect":
-                    current_node = payload  # type: ignore[assignment]
+                    current_node = cast(Node, payload)
                     continue
                 if action == "no_retry_target":
                     # Exit node with no retry target: pipeline fails

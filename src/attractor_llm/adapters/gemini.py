@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from attractor_llm.errors import InvalidRequestError, classify_http_error
+from attractor_llm.errors import InvalidRequestError, ProviderError, classify_http_error
 from attractor_llm.types import (
     ContentPart,
     ContentPartKind,
@@ -423,7 +423,14 @@ class GeminiAdapter:
         body = self._translate_request(request)
         url = self._endpoint(request.model)
 
-        http_response = await self._client.post(url, json=body)
+        try:
+            http_response = await self._client.post(url, json=body)
+        except httpx.RequestError as exc:
+            raise ProviderError(
+                f"Gemini request failed: {exc}",
+                provider="gemini",
+                retryable=True,
+            ) from exc
 
         if http_response.status_code != 200:
             headers_dict = dict(http_response.headers)

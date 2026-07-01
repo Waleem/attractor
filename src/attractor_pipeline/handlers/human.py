@@ -254,7 +254,7 @@ class HumanHandler:
         context: dict[str, Any],
         graph: Graph,
         logs_root: Path | None,
-        abort_signal: AbortSignal | None,
+        abort_signal: AbortSignal | None = None,
     ) -> HandlerResult:
         # Build question text from node's prompt/label
         question_text = node.prompt or node.label or f"Approve '{node.id}'?"
