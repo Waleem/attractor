@@ -84,6 +84,7 @@ class _PendingApprovalWaiter:
     run_id: str
     approval_id: str
     wake_event: asyncio.Event
+    allowed_options: tuple[str, ...] | None = None
 
 
 class _NoopHandler:
@@ -233,10 +234,29 @@ class DurableRunExecutor:
         raise KeyError(f"Unknown run id: {run_id}")
 
     def notify_approval_decision(self, run_id: str, approval_id: str) -> bool:
-        waiter = self._approval_waiters.get(approval_id)
-        if waiter is None or waiter.run_id != run_id:
+        waiter = self.get_waiting_approval(run_id, approval_id)
+        if waiter is None:
             return False
         waiter.wake_event.set()
+        return True
+
+    def get_waiting_approval(
+        self,
+        run_id: str,
+        approval_id: str,
+    ) -> _PendingApprovalWaiter | None:
+        waiter = self._approval_waiters.get(approval_id)
+        if waiter is None or waiter.run_id != run_id or waiter.wake_event.is_set():
+            return None
+        return waiter
+
+    def resume_waiting_approval(self, waiter: _PendingApprovalWaiter) -> bool:
+        current = self._approval_waiters.get(waiter.approval_id)
+        if current is None:
+            return False
+        if current is not waiter or current.run_id != waiter.run_id or current.wake_event.is_set():
+            return False
+        current.wake_event.set()
         return True
 
     async def _run_one(
@@ -502,6 +522,13 @@ class DurableRunExecutor:
             if isinstance(event, (StageStarted, StageCompleted, StageFailed, StageRetrying)):
                 stage_indices[event.name] = event.index
 
+            new_events = await self.repository.list_events(
+                run_id,
+                after_sequence=last_sequence,
+                limit=100,
+            )
+            if new_events:
+                last_sequence = new_events[-1].sequence
             expected_sequence = last_sequence + 1
 
             if isinstance(event, CheckpointSaved):
@@ -531,10 +558,8 @@ class DurableRunExecutor:
                 payload=payload,
                 actor_label=actor_label,
             )
-            if event_record.sequence != expected_sequence:
-                raise RuntimeError(
-                    "event sequence advanced unexpectedly during checkpoint persistence"
-                )
+            if event_record.sequence < expected_sequence:
+                raise RuntimeError("event sequence regressed during pipeline event persistence")
             last_sequence = event_record.sequence
 
     async def _capture_artifacts(self, run_id: str, logs_root: Path) -> None:
@@ -1015,6 +1040,7 @@ class DurableRunExecutor:
             run_id=run_context.run_id,
             approval_id=approval_id,
             wake_event=asyncio.Event(),
+            allowed_options=tuple(question.options) if question.options is not None else None,
         )
         self._approval_waiters[approval_id] = waiter
         timestamp = dt.datetime.now(dt.UTC)
