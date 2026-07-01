@@ -96,7 +96,12 @@ class GitRunner:
 
     def _resolve_branch_commit(self, repo_path: Path, branch: str) -> str:
         try:
-            return self.run(repo_path, "rev-parse", "--verify", f"{branch}^{{commit}}").stdout
+            return self.run(
+                repo_path,
+                "rev-parse",
+                "--verify",
+                f"refs/heads/{branch}^{{commit}}",
+            ).stdout
         except RuntimeError as exc:
             raise RuntimeError(
                 f"managed branch {branch!r} is missing or cannot be resolved"

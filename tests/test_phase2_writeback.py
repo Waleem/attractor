@@ -314,6 +314,33 @@ async def test_writeback_rejects_existing_target_without_overwrite(
     )
 
 
+async def test_writeback_rejects_missing_managed_branch_even_when_tag_matches(
+    harness: _Harness,
+    git_scenario: _GitScenario,
+) -> None:
+    _git(git_scenario.worktree_path, "checkout", "--detach", git_scenario.managed_commit)
+    _git(git_scenario.repo_path, "branch", "-D", git_scenario.managed_branch)
+    _git(git_scenario.repo_path, "tag", git_scenario.managed_branch, git_scenario.managed_commit)
+
+    response = await harness.client.post(
+        "/api/runs/run_1/writeback",
+        json={"target_branch": "feature/promoted", "actor_label": "alice"},
+    )
+
+    assert response.status_code == 409
+    assert "managed branch" in response.json()["error"]
+    assert harness.repository.runs["run_1"].status == RunStatus.WRITEBACK_FAILED.value
+    assert harness.repository.writebacks[-1].status == "failed"
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/feature/promoted"],
+            cwd=git_scenario.repo_path,
+            check=False,
+        ).returncode
+        == 1
+    )
+
+
 async def test_writeback_overwrite_updates_existing_target(
     harness: _Harness,
     git_scenario: _GitScenario,
