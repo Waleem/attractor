@@ -62,6 +62,7 @@ def main() -> None:
 
     if args.platform:
         from attractor_platform.executor import DurableRunExecutor
+        from attractor_platform.llm_backend import build_platform_codergen_backend
         from attractor_platform.storage.db import (
             DatabaseSettings,
             create_platform_engine,
@@ -75,10 +76,15 @@ def main() -> None:
             else DatabaseSettings.from_env()
         )
         session_factory = create_session_factory(engine)
+        codergen_backend = build_platform_codergen_backend(
+            default_provider=args.provider,
+            default_model=args.model,
+        )
         executor = DurableRunExecutor(
             session_factory=session_factory,
             worktree_root=Path(args.worktree_root),
             artifact_root=Path(args.artifact_root),
+            codergen_backend=codergen_backend,
         )
         app = create_platform_app(
             session_factory=session_factory,

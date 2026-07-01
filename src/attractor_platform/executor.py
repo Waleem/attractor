@@ -38,7 +38,7 @@ from attractor_pipeline.engine.runner import (
     run_pipeline,
 )
 from attractor_pipeline.graph import Graph, Node
-from attractor_pipeline.handlers import register_default_handlers
+from attractor_pipeline.handlers import CodergenBackend, register_default_handlers
 from attractor_pipeline.handlers.human import Answer, HumanHandler, Question
 from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
@@ -120,6 +120,7 @@ class DurableRunExecutor:
         worktree_root: str | Path,
         artifact_root: str | Path,
         git: GitRunner | None = None,
+        codergen_backend: CodergenBackend | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.repository = PlatformRepository(session_factory)
@@ -130,7 +131,7 @@ class DurableRunExecutor:
         self._artifact_store = FileSystemArtifactStore(self._artifact_root)
         self._checkpoint_service = GitCheckpointService(self._git)
         self._handlers = HandlerRegistry()
-        register_default_handlers(self._handlers)
+        register_default_handlers(self._handlers, codergen_backend=codergen_backend)
         self._handlers.register(
             "wait.human",
             cast(Any, HumanHandler(interviewer=_ServerRunInterviewer(self))),
@@ -154,11 +155,13 @@ class DurableRunExecutor:
         session_factory: async_sessionmaker[AsyncSession],
         worktree_root: str | Path,
         artifact_root: str | Path,
+        codergen_backend: CodergenBackend | None = None,
     ) -> DurableRunExecutor:
         return cls(
             session_factory=session_factory,
             worktree_root=worktree_root,
             artifact_root=artifact_root,
+            codergen_backend=codergen_backend,
         )
 
     async def register_and_launch(
