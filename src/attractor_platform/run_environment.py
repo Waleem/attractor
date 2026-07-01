@@ -12,6 +12,7 @@ from attractor_agent.tools.core import (
     set_environment,
 )
 from attractor_platform.git import PreparedWorktree
+from attractor_platform.runspec import RunEnvironmentRequest
 
 
 class RunEnvironment(Protocol):
@@ -58,3 +59,16 @@ class DockerRunEnvironment:
             finally:
                 reset_allowed_roots(roots_token)
                 reset_environment(environment_token)
+
+
+def select_run_environment(
+    request: RunEnvironmentRequest,
+    prepared_worktree: PreparedWorktree | None,
+) -> RunEnvironment:
+    if request.mode == "local":
+        if prepared_worktree is None:
+            raise ValueError("local run environments require a prepared worktree")
+        return WorktreeLocalRunEnvironment(prepared_worktree)
+    if request.mode == "docker":
+        return DockerRunEnvironment(image=request.image or "python:3.12-slim")
+    raise ValueError("remote run environments are not implemented in Phase 2")

@@ -44,7 +44,7 @@ from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
 from attractor_platform.git import GitRunner, PreparedWorktree, WorktreeManager
 from attractor_platform.packages import WorkflowPackage, load_workflow_package
-from attractor_platform.run_environment import WorktreeLocalRunEnvironment
+from attractor_platform.run_environment import select_run_environment
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
 from attractor_platform.storage.models import (
@@ -341,7 +341,11 @@ class DurableRunExecutor:
                 )
                 context_token = self._run_interviewer_context.set(run_context)
                 try:
-                    async with WorktreeLocalRunEnvironment(prepared).activate():
+                    run_environment = select_run_environment(
+                        run_spec.effective_environment,
+                        prepared,
+                    )
+                    async with run_environment.activate():
                         result = await run_pipeline(
                             graph,
                             self._handlers,
