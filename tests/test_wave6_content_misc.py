@@ -264,7 +264,7 @@ class TestShellTimeoutMs:
         """When timeout_ms is provided, it overrides timeout."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from attractor_agent.tools.core import _shell
+        from attractor_agent.tools.core import _shell, reset_environment, set_environment
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -272,13 +272,15 @@ class TestShellTimeoutMs:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=os.getcwd())
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
-        with (
-            patch("attractor_agent.tools.core._environment", mock_env),
-            patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-        ):
-            await _shell("echo hi", timeout=999, timeout_ms=5000)
+        environment_token = set_environment(mock_env)
+        try:
+            with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                await _shell("echo hi", timeout=999, timeout_ms=5000)
+        finally:
+            reset_environment(environment_token)
 
         # timeout_ms=5000 -> 5 seconds should be passed
         call_kwargs = mock_env.exec_shell.call_args
@@ -289,7 +291,7 @@ class TestShellTimeoutMs:
         """Sub-second timeout_ms values round up to at least 1s."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from attractor_agent.tools.core import _shell
+        from attractor_agent.tools.core import _shell, reset_environment, set_environment
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -297,13 +299,15 @@ class TestShellTimeoutMs:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=os.getcwd())
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
-        with (
-            patch("attractor_agent.tools.core._environment", mock_env),
-            patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-        ):
-            await _shell("echo hi", timeout_ms=500)
+        environment_token = set_environment(mock_env)
+        try:
+            with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                await _shell("echo hi", timeout_ms=500)
+        finally:
+            reset_environment(environment_token)
 
         call_kwargs = mock_env.exec_shell.call_args
         assert call_kwargs[1]["timeout"] == 1  # ceiling(500/1000) = 1
@@ -313,7 +317,7 @@ class TestShellTimeoutMs:
         """When timeout_ms is not provided, timeout (seconds) is used as-is."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from attractor_agent.tools.core import _shell
+        from attractor_agent.tools.core import _shell, reset_environment, set_environment
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -321,13 +325,15 @@ class TestShellTimeoutMs:
         mock_result.stderr = ""
 
         mock_env = MagicMock()
+        mock_env.working_directory = AsyncMock(return_value=os.getcwd())
         mock_env.exec_shell = AsyncMock(return_value=mock_result)
 
-        with (
-            patch("attractor_agent.tools.core._environment", mock_env),
-            patch("attractor_agent.tools.core._check_path_allowed", return_value=None),
-        ):
-            await _shell("echo hi", timeout=30)
+        environment_token = set_environment(mock_env)
+        try:
+            with patch("attractor_agent.tools.core._check_path_allowed", return_value=None):
+                await _shell("echo hi", timeout=30)
+        finally:
+            reset_environment(environment_token)
 
         call_kwargs = mock_env.exec_shell.call_args
         assert call_kwargs[1]["timeout"] == 30
