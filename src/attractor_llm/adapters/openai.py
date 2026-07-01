@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from attractor_llm.errors import InvalidRequestError, classify_http_error
+from attractor_llm.errors import InvalidRequestError, ProviderError, classify_http_error
 from attractor_llm.types import (
     ContentPart,
     ContentPartKind,
@@ -455,7 +455,14 @@ class OpenAIAdapter:
         """Send a request and return the complete response."""
         body = self._translate_request(request)
 
-        http_response = await self._client.post("/v1/responses", json=body)
+        try:
+            http_response = await self._client.post("/v1/responses", json=body)
+        except httpx.RequestError as exc:
+            raise ProviderError(
+                f"OpenAI request failed: {exc}",
+                provider="openai",
+                retryable=True,
+            ) from exc
 
         if http_response.status_code != 200:
             headers_dict = dict(http_response.headers)

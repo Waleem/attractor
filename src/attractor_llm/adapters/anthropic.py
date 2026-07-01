@@ -21,6 +21,7 @@ import httpx
 
 from attractor_llm.errors import (
     InvalidRequestError,
+    ProviderError,
     classify_http_error,
 )
 from attractor_llm.types import (
@@ -477,11 +478,18 @@ class AnthropicAdapter:
         if beta_headers:
             extra_headers["anthropic-beta"] = ",".join(beta_headers)
 
-        http_response = await self._client.post(
-            "/v1/messages",
-            json=body,
-            headers=extra_headers,
-        )
+        try:
+            http_response = await self._client.post(
+                "/v1/messages",
+                json=body,
+                headers=extra_headers,
+            )
+        except httpx.RequestError as exc:
+            raise ProviderError(
+                f"Anthropic request failed: {exc}",
+                provider="anthropic",
+                retryable=True,
+            ) from exc
 
         if http_response.status_code != 200:
             headers_dict = dict(http_response.headers)
