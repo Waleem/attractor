@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     ForeignKey,
@@ -14,7 +15,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -64,7 +64,7 @@ class WorkflowPackageModel(Base):
     dot_path: Mapped[str] = mapped_column(Text, nullable=False)
     toml_path: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), nullable=False)
-    diagnostics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    diagnostics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     indexed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -77,7 +77,7 @@ class RunRecordModel(Base):
         ForeignKey("workflow_packages.id", ondelete="RESTRICT"),
     )
     status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
-    run_spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    run_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     actor_label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     source_commit: Mapped[str] = mapped_column(String(40), nullable=False)
     source_branch: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -100,11 +100,15 @@ class RunEventModel(Base):
         Index("ix_run_events_run_id_id", "run_id", "id"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     run_id: Mapped[str] = mapped_column(ForeignKey("run_records.id", ondelete="CASCADE"))
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     actor_label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

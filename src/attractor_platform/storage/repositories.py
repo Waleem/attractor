@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import Select
 
@@ -24,6 +26,14 @@ from attractor_platform.storage.models import (
 
 def _select_run_for_append_lock(run_id: str) -> Select[tuple[RunRecordModel]]:
     return select(RunRecordModel).where(RunRecordModel.id == run_id).with_for_update()
+
+
+def _is_run_event_sequence_conflict(error: IntegrityError) -> bool:
+    message = str(error.orig)
+    return (
+        "uq_run_events_run_sequence" in message
+        or "run_events.run_id, run_events.sequence" in message
+    )
 
 
 class PlatformRepository:
@@ -158,6 +168,35 @@ class PlatformRepository:
             return run
 
     async def append_event(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        actor_label: str = "",
+        timestamp: dt.datetime | None = None,
+    ) -> RunEventModel:
+        for _ in range(20):
+            try:
+                return await self._append_event_once(
+                    run_id,
+                    event_type,
+                    payload,
+                    actor_label=actor_label,
+                    timestamp=timestamp,
+                )
+            except IntegrityError as error:
+                if not _is_run_event_sequence_conflict(error):
+                    raise
+                await asyncio.sleep(0)
+        return await self._append_event_once(
+            run_id,
+            event_type,
+            payload,
+            actor_label=actor_label,
+            timestamp=timestamp,
+        )
+
+    async def _append_event_once(
         self,
         run_id: str,
         event_type: str,

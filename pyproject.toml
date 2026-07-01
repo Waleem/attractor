@@ -11,6 +11,7 @@ dependencies = [
     "uvicorn>=0.30",
     "fastapi>=0.115",
     "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
     "asyncpg>=0.29",
     "alembic>=1.13",
 ]
@@ -22,7 +23,6 @@ dev = [
     "respx>=0.21",
     "ruff>=0.8",
     "pyright>=1.1",
-    "pytest-postgresql>=6.0",
     "psycopg[binary]>=3.0",
 ]
 

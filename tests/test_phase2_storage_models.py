@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy import JSON
+
 from attractor_platform.storage.models import (
     ApprovalDecisionModel,
     ArtifactModel,
@@ -8,6 +10,7 @@ from attractor_platform.storage.models import (
     RunEventModel,
     RunRecordModel,
     RunStatus,
+    WorkflowPackageModel,
     WriteBackModel,
 )
 
@@ -35,3 +38,9 @@ def test_run_status_values_match_design() -> None:
         "writeback_applied",
         "writeback_failed",
     ]
+
+
+def test_json_columns_use_portable_type() -> None:
+    assert isinstance(WorkflowPackageModel.__table__.c.diagnostics.type, JSON)
+    assert isinstance(RunRecordModel.__table__.c.run_spec.type, JSON)
+    assert isinstance(RunEventModel.__table__.c.payload.type, JSON)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -12,10 +15,28 @@ from sqlalchemy.ext.asyncio import (
 )
 
 
+def default_database_url(database_path: str | os.PathLike[str] | None = None) -> str:
+    path = Path(database_path) if database_path is not None else Path(".attractor-platform.sqlite3")
+    return f"sqlite+aiosqlite:///{path.expanduser().resolve()}"
+
+
+def default_test_database_url(database_path: str | os.PathLike[str] | None = None) -> str:
+    path = (
+        Path(database_path)
+        if database_path is not None
+        else Path(tempfile.gettempdir()) / f"attractor-platform-tests-{os.getpid()}.sqlite3"
+    )
+    return default_database_url(path)
+
+
 @dataclass(frozen=True)
 class DatabaseSettings:
-    url: str
+    url: str = field(default_factory=default_database_url)
     echo: bool = False
+
+    @classmethod
+    def from_env(cls, env_var: str = "ATTRACTOR_DATABASE_URL") -> DatabaseSettings:
+        return cls(url=os.environ.get(env_var) or default_database_url())
 
 
 def create_platform_engine(settings: DatabaseSettings) -> AsyncEngine:

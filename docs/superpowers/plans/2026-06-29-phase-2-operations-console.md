@@ -2008,7 +2008,8 @@ git commit -m "chore: verify phase 2 vertical slice"
 - Task 6 must convert agent tool environment and allowed-root state from process-global mutation to task-local `ContextVar` state before any server run executor ships. Cross-run worktree isolation is a security boundary, not just a correctness convenience.
 - Task 8 must launch each run in its own `asyncio.Task`; otherwise task-local environment state cannot isolate concurrent durable-queue runs.
 - Durable event appends from `on_event` need ordering guarantees. Use a per-run writer queue and persist sequence numbers in one repository method.
-- Postgres integration tests need a real database fixture. Do not silently switch the shared-server storage layer to SQLite because Postgres JSONB and migration behavior are part of the Phase 2 contract.
+- SQLite is the default local/test durable storage path; Alembic remains the Postgres production migration path when `ATTRACTOR_DATABASE_URL` or `ATTRACTOR_TEST_DATABASE_URL` points at Postgres.
+- [ ] Follow-up: run the full DB test suite once against real Postgres with `ATTRACTOR_TEST_DATABASE_URL=postgresql+asyncpg://...` before enabling the shared concurrent multi-user server. Do not add concurrent Postgres-specific work before that verification pass.
 - Worktree cleanup should be policy-based. Keep worktrees for completed runs until write-back or retention cleanup so branch promotion can inspect the managed branch.
 
 **Execution notes**

@@ -46,7 +46,7 @@ def main() -> None:
     parser.add_argument(
         "--database-url",
         default=os.environ.get("ATTRACTOR_DATABASE_URL"),
-        help="Platform database URL (defaults to ATTRACTOR_DATABASE_URL)",
+        help="Platform database URL (defaults to ATTRACTOR_DATABASE_URL or local SQLite)",
     )
     parser.add_argument(
         "--worktree-root",
@@ -61,9 +61,6 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.platform:
-        if not args.database_url:
-            raise SystemExit("--database-url or ATTRACTOR_DATABASE_URL is required for --platform")
-
         from attractor_platform.executor import DurableRunExecutor
         from attractor_platform.storage.db import (
             DatabaseSettings,
@@ -72,7 +69,11 @@ def main() -> None:
         )
         from attractor_server.platform_app import create_platform_app
 
-        engine = create_platform_engine(DatabaseSettings(url=args.database_url))
+        engine = create_platform_engine(
+            DatabaseSettings(url=args.database_url)
+            if args.database_url
+            else DatabaseSettings.from_env()
+        )
         session_factory = create_session_factory(engine)
         executor = DurableRunExecutor(
             session_factory=session_factory,

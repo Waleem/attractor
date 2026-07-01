@@ -4,22 +4,25 @@ import datetime as dt
 import os
 from asyncio import gather
 from collections.abc import AsyncIterator
+from pathlib import Path
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from attractor_platform.storage.db import create_session_factory
+from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import Base, RunStatus
 from attractor_platform.storage.repositories import PlatformRepository, _select_run_for_append_lock
 
 
 @pytest_asyncio.fixture
-async def platform_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    database_url = os.environ.get("ATTRACTOR_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("ATTRACTOR_TEST_DATABASE_URL is not configured")
+async def platform_session_factory(
+    tmp_path: Path,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    database_url = os.environ.get(
+        "ATTRACTOR_TEST_DATABASE_URL",
+        default_test_database_url(tmp_path / "platform.sqlite3"),
+    )
 
     engine = create_async_engine(database_url, pool_pre_ping=True)
     try:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from attractor_pipeline.engine.runner import HandlerResult, Outcome, PipelineResult, PipelineStatus
 from attractor_platform.checkpoints import GitCheckpoint
 from attractor_platform.executor import DurableRunExecutor
-from attractor_platform.storage.db import create_session_factory
+from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import Base, RunStatus
 
 pytestmark = pytest.mark.asyncio
@@ -183,20 +182,12 @@ class _InMemoryPlatformRepository:
 
 @pytest_asyncio.fixture
 async def platform_session_factory(
-    request: pytest.FixtureRequest,
+    tmp_path: Path,
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    database_url = os.environ.get("ATTRACTOR_TEST_DATABASE_URL")
-    if not database_url:
-        if shutil.which("pg_config") is None or shutil.which("pg_ctl") is None:
-            pytest.skip(
-                "Neither ATTRACTOR_TEST_DATABASE_URL nor local PostgreSQL tooling is available"
-            )
-        postgresql = request.getfixturevalue("postgresql")
-        database_url = (
-            "postgresql+asyncpg://"
-            f"{postgresql.info.user}:{postgresql.info.password}@"
-            f"{postgresql.info.host}:{postgresql.info.port}/{postgresql.info.dbname}"
-        )
+    database_url = os.environ.get(
+        "ATTRACTOR_TEST_DATABASE_URL",
+        default_test_database_url(tmp_path / "platform.sqlite3"),
+    )
 
     engine = create_async_engine(database_url, pool_pre_ping=True)
     try:
