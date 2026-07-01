@@ -228,6 +228,52 @@ async def _decide_pending_approval(
     raise RuntimeError("Repository does not support deciding approvals")
 
 
+async def _revert_decided_approval(
+    services: _PlatformServices,
+    *,
+    run_id: str,
+    approval_id: str,
+    answer: str,
+    actor_label: str,
+    decided_at: dt.datetime,
+) -> bool:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            result = await session.execute(
+                update(ApprovalDecisionModel)
+                .where(
+                    ApprovalDecisionModel.id == approval_id,
+                    ApprovalDecisionModel.run_id == run_id,
+                    ApprovalDecisionModel.status == "decided",
+                    ApprovalDecisionModel.answer == answer,
+                    ApprovalDecisionModel.actor_label == actor_label,
+                    ApprovalDecisionModel.decided_at == decided_at,
+                )
+                .values(
+                    answer=None,
+                    actor_label="",
+                    status="pending",
+                    decided_at=None,
+                )
+            )
+            return cast(int | None, cast(Any, result).rowcount) == 1
+
+    revert_decided_approval = cast(
+        Callable[..., Awaitable[bool]] | None,
+        getattr(services.repository, "revert_decided_approval", None),
+    )
+    if revert_decided_approval is not None:
+        return await revert_decided_approval(
+            approval_id=approval_id,
+            run_id=run_id,
+            answer=answer,
+            actor_label=actor_label,
+            decided_at=decided_at,
+        )
+
+    raise RuntimeError("Repository does not support reverting approvals")
+
+
 async def create_run(request: Request) -> JSONResponse:
     services = _services(request)
     try:
@@ -325,19 +371,33 @@ async def decide_approval(request: Request) -> JSONResponse:
             400,
         )
 
+    decided_at = dt.datetime.now(dt.UTC)
     decision_status, decided = await _decide_pending_approval(
         services,
         run_id=run_id,
         approval_id=approval_id,
         answer=answer,
         actor_label=actor_label,
-        timestamp=dt.datetime.now(dt.UTC),
+        timestamp=decided_at,
     )
     if decision_status == "not_found":
         return _json_error(f"Approval {approval_id} not found for run {run_id}", 404)
     if decision_status != "updated" or decided is None:
         return _json_error(f"Approval {approval_id} is already decided", 409)
     if not services.executor.resume_waiting_approval(waiter):
+        reverted = await _revert_decided_approval(
+            services,
+            run_id=run_id,
+            approval_id=approval_id,
+            answer=answer,
+            actor_label=actor_label,
+            decided_at=decided_at,
+        )
+        if not reverted:
+            return _json_error(
+                f"Approval {approval_id} could not be resumed or restored",
+                500,
+            )
         return _json_error(f"Approval {approval_id} is not waiting in this process", 409)
     return JSONResponse(_serialize_approval(decided))
 

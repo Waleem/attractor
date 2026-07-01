@@ -210,6 +210,31 @@ class _InMemoryApprovalRepository:
         approval.decided_at = timestamp
         return approval
 
+    async def revert_decided_approval(
+        self,
+        *,
+        approval_id: str,
+        run_id: str,
+        answer: str,
+        actor_label: str,
+        decided_at: Any,
+    ) -> bool:
+        approval = self.approvals.get(approval_id)
+        if (
+            approval is None
+            or approval.run_id != run_id
+            or approval.status != "decided"
+            or approval.answer != answer
+            or approval.actor_label != actor_label
+            or approval.decided_at != decided_at
+        ):
+            return False
+        approval.answer = None
+        approval.actor_label = ""
+        approval.status = "pending"
+        approval.decided_at = None
+        return True
+
     async def create_artifact(
         self,
         *,
@@ -492,7 +517,11 @@ async def test_human_gate_lifecycle_in_memory(
         f"/api/runs/{run_id}/approvals"
     )
     approvals = approvals_response.json()["items"]
-    assert _approval_summary(approvals) == [("decided", "approve", "bob")]
+    assert len(approvals) == 1
+    decided_approval = approvals[0]
+    assert decided_approval["status"] == "decided"
+    assert decided_approval["answer"] == "approve"
+    assert decided_approval["actor_label"] in {"bob", "carol"}
 
     event_types = [
         event.event_type
@@ -523,6 +552,43 @@ async def test_duplicate_approval_decision_returns_conflict_in_memory(
         json={"answer": "approve", "actor_label": "carol"},
     )
     assert duplicate_response.status_code == 409
+
+    approvals_response = await in_memory_platform_harness.client.get(
+        f"/api/runs/{run_id}/approvals"
+    )
+    approvals = approvals_response.json()["items"]
+    assert _approval_summary(approvals) == [("decided", "approve", "bob")]
+
+    await _wait_for_status(
+        in_memory_platform_harness.client,
+        run_id,
+        RunStatus.COMPLETED.value,
+    )
+
+
+async def test_concurrent_approval_decisions_only_decide_once_in_memory(
+    in_memory_platform_harness: _InMemoryPlatformHarness,
+    sample_repo_with_human_gate: Path,
+) -> None:
+    run_id, pending_approval = await _launch_waiting_run(
+        in_memory_platform_harness,
+        sample_repo_with_human_gate,
+    )
+
+    approval_id = pending_approval["id"]
+    first_response, second_response = await asyncio.gather(
+        in_memory_platform_harness.client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"answer": "approve", "actor_label": "bob"},
+        ),
+        in_memory_platform_harness.client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"answer": "approve", "actor_label": "carol"},
+        ),
+    )
+    assert sorted(
+        [first_response.status_code, second_response.status_code],
+    ) == [200, 409]
 
     approvals_response = await in_memory_platform_harness.client.get(
         f"/api/runs/{run_id}/approvals"
@@ -580,6 +646,37 @@ async def test_missing_waiter_returns_conflict_in_memory(
         json={"answer": "approve", "actor_label": "bob"},
     )
     assert missing_waiter_response.status_code == 409
+
+    approvals_response = await in_memory_platform_harness.client.get(
+        f"/api/runs/{run_id}/approvals"
+    )
+    approvals = approvals_response.json()["items"]
+    assert _approval_summary(approvals) == [("pending", None, "")]
+
+
+async def test_resume_race_returns_conflict_without_deciding_in_memory(
+    in_memory_platform_harness: _InMemoryPlatformHarness,
+    sample_repo_with_human_gate: Path,
+) -> None:
+    run_id, pending_approval = await _launch_waiting_run(
+        in_memory_platform_harness,
+        sample_repo_with_human_gate,
+    )
+    approval_id = cast(str, pending_approval["id"])
+    decide_pending_approval = in_memory_platform_harness.repository.decide_pending_approval
+
+    async def decide_then_drop_waiter(**kwargs: Any) -> _InMemoryApproval | None:
+        decided = await decide_pending_approval(**kwargs)
+        in_memory_platform_harness.executor._approval_waiters.pop(approval_id, None)
+        return decided
+
+    in_memory_platform_harness.repository.decide_pending_approval = decide_then_drop_waiter
+
+    race_response = await in_memory_platform_harness.client.post(
+        f"/api/runs/{run_id}/approvals/{approval_id}",
+        json={"answer": "approve", "actor_label": "bob"},
+    )
+    assert race_response.status_code == 409
 
     approvals_response = await in_memory_platform_harness.client.get(
         f"/api/runs/{run_id}/approvals"
