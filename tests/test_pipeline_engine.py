@@ -529,16 +529,22 @@ class TestStylesheet:
             parse_stylesheet("unknown_thing { llm_model: x; }")
 
     def test_specificity_cascade(self):
-        g = parse_dot("""
-        digraph S {
-            graph [model_stylesheet="* { llm_model: base; }\nbox { llm_model: shape; }\n.special { llm_model: class; }\n#node1 { llm_model: id; }"]
+        stylesheet = (
+            "* { llm_model: base; }\\n"
+            "box { llm_model: shape; }\\n"
+            ".special { llm_model: class; }\\n"
+            "#node1 { llm_model: id; }"
+        )
+        g = parse_dot(f"""
+        digraph S {{
+            graph [model_stylesheet="{stylesheet}"]
             start [shape=Mdiamond]
             node1 [shape=box, class="special"]
             node2 [shape=box, class="special"]
             node3 [shape=box]
             done [shape=Msquare]
             start -> node1 -> node2 -> node3 -> done
-        }
+        }}
         """)
         apply_stylesheet(g)
         assert g.nodes["node1"].llm_model == "id"  # #id wins

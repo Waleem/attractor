@@ -1147,7 +1147,7 @@ class TestResponseMdWritten:
         register_default_handlers(registry, codergen_backend=_EmptyOutputBackend())
 
         logs_root = tmp_path / "logs"
-        result = await run_pipeline(g, registry, logs_root=logs_root)
+        await run_pipeline(g, registry, logs_root=logs_root)
 
         # response.md must exist for the codergen node
         response_file = logs_root / "task" / "response.md"
@@ -1244,7 +1244,11 @@ class TestInterleavedTextWithToolCalls:
         )
 
         # 3. Delta content must match the model's interleaved text
-        delta_events = [e for e in captured_events if str(e.kind) == str(EventKind.ASSISTANT_TEXT_DELTA)]
+        delta_events = [
+            e
+            for e in captured_events
+            if str(e.kind) == str(EventKind.ASSISTANT_TEXT_DELTA)
+        ]
         assert delta_events, "No ASSISTANT_TEXT_DELTA events captured"
         assert delta_events[0].data.get("delta") == "I'll check that for you", (
             f"Unexpected delta content: {delta_events[0].data}"
@@ -1255,7 +1259,7 @@ class TestInterleavedTextWithToolCalls:
         """Tool-call-only response (no TEXT part) must NOT emit ASSISTANT_TEXT_* events."""
         from attractor_agent.events import EventKind
         from attractor_agent.session import Session, SessionConfig
-        from attractor_llm.types import ContentPartKind, FinishReason
+        from attractor_llm.types import FinishReason
 
         # Response with tool call only — no TEXT content part
         tool_only_response = Response(
@@ -1394,15 +1398,21 @@ class TestClientConstructorMiddleware:
         stream = await client.stream(request)
 
         # before_request fires at stream() call time
-        assert mw.before_count == 1, f"before_request expected 1 call before consume, got {mw.before_count}"
+        assert mw.before_count == 1, (
+            f"before_request expected 1 call before consume, got {mw.before_count}"
+        )
         # after_response fires only after stream is fully consumed
-        assert mw.after_count == 0, f"after_response must NOT fire before stream is consumed, got {mw.after_count}"
+        assert mw.after_count == 0, (
+            "after_response must NOT fire before stream is consumed, "
+            f"got {mw.after_count}"
+        )
 
         async for _ in stream:
             pass
 
         assert mw.after_count == 1, (
-            f"after_response should be called once after full stream consumption, got {mw.after_count}"
+            "after_response should be called once after full stream consumption, "
+            f"got {mw.after_count}"
         )
 
     @pytest.mark.asyncio
@@ -1440,9 +1450,11 @@ class TestClientConstructorMiddleware:
             Client(middleware=[mw])
 
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert deprecation_warnings, "Expected DeprecationWarning when passing middleware= to Client()"
-        assert "apply_middleware" in str(deprecation_warnings[0].message).lower() or \
-               "deprecated" in str(deprecation_warnings[0].message).lower()
+        assert deprecation_warnings, (
+            "Expected DeprecationWarning when passing middleware= to Client()"
+        )
+        warning_message = str(deprecation_warnings[0].message).lower()
+        assert "apply_middleware" in warning_message or "deprecated" in warning_message
 
 
 # ================================================================== #
@@ -1667,8 +1679,9 @@ class TestGenerateObjectSchemaValidation:
         """
         import sys
         from unittest.mock import patch
-        from attractor_llm.generate import generate_object as llm_generate_object
+
         from attractor_llm.errors import NoObjectGeneratedError
+        from attractor_llm.generate import generate_object as llm_generate_object
 
         schema = {"required": ["name"], "properties": {"name": {"type": "string"}}}
         # Response is missing "name"
@@ -1689,8 +1702,9 @@ class TestGenerateObjectSchemaValidation:
         """Fallback: boolean True/False must not pass as integer field."""
         import sys
         from unittest.mock import patch
-        from attractor_llm.generate import generate_object as llm_generate_object
+
         from attractor_llm.errors import NoObjectGeneratedError
+        from attractor_llm.generate import generate_object as llm_generate_object
 
         schema = {
             "type": "object",
@@ -1712,6 +1726,7 @@ class TestGenerateObjectSchemaValidation:
         """Fallback path: a valid object still passes when jsonschema is absent."""
         import sys
         from unittest.mock import patch
+
         from attractor_llm.generate import generate_object as llm_generate_object
 
         schema = {
@@ -1787,7 +1802,6 @@ class TestStreamStartEvent:
     @pytest.mark.asyncio
     async def test_gemini_adapter_emits_stream_start(self):
         """Gemini adapter's _parse_stream emits STREAM_START on first data chunk."""
-        import asyncio
         import json
 
         from attractor_llm.adapters.base import ProviderConfig
@@ -1828,7 +1842,13 @@ class TestStreamStartEvent:
         from attractor_llm.types import StreamEvent, StreamEventKind
 
         acc = StreamAccumulator()
-        acc.feed(StreamEvent(kind=StreamEventKind.STREAM_START, model="test-model", provider="mock"))
+        acc.feed(
+            StreamEvent(
+                kind=StreamEventKind.STREAM_START,
+                model="test-model",
+                provider="mock",
+            )
+        )
         assert acc.started, "StreamAccumulator must mark started=True on STREAM_START event"
 
     def test_stream_accumulator_accepts_legacy_start(self):
@@ -1887,7 +1907,12 @@ class TestTruncationMarker:
             f"Expected exactly 1 truncation WARNING, got multiple. Output: {result_text[:200]}"
         )
         # The legacy marker must NOT appear as a second signal
-        assert "[output was truncated]" not in result_text.split("WARNING")[1] if "WARNING" in result_text else True, (
+        legacy_marker_missing = (
+            "[output was truncated]" not in result_text.split("WARNING")[1]
+            if "WARNING" in result_text
+            else True
+        )
+        assert legacy_marker_missing, (
             f"Legacy truncation marker found after spec marker. Output: {result_text[:200]}"
         )
 
@@ -1903,6 +1928,7 @@ class TestMaxToolRoundsPerInput:
     def test_deprecated_alias_still_works(self):
         """max_tool_rounds_per_turn alias must still work with DeprecationWarning."""
         import warnings
+
         from attractor_agent.session import SessionConfig
         config = SessionConfig(model="test", max_tool_rounds_per_input=3)
         with warnings.catch_warnings(record=True) as w:
@@ -1935,10 +1961,11 @@ class TestToolHandlerToolCommand:
     @pytest.mark.asyncio
     async def test_tool_command_attribute_used(self):
         """ToolHandler executes node.attrs.get('tool_command') when set."""
+        from unittest.mock import patch
+
+        from attractor_pipeline.engine.runner import Outcome
         from attractor_pipeline.graph import Graph, Node
         from attractor_pipeline.handlers.basic import ToolHandler
-        from attractor_pipeline.engine.runner import Outcome
-        from unittest.mock import AsyncMock, patch
 
         handler = ToolHandler()
         node = Node(id="t1", shape="parallelogram", attrs={"tool_command": "echo hello"})
@@ -2146,9 +2173,9 @@ class TestToolHandlerContextSpec:
     @pytest.mark.asyncio
     async def test_output_stored_in_context_on_success(self):
         """Exit 0: tool.<id>.output written to context."""
-        from attractor_pipeline import parse_dot, run_pipeline, HandlerRegistry
-        from attractor_pipeline.handlers import register_default_handlers
+        from attractor_pipeline import HandlerRegistry, parse_dot, run_pipeline
         from attractor_pipeline.engine.runner import PipelineStatus
+        from attractor_pipeline.handlers import register_default_handlers
 
         g = parse_dot("""
         digraph T {
@@ -2167,9 +2194,8 @@ class TestToolHandlerContextSpec:
     @pytest.mark.asyncio
     async def test_output_not_stored_in_context_on_failure(self):
         """Exit non-zero: tool.<id>.output NOT written to context (spec §4.10)."""
-        from attractor_pipeline import parse_dot, run_pipeline, HandlerRegistry
+        from attractor_pipeline import HandlerRegistry, parse_dot, run_pipeline
         from attractor_pipeline.handlers import register_default_handlers
-        from attractor_pipeline.engine.runner import PipelineStatus
 
         g = parse_dot("""
         digraph T {

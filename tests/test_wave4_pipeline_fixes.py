@@ -25,7 +25,6 @@ from attractor_pipeline import (
     run_pipeline,
 )
 
-
 # ================================================================== #
 # Helpers
 # ================================================================== #
@@ -309,7 +308,12 @@ class TestAggregateGoalGate:
             start [shape=Mdiamond]
             check [shape=diamond]
             code [shape=box, prompt="Code"]
-            other_code [shape=box, prompt="Other", goal_gate="outcome = fail", retry_target="other_code"]
+            other_code [
+                shape=box,
+                prompt="Other",
+                goal_gate="outcome = fail",
+                retry_target="other_code"
+            ]
             done [shape=Msquare]
             start -> check
             check -> code [condition="outcome = success"]

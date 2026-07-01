@@ -214,7 +214,7 @@ async def _apply_v4a_patch(patch_text: str, base_dir: str | None = None) -> str:
             path_str = line[len("*** Add File: ") :].strip()
             file_path = Path(path_str) if Path(path_str).is_absolute() else base / path_str
             resolved = file_path.resolve()
-            path_error = _check_path_allowed(resolved)
+            path_error = _check_path_allowed(resolved, env)
             if path_error:
                 results.append(f"Error: {path_error}")
                 i += 1
@@ -235,7 +235,7 @@ async def _apply_v4a_patch(patch_text: str, base_dir: str | None = None) -> str:
             path_str = line[len("*** Delete File: ") :].strip()
             file_path = Path(path_str) if Path(path_str).is_absolute() else base / path_str
             resolved = file_path.resolve()
-            path_error = _check_path_allowed(resolved)
+            path_error = _check_path_allowed(resolved, env)
             if path_error:
                 results.append(f"Error: {path_error}")
                 i += 1
@@ -254,7 +254,7 @@ async def _apply_v4a_patch(patch_text: str, base_dir: str | None = None) -> str:
             path_str = line[len("*** Update File: ") :].strip()
             file_path = Path(path_str) if Path(path_str).is_absolute() else base / path_str
             resolved = file_path.resolve()
-            path_error = _check_path_allowed(resolved)
+            path_error = _check_path_allowed(resolved, env)
             if path_error:
                 results.append(f"Error: {path_error}")
                 i += 1
@@ -270,7 +270,7 @@ async def _apply_v4a_patch(patch_text: str, base_dir: str | None = None) -> str:
                 move_to = lines[i][len("*** Move to: ") :].strip()
                 move_to_path = Path(move_to) if Path(move_to).is_absolute() else base / move_to
                 move_to_resolved = move_to_path.resolve()
-                move_to_error = _check_path_allowed(move_to_resolved)
+                move_to_error = _check_path_allowed(move_to_resolved, env)
                 if move_to_error:
                     results.append(f"Error: {move_to_error}")
                     i += 1
@@ -400,7 +400,7 @@ async def apply_patch_to_file(
     # Security: path confinement for local mode only.
     # Docker mode trusts the container as the sandbox (spec S4).
     if isinstance(env, LocalEnvironment):
-        path_error = _check_path_allowed(resolved)
+        path_error = _check_path_allowed(resolved, env)
         if path_error:
             raise PermissionError(path_error)
         # Reject symlink traversal for relative paths only — absolute paths

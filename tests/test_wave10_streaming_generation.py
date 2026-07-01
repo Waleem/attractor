@@ -18,12 +18,11 @@ import pytest
 from attractor_llm.client import Client
 from attractor_llm.errors import AbortError
 from attractor_llm.generate import generate, generate_object, stream
-from attractor_llm.streaming import StreamAccumulator, StreamResult
+from attractor_llm.streaming import StreamResult
 from attractor_llm.types import (
     AdapterTimeout,
     ContentPart,
     FinishReason,
-    GenerateResult,
     Message,
     Request,
     Response,
