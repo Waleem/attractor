@@ -6,12 +6,13 @@ import asyncio
 import datetime as dt
 import hashlib
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from attractor_agent.abort import AbortSignal
@@ -43,7 +44,7 @@ from attractor_platform.packages import WorkflowPackage, load_workflow_package
 from attractor_platform.run_environment import WorktreeLocalRunEnvironment
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
-from attractor_platform.storage.models import RunRecordModel, RunStatus
+from attractor_platform.storage.models import ArtifactModel, RunRecordModel, RunStatus
 from attractor_platform.storage.repositories import PlatformRepository
 
 _QUEUE_SENTINEL = object()
@@ -498,17 +499,36 @@ class DurableRunExecutor:
                 data=file_path.read_bytes(),
                 media_type=_media_type(file_path),
             )
-            await self.repository.create_artifact(
-                artifact_id=f"artifact_{uuid.uuid4().hex}",
-                run_id=run_id,
-                kind=stored.kind,
-                name=stored.name,
-                uri=stored.uri,
-                media_type=stored.media_type,
-                size_bytes=stored.size_bytes,
-                sha256=stored.sha256,
-                timestamp=dt.datetime.now(dt.UTC),
-            )
+            try:
+                await self.repository.create_artifact(
+                    artifact_id=f"artifact_{uuid.uuid4().hex}",
+                    run_id=run_id,
+                    kind=stored.kind,
+                    name=stored.name,
+                    uri=stored.uri,
+                    media_type=stored.media_type,
+                    size_bytes=stored.size_bytes,
+                    sha256=stored.sha256,
+                    timestamp=dt.datetime.now(dt.UTC),
+                )
+            except asyncio.CancelledError:
+                if await self._artifact_row_exists(
+                    run_id=run_id,
+                    kind=stored.kind,
+                    name=stored.name,
+                    uri=stored.uri,
+                ):
+                    self._clear_current_task_cancellation()
+                else:
+                    raise
+            except Exception:
+                if not await self._artifact_row_exists(
+                    run_id=run_id,
+                    kind=stored.kind,
+                    name=stored.name,
+                    uri=stored.uri,
+                ):
+                    raise
             captured_files.add(relative_key)
 
     async def _capture_artifacts_once(self, run_id: str, logs_root: Path) -> None:
@@ -795,16 +815,24 @@ class DurableRunExecutor:
                     terminal_payload,
                     actor_label=actor_label,
                 )
-                self._persisted_terminal_results[run_id] = _PersistedTerminalResult(
-                    event=persistence_key,
+                self._cache_persisted_terminal_result(
+                    run_id=run_id,
+                    persistence_key=persistence_key,
                     result=result,
-                    error_category=error_category if error_category is not None else (
-                        "pipeline" if result.error else None
-                    ),
-                    error_message=error_message if error_message is not None else result.error,
+                    error_category=error_category,
+                    error_message=error_message,
                 )
                 return
             except asyncio.CancelledError as exc:
+                if await self._reconcile_terminal_event_persistence(
+                    run_id=run_id,
+                    persistence_key=persistence_key,
+                    result=result,
+                    error_category=error_category,
+                    error_message=error_message,
+                ):
+                    self._clear_current_task_cancellation()
+                    return
                 last_cancellation = exc
                 self._clear_current_task_cancellation()
                 if not retry_on_cancellation or attempt == attempts - 1:
@@ -815,6 +843,113 @@ class DurableRunExecutor:
                         self._store_completed_failure(run_id, failure)
                         raise failure from last_cancellation
                     raise
+            except Exception:
+                if await self._reconcile_terminal_event_persistence(
+                    run_id=run_id,
+                    persistence_key=persistence_key,
+                    result=result,
+                    error_category=error_category,
+                    error_message=error_message,
+                ):
+                    return
+                raise
+
+    def _cache_persisted_terminal_result(
+        self,
+        *,
+        run_id: str,
+        persistence_key: _PersistedTerminalEvent,
+        result: PipelineResult,
+        error_category: str | None,
+        error_message: str | None,
+    ) -> None:
+        self._persisted_terminal_results[run_id] = _PersistedTerminalResult(
+            event=persistence_key,
+            result=result,
+            error_category=error_category if error_category is not None else (
+                "pipeline" if result.error else None
+            ),
+            error_message=error_message if error_message is not None else result.error,
+        )
+
+    async def _reconcile_terminal_event_persistence(
+        self,
+        *,
+        run_id: str,
+        persistence_key: _PersistedTerminalEvent,
+        result: PipelineResult,
+        error_category: str | None,
+        error_message: str | None,
+    ) -> bool:
+        if not await self._terminal_event_exists(run_id, persistence_key):
+            return False
+        self._cache_persisted_terminal_result(
+            run_id=run_id,
+            persistence_key=persistence_key,
+            result=result,
+            error_category=error_category,
+            error_message=error_message,
+        )
+        return True
+
+    async def _terminal_event_exists(
+        self,
+        run_id: str,
+        persistence_key: _PersistedTerminalEvent,
+    ) -> bool:
+        after_sequence = 0
+        while True:
+            events = await self.repository.list_events(
+                run_id,
+                after_sequence=after_sequence,
+                limit=100,
+            )
+            if not events:
+                return False
+            for event in events:
+                if _event_matches_persistence_key(event, persistence_key):
+                    return True
+            after_sequence = events[-1].sequence
+
+    async def _artifact_row_exists(
+        self,
+        *,
+        run_id: str,
+        kind: str,
+        name: str,
+        uri: str,
+    ) -> bool:
+        list_artifacts = cast(
+            Callable[[str], Awaitable[list[Any]]] | None,
+            getattr(self.repository, "list_artifacts", None),
+        )
+        if list_artifacts is not None:
+            artifacts = await list_artifacts(run_id)
+            return any(
+                artifact.kind == kind and artifact.name == name and artifact.uri == uri
+                for artifact in artifacts
+            )
+
+        if isinstance(self.repository, PlatformRepository):
+            async with session_scope(self._session_factory) as session:
+                existing = await session.scalar(
+                    select(ArtifactModel).where(
+                        ArtifactModel.run_id == run_id,
+                        ArtifactModel.kind == kind,
+                        ArtifactModel.name == name,
+                        ArtifactModel.uri == uri,
+                    )
+                )
+                return existing is not None
+
+        artifacts = getattr(self.repository, "artifacts", None)
+        if isinstance(artifacts, dict):
+            return any(
+                artifact.kind == kind and artifact.name == name and artifact.uri == uri
+                for artifact in artifacts.get(run_id, [])
+            )
+
+        return False
 
 
 def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
@@ -923,3 +1058,19 @@ def _freeze_terminal_payload_value(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return tuple(_freeze_terminal_payload_value(item) for item in value)
     return value
+
+
+def _event_matches_persistence_key(
+    event: Any,
+    persistence_key: _PersistedTerminalEvent,
+) -> bool:
+    return (
+        event.event_type == persistence_key.event_type
+        and tuple(
+            sorted(
+                (key, _freeze_terminal_payload_value(value))
+                for key, value in event.payload.items()
+            )
+        )
+        == persistence_key.payload
+    )
