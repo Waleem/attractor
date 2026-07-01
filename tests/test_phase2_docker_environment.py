@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from attractor_agent.environment import DockerEnvironment
+from attractor_agent.tools.core import get_allowed_roots
 from attractor_pipeline.engine.runner import PipelineStatus
 from attractor_platform.git import PreparedWorktree
 from attractor_platform.run_environment import (
@@ -74,6 +76,26 @@ def test_select_remote_run_environment_raises() -> None:
             RunEnvironmentRequest(mode="remote", name="remote"),
             prepared_worktree=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_docker_run_environment_uses_container_allowed_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _start(self: DockerEnvironment) -> None:
+        del self
+
+    async def _stop(self: DockerEnvironment) -> None:
+        del self
+
+    monkeypatch.setattr(DockerEnvironment, "start", _start)
+    monkeypatch.setattr(DockerEnvironment, "stop", _stop)
+
+    async with DockerRunEnvironment("python:3.12-slim").activate():
+        roots = [str(root) for root in get_allowed_roots()]
+
+    assert roots == ["/workspace", "/tmp"]
+    assert "/private/tmp" not in roots
 
 
 @pytest.mark.asyncio

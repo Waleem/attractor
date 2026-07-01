@@ -10,6 +10,7 @@ from attractor_agent.tools.core import (
     reset_environment,
     set_allowed_roots,
     set_environment,
+    set_non_local_allowed_roots,
 )
 from attractor_platform.git import PreparedWorktree
 from attractor_platform.runspec import RunEnvironmentRequest
@@ -49,7 +50,7 @@ class DockerRunEnvironment:
     async def activate(self) -> AsyncIterator[ExecutionEnvironment]:
         env = DockerEnvironment(image=self._image, workspace=self._workspace)
         environment_token = set_environment(env)
-        roots_token = set_allowed_roots([self._workspace, "/tmp"])
+        roots_token = set_non_local_allowed_roots([self._workspace, "/tmp"])
         try:
             await env.start()
             yield env

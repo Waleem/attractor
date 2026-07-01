@@ -116,26 +116,35 @@ def set_max_command_timeout(ms: int) -> None:
 # Security: Path confinement
 # ------------------------------------------------------------------ #
 
-# Allowed root directories for file operations. Resolved paths must
-# start with one of these. Default: current working directory.
-_DEFAULT_ALLOWED_ROOTS: tuple[Path, ...] = (Path.cwd().resolve(),)
-_allowed_roots_var: contextvars.ContextVar[tuple[Path, ...]] = contextvars.ContextVar(
+# Allowed root directories for file operations. Local roots are host-resolved
+# paths. Non-local roots are lexical POSIX paths for container-like runtimes.
+AllowedRoot = Path | PurePosixPath
+_DEFAULT_ALLOWED_ROOTS: tuple[AllowedRoot, ...] = (Path.cwd().resolve(),)
+_allowed_roots_var: contextvars.ContextVar[tuple[AllowedRoot, ...]] = contextvars.ContextVar(
     "attractor_allowed_roots",
     default=_DEFAULT_ALLOWED_ROOTS,
 )
 
 
-def set_allowed_roots(roots: list[str | Path]) -> contextvars.Token[tuple[Path, ...]]:
+def set_allowed_roots(roots: list[str | Path]) -> contextvars.Token[tuple[AllowedRoot, ...]]:
     """Configure task-local allowed root directories for file tools."""
     return _allowed_roots_var.set(tuple(Path(root).resolve() for root in roots))
 
 
-def get_allowed_roots() -> list[Path]:
+def set_non_local_allowed_roots(
+    roots: list[str | PurePosixPath],
+) -> contextvars.Token[tuple[AllowedRoot, ...]]:
+    """Configure task-local allowed roots for non-local POSIX environments."""
+    normalized_roots = tuple(_normalize_non_local_root(root) for root in roots)
+    return _allowed_roots_var.set(normalized_roots)
+
+
+def get_allowed_roots() -> list[AllowedRoot]:
     """Return a copy of the current task-local allowed root directories."""
     return list(_allowed_roots_var.get())
 
 
-def reset_allowed_roots(token: contextvars.Token[tuple[Path, ...]]) -> None:
+def reset_allowed_roots(token: contextvars.Token[tuple[AllowedRoot, ...]]) -> None:
     """Restore the previous allowed roots from a token."""
     _allowed_roots_var.reset(token)
 
@@ -171,6 +180,14 @@ def _check_path_allowed(
 def _normalize_non_local_path(path: PurePosixPath) -> PurePosixPath:
     """Normalize a container path lexically without touching the host filesystem."""
     return PurePosixPath(posixpath.normpath(str(path)))
+
+
+def _normalize_non_local_root(root: str | PurePosixPath) -> PurePosixPath:
+    """Normalize an allowed root lexically and require an absolute POSIX path."""
+    normalized = _normalize_non_local_path(PurePosixPath(str(root)))
+    if not normalized.is_absolute():
+        raise ValueError(f"non-local allowed root must be absolute: {root}")
+    return normalized
 
 
 async def _resolve_environment_path(
