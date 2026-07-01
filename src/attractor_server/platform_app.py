@@ -15,7 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from attractor_platform.config import load_project_config
@@ -40,6 +40,7 @@ from attractor_platform.storage.models import (
     WorkflowPackageModel,
 )
 from attractor_platform.storage.repositories import PlatformRepository
+from attractor_server.platform_sse import durable_run_event_stream, parse_sse_after_sequence
 
 
 @dataclass(frozen=True)
@@ -812,6 +813,25 @@ async def list_run_events(request: Request) -> JSONResponse:
     return JSONResponse({"items": [_serialize_event(event) for event in events]})
 
 
+async def stream_run_events(request: Request) -> JSONResponse | StreamingResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    after_sequence = _parse_non_negative_int(request.query_params.get("after_sequence"), 0)
+    replay_after = parse_sse_after_sequence(
+        after_sequence=after_sequence,
+        last_event_id=request.headers.get("last-event-id"),
+    )
+    return StreamingResponse(
+        durable_run_event_stream(services.repository, run_id, after_sequence=replay_after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def list_approvals(request: Request) -> JSONResponse:
     services = _services(request)
     run_id = request.path_params["run_id"]
@@ -1006,6 +1026,7 @@ def create_platform_app(
             Route("/api/runs", list_runs, methods=["GET"]),
             Route("/api/runs/{run_id}", get_run, methods=["GET"]),
             Route("/api/runs/{run_id}/events", list_run_events, methods=["GET"]),
+            Route("/api/runs/{run_id}/events/stream", stream_run_events, methods=["GET"]),
             Route("/api/runs/{run_id}/approvals", list_approvals, methods=["GET"]),
             Route(
                 "/api/runs/{run_id}/approvals/{approval_id}",
