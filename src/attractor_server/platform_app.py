@@ -71,6 +71,8 @@ def _serialize_run(run: RunRecordModel) -> dict[str, Any]:
         "repo_id": run.repo_id,
         "workflow_id": run.workflow_id,
         "actor_label": run.actor_label,
+        "source_commit": getattr(run, "source_commit", None),
+        "source_branch": getattr(run, "source_branch", None),
         "worktree_path": run.worktree_path,
         "managed_branch": run.managed_branch,
         "error_category": run.error_category,

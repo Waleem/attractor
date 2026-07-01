@@ -458,8 +458,14 @@ async def test_launch_run_returns_durable_id(
 
     assert run["id"].startswith("run_")
     assert run["workflow_id"].startswith("wf_")
+    registered_repo = platform_harness.repository.repos[
+        next(iter(platform_harness.repository.repos))
+    ]
+    assert run["source_commit"] == registered_repo.current_commit
+    assert run["source_branch"] == registered_repo.default_branch
     assert run_detail.status_code == 200
     assert run_detail.json()["id"] == run["id"]
+    assert run_detail.json()["source_commit"] == run["source_commit"]
     assert runs.status_code == 200
     assert [item["id"] for item in runs.json()["items"]] == [run["id"]]
 
