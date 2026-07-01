@@ -7,13 +7,14 @@ import datetime as dt
 import hashlib
 import inspect
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
@@ -30,7 +31,7 @@ from attractor_platform.packages import (
     load_workflow_package,
 )
 from attractor_platform.runspec import read_git_metadata
-from attractor_platform.storage.db import session_scope
+from attractor_platform.storage.db import initialize_platform_schema, session_scope
 from attractor_platform.storage.models import (
     ApprovalDecisionModel,
     ArtifactModel,
@@ -1228,8 +1229,16 @@ def create_platform_app(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     executor: DurableRunExecutor,
+    engine: AsyncEngine | None = None,
 ) -> Starlette:
+    @asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        if engine is not None:
+            await initialize_platform_schema(engine)
+        yield
+
     app = Starlette(
+        lifespan=lifespan,
         routes=[
             Route("/api/repos", register_repo, methods=["POST"]),
             Route("/api/repos", list_repos, methods=["GET"]),
@@ -1268,5 +1277,6 @@ def create_app(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     executor: DurableRunExecutor,
+    engine: AsyncEngine | None = None,
 ) -> Starlette:
-    return create_platform_app(session_factory=session_factory, executor=executor)
+    return create_platform_app(session_factory=session_factory, executor=executor, engine=engine)

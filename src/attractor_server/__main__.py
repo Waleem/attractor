@@ -80,7 +80,11 @@ def main() -> None:
             worktree_root=Path(args.worktree_root),
             artifact_root=Path(args.artifact_root),
         )
-        app = create_platform_app(session_factory=session_factory, executor=executor)
+        app = create_platform_app(
+            session_factory=session_factory,
+            executor=executor,
+            engine=engine,
+        )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")
         print()
