@@ -603,10 +603,13 @@ async def _wait_for_status(
     for _ in range(attempts):
         response = await client.get(f"/api/runs/{run_id}")
         assert response.status_code == 200
-        last_payload = response.json()
-        if last_payload["status"] == status:
-            return last_payload
+        payload: dict[str, Any] = response.json()
+        last_payload = payload
+        if payload["status"] == status:
+            return payload
         await asyncio.sleep(0.05)
+    if last_payload is None:
+        pytest.fail(f"Run {run_id} did not reach {status!r}; no payload received")
     pytest.fail(f"Run {run_id} did not reach {status!r}; last payload: {last_payload!r}")
 
 
