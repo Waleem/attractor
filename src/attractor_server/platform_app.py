@@ -1,10 +1,13 @@
-"""Phase 2 platform app endpoints for run launch and approvals."""
+"""Phase 2 platform app endpoints for repository registration, runs, and approvals."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select, update
@@ -14,11 +17,27 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
-from attractor_platform.packages import load_workflow_package
+from attractor_platform.packages import (
+    WorkflowPackage,
+    discover_workflow_packages,
+    inspect_workflow_package,
+    load_workflow_package,
+)
+from attractor_platform.runspec import read_git_metadata
 from attractor_platform.storage.db import session_scope
-from attractor_platform.storage.models import ApprovalDecisionModel, RunRecordModel, RunStatus
+from attractor_platform.storage.models import (
+    ApprovalDecisionModel,
+    ArtifactModel,
+    CheckpointModel,
+    RegisteredRepoModel,
+    RunEventModel,
+    RunRecordModel,
+    RunStatus,
+    WorkflowPackageModel,
+)
 from attractor_platform.storage.repositories import PlatformRepository
 
 
@@ -59,6 +78,60 @@ def _serialize_run(run: RunRecordModel) -> dict[str, Any]:
     }
 
 
+def _serialize_repo(repo: Any) -> dict[str, Any]:
+    return {
+        "id": repo.id,
+        "name": repo.name,
+        "local_path": repo.local_path,
+        "default_branch": repo.default_branch,
+        "current_commit": repo.current_commit,
+        "dirty_state": repo.dirty_state,
+        "project_config_status": getattr(repo, "project_config_status", "unknown"),
+        "created_at": _serialize_timestamp(repo.created_at),
+        "updated_at": _serialize_timestamp(repo.updated_at),
+        "last_indexed_at": _serialize_timestamp(repo.last_indexed_at),
+    }
+
+
+def _serialize_workflow(workflow: Any) -> dict[str, Any]:
+    return {
+        "id": workflow.id,
+        "repo_id": workflow.repo_id,
+        "name": workflow.name,
+        "dot_path": workflow.dot_path,
+        "toml_path": workflow.toml_path,
+        "status": workflow.status,
+        "diagnostics": workflow.diagnostics,
+        "indexed_at": _serialize_timestamp(workflow.indexed_at),
+    }
+
+
+def _serialize_workflow_package(
+    workflow_id: str,
+    repo_id: str,
+    package: WorkflowPackage,
+) -> dict[str, Any]:
+    return {
+        "id": workflow_id,
+        "repo_id": repo_id,
+        "name": package.name,
+        "dot_path": str(package.dot_path),
+        "toml_path": str(package.toml_path) if package.toml_path is not None else None,
+        "status": package.status.value,
+        "diagnostics": _serialize_diagnostics(package),
+    }
+
+
+def _serialize_event(event: Any) -> dict[str, Any]:
+    return {
+        "sequence": event.sequence,
+        "event_type": event.event_type,
+        "payload": event.payload,
+        "actor_label": event.actor_label,
+        "created_at": _serialize_timestamp(getattr(event, "created_at", None)),
+    }
+
+
 def _serialize_approval(approval: ApprovalDecisionModel) -> dict[str, Any]:
     return {
         "id": approval.id,
@@ -73,6 +146,71 @@ def _serialize_approval(approval: ApprovalDecisionModel) -> dict[str, Any]:
     }
 
 
+def _serialize_artifact(artifact: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(artifact, "id", None),
+        "run_id": getattr(artifact, "run_id", None),
+        "kind": artifact.kind,
+        "name": artifact.name,
+        "uri": artifact.uri,
+        "media_type": artifact.media_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        "created_at": _serialize_timestamp(getattr(artifact, "created_at", None)),
+    }
+
+
+def _serialize_checkpoint(checkpoint: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(checkpoint, "id", None),
+        "run_id": getattr(checkpoint, "run_id", None),
+        "node_id": checkpoint.node_id,
+        "stage_index": checkpoint.stage_index,
+        "commit_sha": checkpoint.commit_sha,
+        "ref_name": checkpoint.ref_name,
+        "created_at": _serialize_timestamp(getattr(checkpoint, "created_at", None)),
+    }
+
+
+def _repo_identifier(repo_path: str | Path) -> str:
+    resolved = str(Path(repo_path).expanduser().resolve())
+    digest = hashlib.sha1(resolved.encode()).hexdigest()
+    return f"repo_{digest[:32]}"
+
+
+def _workflow_identifier(repo_id: str, workflow_name: str) -> str:
+    digest = hashlib.sha1(f"{repo_id}:{workflow_name}".encode()).hexdigest()
+    return f"wf_{digest[:32]}"
+
+
+def _serialize_diagnostics(package: WorkflowPackage) -> dict[str, Any]:
+    if package.error is not None:
+        return {"error": package.error, "items": []}
+    return {
+        "items": [
+            {
+                "rule": diagnostic.rule,
+                "severity": diagnostic.severity.value,
+                "message": diagnostic.message,
+                "node_id": diagnostic.node_id,
+                "edge_index": diagnostic.edge_index,
+                "edge_id": diagnostic.edge_id,
+            }
+            for diagnostic in package.diagnostics
+        ]
+    }
+
+
+def _parse_non_negative_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(parsed, 0)
+
+
 async def _get_run_or_404(
     repository: PlatformRepository,
     run_id: str,
@@ -81,6 +219,154 @@ async def _get_run_or_404(
     if run is None:
         return _json_error(f"Run {run_id} not found", 404)
     return run
+
+
+async def _list_repos(services: _PlatformServices) -> list[Any]:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(RegisteredRepoModel).order_by(
+                        RegisteredRepoModel.name,
+                        RegisteredRepoModel.id,
+                    )
+                )
+            )
+
+    list_repos = cast(
+        Callable[[], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_repos", None),
+    )
+    if list_repos is not None:
+        return list(await list_repos())
+
+    repos = getattr(services.repository, "repos", None)
+    if isinstance(repos, dict):
+        return sorted(repos.values(), key=lambda repo: (repo.name, repo.id))
+
+    raise RuntimeError("Repository does not support listing repositories")
+
+
+async def _get_repo(services: _PlatformServices, repo_id: str) -> Any | None:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return await session.get(RegisteredRepoModel, repo_id)
+
+    get_repo = cast(
+        Callable[[str], Awaitable[Any | None]] | None,
+        getattr(services.repository, "get_repo", None),
+    )
+    if get_repo is not None:
+        return await get_repo(repo_id)
+
+    repos = getattr(services.repository, "repos", None)
+    if isinstance(repos, dict):
+        return repos.get(repo_id)
+
+    raise RuntimeError("Repository does not support loading repositories")
+
+
+async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any]:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(WorkflowPackageModel)
+                    .where(WorkflowPackageModel.repo_id == repo_id)
+                    .order_by(WorkflowPackageModel.name, WorkflowPackageModel.id)
+                )
+            )
+
+    list_workflows = cast(
+        Callable[[str], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_workflows", None),
+    )
+    if list_workflows is not None:
+        return list(await list_workflows(repo_id))
+
+    workflows = getattr(services.repository, "workflows", None)
+    if isinstance(workflows, dict):
+        return sorted(
+            [workflow for workflow in workflows.values() if workflow.repo_id == repo_id],
+            key=lambda workflow: (workflow.name, workflow.id),
+        )
+
+    raise RuntimeError("Repository does not support listing workflows")
+
+
+async def _get_workflow(services: _PlatformServices, workflow_id: str) -> Any | None:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return await session.get(WorkflowPackageModel, workflow_id)
+
+    get_workflow = cast(
+        Callable[[str], Awaitable[Any | None]] | None,
+        getattr(services.repository, "get_workflow", None),
+    )
+    if get_workflow is not None:
+        return await get_workflow(workflow_id)
+
+    workflows = getattr(services.repository, "workflows", None)
+    if isinstance(workflows, dict):
+        return workflows.get(workflow_id)
+
+    raise RuntimeError("Repository does not support loading workflows")
+
+
+async def _list_runs(services: _PlatformServices) -> list[Any]:
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(RunRecordModel).order_by(
+                        RunRecordModel.created_at,
+                        RunRecordModel.id,
+                    )
+                )
+            )
+
+    list_runs = cast(
+        Callable[[], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_runs", None),
+    )
+    if list_runs is not None:
+        return list(await list_runs())
+
+    runs = getattr(services.repository, "runs", None)
+    if isinstance(runs, dict):
+        return sorted(runs.values(), key=lambda run: (run.created_at, run.id))
+
+    raise RuntimeError("Repository does not support listing runs")
+
+
+async def _list_events_for_run(
+    services: _PlatformServices,
+    run_id: str,
+    after_sequence: int,
+    limit: int,
+) -> list[Any]:
+    list_events = cast(
+        Callable[[str, int, int], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_events", None),
+    )
+    if list_events is not None:
+        return list(await list_events(run_id, after_sequence, limit))
+
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(RunEventModel)
+                    .where(
+                        RunEventModel.run_id == run_id,
+                        RunEventModel.sequence > after_sequence,
+                    )
+                    .order_by(RunEventModel.sequence)
+                    .limit(limit)
+                )
+            )
+
+    raise RuntimeError("Repository does not support listing events")
 
 
 async def _list_approvals_for_run(
@@ -274,6 +560,182 @@ async def _revert_decided_approval(
     raise RuntimeError("Repository does not support reverting approvals")
 
 
+async def _list_artifacts_for_run(services: _PlatformServices, run_id: str) -> list[Any]:
+    list_artifacts = cast(
+        Callable[[str], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_artifacts", None),
+    )
+    if list_artifacts is not None:
+        return list(await list_artifacts(run_id))
+
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(ArtifactModel)
+                    .where(ArtifactModel.run_id == run_id)
+                    .order_by(ArtifactModel.created_at, ArtifactModel.id)
+                )
+            )
+
+    artifacts = getattr(services.repository, "artifacts", None)
+    if isinstance(artifacts, dict):
+        return list(artifacts.get(run_id, []))
+
+    raise RuntimeError("Repository does not support listing artifacts")
+
+
+async def _list_checkpoints_for_run(services: _PlatformServices, run_id: str) -> list[Any]:
+    list_checkpoints = cast(
+        Callable[[str], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_checkpoints", None),
+    )
+    if list_checkpoints is not None:
+        return list(await list_checkpoints(run_id))
+
+    if isinstance(services.repository, PlatformRepository):
+        async with session_scope(services.session_factory) as session:
+            return list(
+                await session.scalars(
+                    select(CheckpointModel)
+                    .where(CheckpointModel.run_id == run_id)
+                    .order_by(CheckpointModel.stage_index, CheckpointModel.created_at)
+                )
+            )
+
+    checkpoints = getattr(services.repository, "checkpoints", None)
+    if isinstance(checkpoints, dict):
+        return list(checkpoints.get(run_id, []))
+
+    raise RuntimeError("Repository does not support listing checkpoints")
+
+
+async def register_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _json_error("Invalid JSON body", 400)
+
+    name = body.get("name")
+    local_path = body.get("local_path")
+    if not isinstance(name, str) or not name:
+        return _json_error("Missing 'name' field", 400)
+    if not isinstance(local_path, str) or not local_path:
+        return _json_error("Missing 'local_path' field", 400)
+
+    repo_path = Path(local_path).expanduser().resolve()
+    if not repo_path.is_dir():
+        return _json_error(f"Repository path {repo_path} does not exist", 400)
+
+    try:
+        metadata = read_git_metadata(repo_path)
+        project_config = load_project_config(repo_path / ".attractor" / "project.toml")
+        packages = discover_workflow_packages(repo_path)
+    except AttractorPlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(str(exc), 500)
+
+    now = dt.datetime.now(dt.UTC)
+    repo_id = _repo_identifier(repo_path)
+    repo = await services.repository.register_repo(
+        repo_id=repo_id,
+        name=name,
+        local_path=str(repo_path),
+        default_branch=metadata.branch,
+        current_commit=metadata.commit,
+        dirty_state=metadata.dirty_state.value,
+        timestamp=now,
+    )
+    for package in packages:
+        await services.repository.upsert_workflow(
+            workflow_id=_workflow_identifier(repo_id, package.name),
+            repo_id=repo_id,
+            name=package.name,
+            dot_path=str(package.dot_path),
+            toml_path=str(package.toml_path) if package.toml_path is not None else None,
+            status=package.status.value,
+            diagnostics=_serialize_diagnostics(package),
+            timestamp=now,
+        )
+
+    payload = _serialize_repo(repo)
+    payload["project_config"] = project_config.model_dump(mode="json")
+    payload["workflow_count"] = len(packages)
+    return JSONResponse(payload, status_code=201)
+
+
+async def list_repos(request: Request) -> JSONResponse:
+    services = _services(request)
+    repos = await _list_repos(services)
+    return JSONResponse({"items": [_serialize_repo(repo) for repo in repos]})
+
+
+async def get_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo = await _get_repo(services, request.path_params["repo_id"])
+    if repo is None:
+        return _json_error(f"Repository {request.path_params['repo_id']} not found", 404)
+    return JSONResponse(_serialize_repo(repo))
+
+
+async def get_project_config(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo = await _get_repo(services, request.path_params["repo_id"])
+    if repo is None:
+        return _json_error(f"Repository {request.path_params['repo_id']} not found", 404)
+
+    try:
+        config = load_project_config(Path(repo.local_path) / ".attractor" / "project.toml")
+    except AttractorPlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+    return JSONResponse(
+        {
+            "repo_id": repo.id,
+            "status": "valid",
+            "config": config.model_dump(mode="json"),
+        }
+    )
+
+
+async def list_workflows(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo_id = request.path_params["repo_id"]
+    repo = await _get_repo(services, repo_id)
+    if repo is None:
+        return _json_error(f"Repository {repo_id} not found", 404)
+
+    workflows = await _list_workflows(services, repo_id)
+    return JSONResponse([_serialize_workflow(workflow) for workflow in workflows])
+
+
+async def validate_workflow(request: Request) -> JSONResponse:
+    services = _services(request)
+    workflow_id = request.path_params["workflow_id"]
+    workflow = await _get_workflow(services, workflow_id)
+    if workflow is None:
+        return _json_error(f"Workflow {workflow_id} not found", 404)
+
+    repo = await _get_repo(services, workflow.repo_id)
+    if repo is None:
+        return _json_error(f"Repository {workflow.repo_id} not found", 404)
+
+    package = inspect_workflow_package(repo.local_path, workflow.name)
+    if package.status.value != workflow.status or package.error is not None:
+        await services.repository.upsert_workflow(
+            workflow_id=workflow_id,
+            repo_id=repo.id,
+            name=package.name,
+            dot_path=str(package.dot_path),
+            toml_path=str(package.toml_path) if package.toml_path is not None else None,
+            status=package.status.value,
+            diagnostics=_serialize_diagnostics(package),
+            timestamp=dt.datetime.now(dt.UTC),
+        )
+    return JSONResponse(_serialize_workflow_package(workflow_id, repo.id, package))
+
+
 async def create_run(request: Request) -> JSONResponse:
     services = _services(request)
     try:
@@ -282,14 +744,14 @@ async def create_run(request: Request) -> JSONResponse:
         return _json_error("Invalid JSON body", 400)
 
     repo_path = body.get("repo_path")
-    workflow_name = body.get("workflow")
+    workflow_name = body.get("workflow_name", body.get("workflow"))
     actor_label = body.get("actor_label", "")
     inputs = body.get("inputs", {})
 
     if not isinstance(repo_path, str) or not repo_path:
         return _json_error("Missing 'repo_path' field", 400)
     if not isinstance(workflow_name, str) or not workflow_name:
-        return _json_error("Missing 'workflow' field", 400)
+        return _json_error("Missing 'workflow_name' or 'workflow' field", 400)
     if not isinstance(actor_label, str):
         return _json_error("'actor_label' must be a string", 400)
     if not isinstance(inputs, dict):
@@ -313,12 +775,31 @@ async def create_run(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_run(run), status_code=201)
 
 
+async def list_runs(request: Request) -> JSONResponse:
+    services = _services(request)
+    runs = await _list_runs(services)
+    return JSONResponse({"items": [_serialize_run(run) for run in runs]})
+
+
 async def get_run(request: Request) -> JSONResponse:
     services = _services(request)
     run = await _get_run_or_404(services.repository, request.path_params["run_id"])
     if isinstance(run, JSONResponse):
         return run
     return JSONResponse(_serialize_run(run))
+
+
+async def list_run_events(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    after_sequence = _parse_non_negative_int(request.query_params.get("after_sequence"), 0)
+    limit = min(_parse_non_negative_int(request.query_params.get("limit"), 100), 500)
+    events = await _list_events_for_run(services, run_id, after_sequence, limit)
+    return JSONResponse({"items": [_serialize_event(event) for event in events]})
 
 
 async def list_approvals(request: Request) -> JSONResponse:
@@ -330,6 +811,30 @@ async def list_approvals(request: Request) -> JSONResponse:
 
     approvals = await _list_approvals_for_run(services, run_id)
     return JSONResponse({"items": [_serialize_approval(approval) for approval in approvals]})
+
+
+async def list_artifacts(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    artifacts = await _list_artifacts_for_run(services, run_id)
+    return JSONResponse({"items": [_serialize_artifact(artifact) for artifact in artifacts]})
+
+
+async def list_checkpoints(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    checkpoints = await _list_checkpoints_for_run(services, run_id)
+    return JSONResponse(
+        {"items": [_serialize_checkpoint(checkpoint) for checkpoint in checkpoints]}
+    )
 
 
 async def decide_approval(request: Request) -> JSONResponse:
@@ -402,21 +907,107 @@ async def decide_approval(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_approval(decided))
 
 
-def create_app(
+async def cancel_run(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    task = getattr(services.executor, "active_tasks", {}).get(run_id)
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+        return JSONResponse({"id": run_id, "status": "cancelling"})
+
+    if run.status in {
+        RunStatus.COMPLETED.value,
+        RunStatus.FAILED.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.WRITEBACK_APPLIED.value,
+        RunStatus.WRITEBACK_FAILED.value,
+    }:
+        return _json_error(f"Run {run_id} is already {run.status}", 409)
+
+    return _json_error(f"Run {run_id} has no active executor task in this process", 409)
+
+
+async def request_writeback(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _json_error("Invalid JSON body", 400)
+
+    actor_label = body.get("actor_label")
+    if not isinstance(actor_label, str) or not actor_label:
+        return _json_error("Missing 'actor_label' field", 400)
+
+    return JSONResponse(
+        {
+            "error": "Write-back promotion is not implemented until Task 12",
+            "run_id": run_id,
+            "actor_label": actor_label,
+            "status": "not_implemented",
+        },
+        status_code=501,
+    )
+
+
+async def system_health(request: Request) -> JSONResponse:
+    _services(request)
+    return JSONResponse({"status": "ok"})
+
+
+async def system_capacity(request: Request) -> JSONResponse:
+    services = _services(request)
+    active_tasks = getattr(services.executor, "active_tasks", {})
+    active_count = sum(1 for task in active_tasks.values() if not task.done())
+    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    return JSONResponse(
+        {
+            "active_runs": active_count,
+            "max_concurrent_runs": max_concurrent,
+            "available_slots": None
+            if not isinstance(max_concurrent, int)
+            else max(max_concurrent - active_count, 0),
+        }
+    )
+
+
+def create_platform_app(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     executor: DurableRunExecutor,
 ) -> Starlette:
     app = Starlette(
         routes=[
+            Route("/api/repos", register_repo, methods=["POST"]),
+            Route("/api/repos", list_repos, methods=["GET"]),
+            Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
+            Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
+            Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
+            Route("/api/workflows/{workflow_id}/validate", validate_workflow, methods=["POST"]),
             Route("/api/runs", create_run, methods=["POST"]),
+            Route("/api/runs", list_runs, methods=["GET"]),
             Route("/api/runs/{run_id}", get_run, methods=["GET"]),
+            Route("/api/runs/{run_id}/events", list_run_events, methods=["GET"]),
             Route("/api/runs/{run_id}/approvals", list_approvals, methods=["GET"]),
             Route(
                 "/api/runs/{run_id}/approvals/{approval_id}",
                 decide_approval,
                 methods=["POST"],
             ),
+            Route("/api/runs/{run_id}/artifacts", list_artifacts, methods=["GET"]),
+            Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
+            Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
+            Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
+            Route("/api/system/health", system_health, methods=["GET"]),
+            Route("/api/system/capacity", system_capacity, methods=["GET"]),
         ]
     )
     app.state.platform_services = _PlatformServices(
@@ -425,3 +1016,11 @@ def create_app(
         session_factory=session_factory,
     )
     return app
+
+
+def create_app(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    executor: DurableRunExecutor,
+) -> Starlette:
+    return create_platform_app(session_factory=session_factory, executor=executor)
