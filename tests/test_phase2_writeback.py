@@ -81,6 +81,7 @@ class _InMemoryWriteBackRepository:
         self.runs: dict[str, _Run] = {}
         self.events: dict[str, list[_Event]] = {}
         self.writebacks: list[_WriteBack] = []
+        self.atomic_writeback_calls = 0
 
     async def get_repo(self, repo_id: str) -> _Repo | None:
         return self.repos.get(repo_id)
@@ -148,6 +149,51 @@ class _InMemoryWriteBackRepository:
         self.writebacks.append(writeback)
         return writeback
 
+    async def record_writeback_result(
+        self,
+        writeback_id: str,
+        run_id: str,
+        source_branch: str,
+        target_branch: str,
+        actor_label: str,
+        status: str,
+        commit_sha: str | None,
+        error_message: str | None,
+        timestamp: dt.datetime,
+    ) -> _WriteBack:
+        self.atomic_writeback_calls += 1
+        writeback = await self.create_writeback(
+            writeback_id=writeback_id,
+            run_id=run_id,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            status=status,
+            commit_sha=commit_sha,
+            error_message=error_message,
+            timestamp=timestamp,
+        )
+        event_type = "writeback.applied" if status == "applied" else "writeback.failed"
+        await self.append_event(
+            run_id=run_id,
+            event_type=event_type,
+            payload={
+                "source_branch": source_branch,
+                "target_branch": target_branch,
+                "commit_sha": commit_sha,
+                "error_message": error_message,
+            },
+            actor_label=actor_label,
+            timestamp=timestamp,
+        )
+        await self.update_run_status(
+            run_id,
+            RunStatus.WRITEBACK_APPLIED if status == "applied" else RunStatus.WRITEBACK_FAILED,
+            error_category=None if status == "applied" else "writeback_failed",
+            error_message=error_message if status != "applied" else None,
+        )
+        return writeback
+
 
 class _FakeExecutor:
     def __init__(self, repository: _InMemoryWriteBackRepository) -> None:
@@ -155,6 +201,23 @@ class _FakeExecutor:
         self.active_tasks: dict[str, Any] = {}
         self.max_concurrent_runs = 1
         self.git = GitRunner()
+
+
+class _FailingAtomicWriteBackRepository(_InMemoryWriteBackRepository):
+    async def record_writeback_result(
+        self,
+        writeback_id: str,
+        run_id: str,
+        source_branch: str,
+        target_branch: str,
+        actor_label: str,
+        status: str,
+        commit_sha: str | None,
+        error_message: str | None,
+        timestamp: dt.datetime,
+    ) -> _WriteBack:
+        self.atomic_writeback_calls += 1
+        raise RuntimeError("atomic persistence failed")
 
 
 @dataclass
@@ -275,11 +338,69 @@ async def test_successful_writeback_promotes_managed_branch(
     assert payload["status"] == "applied"
     assert payload["target_branch"] == "feature/promoted"
     assert payload["commit_sha"] == git_scenario.managed_commit
+    assert payload["applied_at"] is not None
+    assert harness.repository.writebacks[-1].applied_at is not None
     assert harness.repository.runs["run_1"].status == RunStatus.WRITEBACK_APPLIED.value
     assert harness.repository.events["run_1"][-1].event_type == "writeback.applied"
+    assert harness.repository.atomic_writeback_calls == 1
     assert _git(git_scenario.repo_path, "rev-parse", "feature/promoted") == (
         git_scenario.managed_commit
     )
+
+
+async def test_writeback_rejects_non_completed_run_without_mutation(
+    harness: _Harness,
+    git_scenario: _GitScenario,
+) -> None:
+    run = harness.repository.runs["run_1"]
+    run.status = RunStatus.WAITING_FOR_APPROVAL.value
+    before_status = run.status
+
+    response = await harness.client.post(
+        "/api/runs/run_1/writeback",
+        json={"target_branch": "feature/promoted", "actor_label": "alice"},
+    )
+
+    assert response.status_code == 409
+    assert "completed" in response.json()["error"]
+    assert harness.repository.runs["run_1"].status == before_status
+    assert harness.repository.writebacks == []
+    assert harness.repository.events == {}
+    assert harness.repository.atomic_writeback_calls == 0
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/feature/promoted"],
+            cwd=git_scenario.repo_path,
+            check=False,
+        ).returncode
+        == 1
+    )
+
+
+async def test_writeback_atomic_persistence_failure_does_not_partially_mutate(
+    harness: _Harness,
+) -> None:
+    repository = _FailingAtomicWriteBackRepository()
+    repository.repos.update(harness.repository.repos)
+    repository.runs.update(harness.repository.runs)
+    app = create_platform_app(
+        session_factory=cast(Any, None),
+        executor=cast(Any, _FakeExecutor(repository)),
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/api/runs/run_1/writeback",
+            json={"target_branch": "feature/promoted", "actor_label": "alice"},
+        )
+
+    assert response.status_code == 500
+    assert "persistence failed" in response.json()["error"]
+    assert repository.runs["run_1"].status == RunStatus.COMPLETED.value
+    assert repository.writebacks == []
+    assert repository.events == {}
+    assert repository.atomic_writeback_calls == 1
 
 
 async def test_writeback_rejects_protected_main(

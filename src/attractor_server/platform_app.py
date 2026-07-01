@@ -40,7 +40,6 @@ from attractor_platform.storage.models import (
     RunRecordModel,
     RunStatus,
     WorkflowPackageModel,
-    WriteBackModel,
 )
 from attractor_platform.storage.repositories import PlatformRepository
 from attractor_server.platform_sse import durable_run_event_stream, parse_sse_after_sequence
@@ -1011,8 +1010,26 @@ async def _persist_writeback_result(
     timestamp: dt.datetime,
 ) -> Any:
     source_branch = getattr(run, "managed_branch", None) or ""
+    writeback_id = f"wb_{uuid.uuid4().hex}"
+    record_writeback_result = cast(
+        Callable[..., Awaitable[Any]] | None,
+        getattr(services.repository, "record_writeback_result", None),
+    )
+    if record_writeback_result is not None:
+        return await record_writeback_result(
+            writeback_id=writeback_id,
+            run_id=run.id,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            status=status,
+            commit_sha=commit_sha,
+            error_message=error_message,
+            timestamp=timestamp,
+        )
+
     writeback = await services.repository.create_writeback(
-        writeback_id=f"wb_{uuid.uuid4().hex}",
+        writeback_id=writeback_id,
         run_id=run.id,
         source_branch=source_branch,
         target_branch=target_branch,
@@ -1022,8 +1039,6 @@ async def _persist_writeback_result(
         error_message=error_message,
         timestamp=timestamp,
     )
-    if isinstance(writeback, WriteBackModel) and status == "applied":
-        writeback.applied_at = timestamp
     event_type = "writeback.applied" if status == "applied" else "writeback.failed"
     await services.repository.append_event(
         run_id=run.id,
@@ -1105,6 +1120,12 @@ async def request_writeback(request: Request) -> JSONResponse:
     allow_protected = body.get("allow_protected", False)
     if not isinstance(allow_protected, bool):
         return _json_error("'allow_protected' must be a boolean", 400)
+
+    if run.status != RunStatus.COMPLETED.value:
+        return _json_error(
+            f"Run {run_id} must be completed before write-back; current status is {run.status}",
+            409,
+        )
 
     repo = await _get_repo(services, run.repo_id)
     if repo is None:

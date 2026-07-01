@@ -331,7 +331,68 @@ class PlatformRepository:
                 commit_sha=commit_sha,
                 error_message=error_message,
                 created_at=timestamp,
+                applied_at=timestamp if status == "applied" else None,
             )
             session.add(writeback)
+            await session.flush()
+            return writeback
+
+    async def record_writeback_result(
+        self,
+        writeback_id: str,
+        run_id: str,
+        source_branch: str,
+        target_branch: str,
+        actor_label: str,
+        status: str,
+        commit_sha: str | None,
+        error_message: str | None,
+        timestamp: dt.datetime,
+    ) -> WriteBackModel:
+        async with session_scope(self._session_factory) as session:
+            locked_run = await session.scalar(_select_run_for_append_lock(run_id))
+            if locked_run is None:
+                raise KeyError(f"Run not found: {run_id}")
+            writeback = WriteBackModel(
+                id=writeback_id,
+                run_id=run_id,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                actor_label=actor_label,
+                status=status,
+                commit_sha=commit_sha,
+                error_message=error_message,
+                created_at=timestamp,
+                applied_at=timestamp if status == "applied" else None,
+            )
+            session.add(writeback)
+            max_sequence = await session.scalar(
+                select(func.max(RunEventModel.sequence)).where(RunEventModel.run_id == run_id)
+            )
+            event_type = "writeback.applied" if status == "applied" else "writeback.failed"
+            event = RunEventModel(
+                run_id=run_id,
+                sequence=(max_sequence or 0) + 1,
+                event_type=event_type,
+                payload=redact_mapping(
+                    {
+                        "source_branch": source_branch,
+                        "target_branch": target_branch,
+                        "commit_sha": commit_sha,
+                        "error_message": error_message,
+                    }
+                ),
+                actor_label=actor_label,
+                created_at=timestamp,
+            )
+            session.add(event)
+            locked_run.status = (
+                RunStatus.WRITEBACK_APPLIED.value
+                if status == "applied"
+                else RunStatus.WRITEBACK_FAILED.value
+            )
+            locked_run.error_category = None if status == "applied" else "writeback_failed"
+            locked_run.error_message = error_message if status != "applied" else None
+            locked_run.updated_at = dt.datetime.now(dt.UTC)
             await session.flush()
             return writeback
