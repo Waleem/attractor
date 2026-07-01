@@ -55,8 +55,10 @@ class _InMemoryPlatformRepository:
         self.events: dict[str, list[_FakeEvent]] = {}
         self.artifacts: dict[str, list[_FakeArtifact]] = {}
         self.checkpoints: dict[str, list[_FakeCheckpoint]] = {}
+        self.register_repo_calls: list[dict[str, Any]] = []
 
-    async def register_repo(self, **_: Any) -> None:
+    async def register_repo(self, **kwargs: Any) -> None:
+        self.register_repo_calls.append(dict(kwargs))
         return None
 
     async def upsert_workflow(self, **_: Any) -> None:
@@ -313,6 +315,36 @@ async def test_register_and_launch_tracks_active_task_and_removes_it_after_compl
     assert run.status == RunStatus.COMPLETED.value
     assert run_id not in executor.active_tasks
     assert checkpoints
+
+
+async def test_register_and_launch_preserves_valid_project_config_status(
+    tmp_path: Path,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="noop", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> done
+        }
+        """,
+    )
+    executor, repository = _make_executor(tmp_path)
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+    await executor.wait(run_id)
+
+    assert repository.register_repo_calls
+    assert repository.register_repo_calls[0]["project_config_status"] == "valid"
 
 
 async def test_failed_run_captures_runtime_artifacts_and_clears_active_task(

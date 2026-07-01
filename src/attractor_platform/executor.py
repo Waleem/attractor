@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import datetime as dt
 import hashlib
+import inspect
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
@@ -175,15 +176,18 @@ class DurableRunExecutor:
         workflow_id = _workflow_identifier(run_spec.repo_id, package.name)
         now = dt.datetime.now(dt.UTC)
 
-        await self.repository.register_repo(
-            repo_id=run_spec.repo_id,
-            name=package.repo_path.name,
-            local_path=str(package.repo_path),
-            default_branch=run_spec.source_branch,
-            current_commit=run_spec.source_commit,
-            dirty_state=run_spec.dirty_state.value,
-            timestamp=now,
-        )
+        register_repo_kwargs: dict[str, Any] = {
+            "repo_id": run_spec.repo_id,
+            "name": package.repo_path.name,
+            "local_path": str(package.repo_path),
+            "default_branch": run_spec.source_branch,
+            "current_commit": run_spec.source_commit,
+            "dirty_state": run_spec.dirty_state.value,
+            "timestamp": now,
+        }
+        if _accepts_project_config_status(self.repository.register_repo):
+            register_repo_kwargs["project_config_status"] = "valid"
+        await self.repository.register_repo(**register_repo_kwargs)
         await self.repository.upsert_workflow(
             workflow_id=workflow_id,
             repo_id=run_spec.repo_id,
@@ -1155,6 +1159,17 @@ def _repo_identifier(repo_path: Path) -> str:
 def _workflow_identifier(repo_id: str, workflow_name: str) -> str:
     digest = hashlib.sha1(f"{repo_id}:{workflow_name}".encode()).hexdigest()
     return f"wf_{digest[:32]}"
+
+
+def _accepts_project_config_status(
+    register_repo: Callable[..., Awaitable[Any]],
+) -> bool:
+    parameters = inspect.signature(register_repo).parameters.values()
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "project_config_status"
+        for parameter in parameters
+    )
 
 
 def _run_status_for_result(result: PipelineResult) -> RunStatus:
