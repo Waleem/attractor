@@ -26,11 +26,14 @@ export function WorkflowDetailRoute({
   const [validation, setValidation] = useState<Workflow | null>(null);
   const [actorLabel, setActorLabel] = useState("operator");
   const [inputsJson, setInputsJson] = useState("{}");
+  const [requestedEnvironment, setRequestedEnvironment] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [launchDiagnostic, setLaunchDiagnostic] = useState<string | null>(null);
 
   const repo = workflowState.data?.repo ?? null;
   const workflow = validation ?? workflowState.data?.workflow ?? null;
+  const environmentOptions = environmentNames(configState.data?.config);
 
   async function runValidation() {
     setSubmitting(true);
@@ -51,13 +54,19 @@ export function WorkflowDetailRoute({
     }
     setSubmitting(true);
     setActionError(null);
+    setLaunchDiagnostic(null);
     try {
-      const inputs = JSON.parse(inputsJson) as Record<string, unknown>;
+      const parsedInputs = JSON.parse(inputsJson) as unknown;
+      if (!isStringRecord(parsedInputs)) {
+        setLaunchDiagnostic("Inputs JSON must be an object with string values.");
+        return;
+      }
       const run = await launchRun({
         repo_path: repo.local_path,
         workflow_name: workflow.name,
         actor_label: actorLabel,
-        inputs
+        inputs: parsedInputs,
+        requested_environment: requestedEnvironment
       });
       navigate(`/runs/${run.id}`);
     } catch (caught) {
@@ -104,9 +113,23 @@ export function WorkflowDetailRoute({
               <Field label="Actor">
                 <input value={actorLabel} onChange={(event) => setActorLabel(event.target.value)} required />
               </Field>
+              <Field label="Environment">
+                <select
+                  value={requestedEnvironment}
+                  onChange={(event) => setRequestedEnvironment(event.target.value)}
+                >
+                  <option value="">Project default</option>
+                  {environmentOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
               <Field label="Inputs JSON">
                 <textarea rows={6} value={inputsJson} onChange={(event) => setInputsJson(event.target.value)} />
               </Field>
+              {launchDiagnostic ? <div className="error-banner">{launchDiagnostic}</div> : null}
               <button type="submit" disabled={submitting || workflow.status !== "valid"}>
                 Launch
               </button>
@@ -115,6 +138,32 @@ export function WorkflowDetailRoute({
         </>
       ) : null}
     </>
+  );
+}
+
+function environmentNames(config: ProjectConfigStatus["config"] | undefined): string[] {
+  if (!config) {
+    return [];
+  }
+  const names = new Set<string>();
+  if (config.default_environment) {
+    names.add(config.default_environment);
+  }
+  for (const mode of config.allowed_execution_modes ?? []) {
+    names.add(mode);
+  }
+  for (const name of Object.keys(config.environments ?? {})) {
+    names.add(name);
+  }
+  return [...names].filter((name) => name);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  return Object.entries(value).every(
+    ([key, item]) => typeof key === "string" && typeof item === "string"
   );
 }
 

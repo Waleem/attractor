@@ -778,6 +778,7 @@ async def create_run(request: Request) -> JSONResponse:
     workflow_name = body.get("workflow_name", body.get("workflow"))
     actor_label = body.get("actor_label", "")
     inputs = body.get("inputs", {})
+    requested_environment = body.get("requested_environment", "")
 
     if not isinstance(repo_path, str) or not repo_path:
         return _json_error("Missing 'repo_path' field", 400)
@@ -787,13 +788,28 @@ async def create_run(request: Request) -> JSONResponse:
         return _json_error("'actor_label' must be a string", 400)
     if not isinstance(inputs, dict):
         return _json_error("'inputs' must be an object", 400)
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in inputs.items()):
+        return _json_error("'inputs' must be an object with string keys and string values", 400)
+    if not isinstance(requested_environment, str):
+        return _json_error("'requested_environment' must be a string", 400)
 
     try:
+        launch_kwargs: dict[str, Any] = {
+            "repo_path": repo_path,
+            "workflow_name": workflow_name,
+            "actor_label": actor_label,
+            "inputs": inputs,
+        }
+        launch_parameters = inspect.signature(
+            services.executor.register_and_launch,
+        ).parameters
+        if "requested_environment" in launch_parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in launch_parameters.values()
+        ):
+            launch_kwargs["requested_environment"] = requested_environment
         run_id = await services.executor.register_and_launch(
-            repo_path=repo_path,
-            workflow_name=workflow_name,
-            actor_label=actor_label,
-            inputs=inputs,
+            **launch_kwargs,
         )
     except AttractorPlatformError as exc:
         return JSONResponse(exc.to_dict(), status_code=400)

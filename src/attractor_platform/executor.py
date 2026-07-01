@@ -171,11 +171,15 @@ class DurableRunExecutor:
         workflow_name: str,
         actor_label: str,
         inputs: dict[str, str],
+        requested_environment: str = "",
     ) -> str:
         package = load_workflow_package(repo_path, workflow_name)
-        run_spec = build_run_spec(package, inputs=inputs, actor_label=actor_label).model_copy(
-            update={"repo_id": _repo_identifier(package.repo_path)}
-        )
+        run_spec = build_run_spec(
+            package,
+            inputs=inputs,
+            actor_label=actor_label,
+            requested_environment=requested_environment,
+        ).model_copy(update={"repo_id": _repo_identifier(package.repo_path)})
         workflow_id = _workflow_identifier(run_spec.repo_id, package.name)
         now = dt.datetime.now(dt.UTC)
 
@@ -866,6 +870,13 @@ class DurableRunExecutor:
         terminal_event_type: str | None,
         terminal_payload: dict[str, Any] | None,
     ) -> tuple[str | None, dict[str, Any] | None]:
+        if terminal_event_type is None and result.status == PipelineStatus.COMPLETED:
+            outputs = {
+                key: value
+                for key, value in result.context.items()
+                if key.startswith("codergen.") and key.endswith(".output") and isinstance(value, str)
+            }
+            return "run.completed", {"outputs": outputs}
         if terminal_event_type is None and result.status == PipelineStatus.FAILED:
             return "run.failed", {"error": result.error or "unknown"}
         return terminal_event_type, terminal_payload

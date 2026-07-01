@@ -52,6 +52,15 @@ export interface Workflow {
 export interface ProjectConfig {
   default_environment?: string;
   allowed_execution_modes?: string[];
+  environments?: Record<
+    string,
+    {
+      mode?: string;
+      description?: string;
+      image?: string;
+      working_dir?: string;
+    }
+  >;
   [key: string]: unknown;
 }
 
@@ -66,7 +75,8 @@ export interface LaunchRunInput {
   workflow_name?: string;
   workflow?: string;
   actor_label: string;
-  inputs: Record<string, unknown>;
+  inputs: Record<string, string>;
+  requested_environment: string;
 }
 
 export interface RunRecord {
