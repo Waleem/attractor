@@ -82,6 +82,21 @@ def test_build_platform_codergen_backend_honors_explicit_provider_and_model(
     assert backend_any._default_model == "gpt-custom"
 
 
+def test_build_platform_codergen_backend_returns_none_for_explicit_provider_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+
+    assert (
+        build_platform_codergen_backend(
+            default_provider="openai",
+            default_model=None,
+        )
+        is None
+    )
+
+
 def test_build_platform_codergen_backend_returns_none_without_provider_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

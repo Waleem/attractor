@@ -7,13 +7,13 @@ from collections.abc import Callable
 
 from attractor_agent.profiles import get_profile
 from attractor_llm.adapters.anthropic import AnthropicAdapter
-from attractor_llm.adapters.base import ProviderConfig
+from attractor_llm.adapters.base import ProviderAdapter, ProviderConfig
 from attractor_llm.adapters.gemini import GeminiAdapter
 from attractor_llm.adapters.openai import OpenAIAdapter
 from attractor_llm.client import Client
 from attractor_pipeline.backends import AgentLoopBackend
 
-_ProviderAdapterFactory = Callable[[ProviderConfig], object]
+_ProviderAdapterFactory = Callable[[ProviderConfig], ProviderAdapter]
 
 _PROVIDER_ENV_ORDER: tuple[tuple[str, str, _ProviderAdapterFactory], ...] = (
     ("anthropic", "ANTHROPIC_API_KEY", AnthropicAdapter),
@@ -34,6 +34,7 @@ def build_platform_codergen_backend(
     """
     client = Client()
     first_available_provider: str | None = None
+    registered_providers: set[str] = set()
 
     for provider, env_name, adapter_factory in _PROVIDER_ENV_ORDER:
         api_key = os.environ.get(env_name)
@@ -48,9 +49,13 @@ def build_platform_codergen_backend(
                 )
             ),
         )
+        registered_providers.add(provider)
         first_available_provider = first_available_provider or provider
 
     if first_available_provider is None:
+        return None
+
+    if default_provider is not None and default_provider not in registered_providers:
         return None
 
     provider = default_provider or first_available_provider
