@@ -363,6 +363,18 @@ async def test_create_run_rejects_non_string_input_values(
     assert "inputs" in response.json()["error"]
 
 
+async def test_create_run_rejects_non_object_json_body(
+    platform_harness: _Harness,
+) -> None:
+    response = await platform_harness.client.post(
+        "/api/runs",
+        json=["not", "an", "object"],
+    )
+
+    assert response.status_code == 400
+    assert "object" in response.json()["error"]
+
+
 async def test_create_run_rejects_non_string_requested_environment(
     platform_harness: _Harness,
     sample_repo: Path,

@@ -44,6 +44,7 @@ from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
 from attractor_platform.git import GitRunner, PreparedWorktree, WorktreeManager
 from attractor_platform.packages import WorkflowPackage, load_workflow_package
+from attractor_platform.redaction import redact_text
 from attractor_platform.run_environment import select_run_environment
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
@@ -56,6 +57,7 @@ from attractor_platform.storage.models import (
 from attractor_platform.storage.repositories import PlatformRepository
 
 _QUEUE_SENTINEL = object()
+CODERGEN_OUTPUT_PREVIEW_MAX_CHARS = 4096
 
 
 @dataclass(frozen=True)
@@ -872,7 +874,7 @@ class DurableRunExecutor:
     ) -> tuple[str | None, dict[str, Any] | None]:
         if terminal_event_type is None and result.status == PipelineStatus.COMPLETED:
             outputs = {
-                key: value
+                key: _preview_codergen_output(value)
                 for key, value in result.context.items()
                 if key.startswith("codergen.") and key.endswith(".output") and isinstance(value, str)
             }
@@ -1151,6 +1153,16 @@ def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
     if isinstance(event, PipelineFailed):
         return "pipeline.failed", payload
     return "pipeline.event", payload
+
+
+def _preview_codergen_output(value: str) -> str:
+    redacted = redact_text(value)
+    if len(redacted) <= CODERGEN_OUTPUT_PREVIEW_MAX_CHARS:
+        return redacted
+    return (
+        redacted[:CODERGEN_OUTPUT_PREVIEW_MAX_CHARS]
+        + f"\n[truncated to {CODERGEN_OUTPUT_PREVIEW_MAX_CHARS} of {len(redacted)} characters]"
+    )
 
 
 def _serialize_diagnostics(package: WorkflowPackage) -> dict[str, Any]:

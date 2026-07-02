@@ -15,7 +15,7 @@ from attractor_agent.abort import AbortSignal
 from attractor_agent.tools.core import get_environment
 from attractor_pipeline.engine.runner import PipelineStatus
 from attractor_pipeline.graph import Node
-from attractor_platform.executor import DurableRunExecutor
+from attractor_platform.executor import CODERGEN_OUTPUT_PREVIEW_MAX_CHARS, DurableRunExecutor
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import ArtifactModel, Base, RunStatus
 
@@ -41,6 +41,22 @@ class RecordingCodergenBackend:
             encoding="utf-8",
         )
         return "fake codergen completed"
+
+
+class LongOutputCodergenBackend:
+    async def run(
+        self,
+        node: Node,
+        prompt: str,
+        context: dict[str, Any],
+        abort_signal: AbortSignal | None = None,
+    ) -> str:
+        del node, prompt, context, abort_signal
+        return (
+            "visible fake codergen output\n"
+            + ("x" * CODERGEN_OUTPUT_PREVIEW_MAX_CHARS)
+            + "tail that must not persist"
+        )
 
 
 @pytest_asyncio.fixture
@@ -153,3 +169,38 @@ async def test_durable_executor_runs_codergen_backend_without_provider_keys(
     ).stdout
     assert promoted_content == "fake codergen wrote this\n"
     assert (repo_path / "agent-output.txt").exists() is False
+
+
+async def test_run_completed_bounds_long_codergen_output_evidence(
+    tmp_path: Path,
+    platform_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    repo_path = _init_codergen_repo(tmp_path)
+    executor = DurableRunExecutor.for_tests(
+        session_factory=platform_session_factory,
+        worktree_root=tmp_path / "worktrees",
+        artifact_root=tmp_path / "artifacts",
+        codergen_backend=LongOutputCodergenBackend(),
+    )
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="real-agent",
+        actor_label="tester",
+        inputs={},
+    )
+    result = await executor.wait(run_id)
+    events = await executor.repository.list_events(run_id, after_sequence=0, limit=100)
+    completed_payload = next(
+        event.payload for event in events if event.event_type == "run.completed"
+    )
+    output_evidence = completed_payload["outputs"]["codergen.generate.output"]
+
+    assert result.status == PipelineStatus.COMPLETED
+    assert output_evidence.startswith("visible fake codergen output")
+    assert "tail that must not persist" not in output_evidence
+    assert "[truncated" in output_evidence
+    assert len(output_evidence) <= CODERGEN_OUTPUT_PREVIEW_MAX_CHARS + 128

@@ -76,7 +76,7 @@ export interface LaunchRunInput {
   workflow?: string;
   actor_label: string;
   inputs: Record<string, string>;
-  requested_environment: string;
+  requested_environment?: string;
 }
 
 export interface RunRecord {

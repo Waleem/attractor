@@ -773,6 +773,8 @@ async def create_run(request: Request) -> JSONResponse:
         body = await request.json()
     except Exception:  # noqa: BLE001
         return _json_error("Invalid JSON body", 400)
+    if not isinstance(body, dict):
+        return _json_error("JSON body must be an object", 400)
 
     repo_path = body.get("repo_path")
     workflow_name = body.get("workflow_name", body.get("workflow"))
