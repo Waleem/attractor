@@ -18,9 +18,7 @@ class _Executor:
     active_tasks: dict[str, object] = {}
 
 
-def test_platform_app_serves_embedded_spa_without_intercepting_api(
-    tmp_path: Path,
-) -> None:
+def _create_platform_app_with_spa(tmp_path: Path) -> Any:
     spa_dist = tmp_path / "web" / "dist"
     assets_dir = spa_dist / "assets"
     assets_dir.mkdir(parents=True)
@@ -33,11 +31,17 @@ def test_platform_app_serves_embedded_spa_without_intercepting_api(
         encoding="utf-8",
     )
 
-    app = create_platform_app(
+    return create_platform_app(
         session_factory=cast(Any, None),
         executor=cast(Any, _Executor()),
         spa_dist=spa_dist,
     )
+
+
+def test_platform_app_serves_embedded_spa_without_intercepting_api(
+    tmp_path: Path,
+) -> None:
+    app = _create_platform_app_with_spa(tmp_path)
 
     with TestClient(app) as client:
         root = client.get("/")
@@ -67,6 +71,31 @@ def test_platform_app_serves_embedded_spa_without_intercepting_api(
     assert "Attractor Console" not in unknown_api_put.text
     assert wrong_method_health.status_code == 405
     assert "Attractor Console" not in wrong_method_health.text
+
+
+def test_platform_app_spa_fallback_respects_root_path_prefix(tmp_path: Path) -> None:
+    app = _create_platform_app_with_spa(tmp_path)
+
+    with TestClient(app, root_path="/console") as client:
+        unknown_api = client.get("/console/api/unknown")
+        unknown_api_post = client.post("/console/api/unknown")
+        unknown_api_put = client.put("/console/api/unknown")
+        client_route = client.get("/console/runs/abc")
+        asset = client.get("/console/assets/app.js")
+        missing_asset = client.get("/console/assets/missing.js")
+
+    assert unknown_api.status_code == 404
+    assert "Attractor Console" not in unknown_api.text
+    assert unknown_api_post.status_code == 404
+    assert "Attractor Console" not in unknown_api_post.text
+    assert unknown_api_put.status_code == 404
+    assert "Attractor Console" not in unknown_api_put.text
+    assert client_route.status_code == 200
+    assert "Attractor Console" in client_route.text
+    assert asset.status_code == 200
+    assert "dataset.loaded" in asset.text
+    assert missing_asset.status_code == 404
+    assert "Attractor Console" not in missing_asset.text
 
 
 def test_platform_spa_dist_resolver_prefers_explicit_path_then_environment(

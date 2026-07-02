@@ -1713,6 +1713,20 @@ def _is_api_path(path: str) -> bool:
     return stripped == "api" or stripped.startswith("api/")
 
 
+def _request_path_relative_to_root_path(request: Request) -> str:
+    path = str(request.scope.get("path") or request.url.path)
+    root_path = str(request.scope.get("app_root_path") or request.scope.get("root_path") or "")
+    if not root_path or root_path == "/":
+        return path.lstrip("/")
+
+    normalized_root_path = "/" + root_path.strip("/")
+    if path == normalized_root_path:
+        path = "/"
+    elif path.startswith(f"{normalized_root_path}/"):
+        path = path[len(normalized_root_path) :]
+    return path.lstrip("/")
+
+
 def _default_not_found_response(exc: Exception) -> PlainTextResponse:
     headers = exc.headers if isinstance(exc, HTTPException) else None
     detail = exc.detail if isinstance(exc, HTTPException) else "Not Found"
@@ -1743,7 +1757,7 @@ def _platform_spa_not_found_handler(
     dist_path, index_path = spa_paths
 
     async def spa_not_found(request: Request, exc: Exception) -> Response:
-        path = request.url.path.lstrip("/")
+        path = _request_path_relative_to_root_path(request)
         if _is_api_path(path):
             return _json_error("Not found", 404)
 
