@@ -10,12 +10,53 @@ from __future__ import annotations
 
 import argparse
 import os
+from importlib import resources
 from pathlib import Path
 
 import uvicorn
 
 from attractor_server.app import create_app
 from attractor_server.pipeline_manager import PipelineManager
+
+
+def _existing_spa_dist(path: Path) -> Path | None:
+    resolved = path.expanduser().resolve()
+    if resolved.is_dir() and (resolved / "index.html").is_file():
+        return resolved
+    return None
+
+
+def _configured_spa_dist(path: str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Configured SPA dist directory does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"Configured SPA dist path is not a directory: {resolved}")
+    if not (resolved / "index.html").is_file():
+        raise FileNotFoundError(f"SPA dist directory must contain index.html: {resolved}")
+    return resolved
+
+
+def _resolve_platform_spa_dist(explicit_spa_dist: str | None) -> Path | None:
+    if explicit_spa_dist:
+        return _configured_spa_dist(explicit_spa_dist)
+
+    env_spa_dist = os.environ.get("ATTRACTOR_SPA_DIST", "").strip()
+    if env_spa_dist:
+        return _configured_spa_dist(env_spa_dist)
+
+    try:
+        packaged_dist = resources.files("attractor_server").joinpath("web", "dist")
+    except (AttributeError, ModuleNotFoundError):
+        packaged_dist = None
+    if packaged_dist is not None and packaged_dist.is_dir():
+        packaged_path = Path(str(packaged_dist))
+        existing_packaged_dist = _existing_spa_dist(packaged_path)
+        if existing_packaged_dist is not None:
+            return existing_packaged_dist
+
+    dev_dist = Path.cwd() / "web" / "dist"
+    return _existing_spa_dist(dev_dist)
 
 
 def main() -> None:
@@ -58,10 +99,19 @@ def main() -> None:
         default=os.environ.get("ATTRACTOR_ARTIFACT_ROOT", ".attractor-artifacts"),
         help="Platform artifact root",
     )
+    parser.add_argument(
+        "--spa-dist",
+        default=None,
+        help=(
+            "Platform SPA dist directory "
+            "(defaults to ATTRACTOR_SPA_DIST, bundled web/dist, or local web/dist)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.platform:
         from attractor_platform.executor import DurableRunExecutor
+        from attractor_platform.llm_backend import build_platform_codergen_backend
         from attractor_platform.storage.db import (
             DatabaseSettings,
             create_platform_engine,
@@ -75,12 +125,31 @@ def main() -> None:
             else DatabaseSettings.from_env()
         )
         session_factory = create_session_factory(engine)
+
+        runtime_default_provider = (
+            args.provider or os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip() or None
+        )
+        runtime_default_model = (
+            args.model or os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip() or None
+        )
+        codergen_backend = build_platform_codergen_backend(
+            default_provider=runtime_default_provider,
+            default_model=runtime_default_model,
+        )
         executor = DurableRunExecutor(
             session_factory=session_factory,
             worktree_root=Path(args.worktree_root),
             artifact_root=Path(args.artifact_root),
+            codergen_backend=codergen_backend,
         )
-        app = create_platform_app(session_factory=session_factory, executor=executor)
+        app = create_platform_app(
+            session_factory=session_factory,
+            executor=executor,
+            engine=engine,
+            default_provider=runtime_default_provider,
+            default_model=runtime_default_model,
+            spa_dist=_resolve_platform_spa_dist(args.spa_dist),
+        )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")
         print()

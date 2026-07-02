@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from attractor_platform.storage.models import Base
+
 
 def default_database_url(database_path: str | os.PathLike[str] | None = None) -> str:
     path = Path(database_path) if database_path is not None else Path(".attractor-platform.sqlite3")
@@ -45,6 +47,21 @@ def create_platform_engine(settings: DatabaseSettings) -> AsyncEngine:
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def initialize_platform_schema(engine: AsyncEngine) -> None:
+    """Create SQLite platform tables on startup.
+
+    SQLite is the local first-run path, so the platform can safely create its
+    own tables before serving requests. Postgres remains Alembic-managed; this
+    helper intentionally avoids mutating non-SQLite schemas.
+    """
+
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
 
 
 @asynccontextmanager

@@ -154,7 +154,9 @@ class TestStreamAccumulator:
         resp = acc.response()
         assert resp.text == "Answer"
         assert len(resp.reasoning) == 1
-        assert "Let me think" in resp.reasoning[0].text
+        reasoning_text = resp.reasoning[0].text
+        assert reasoning_text is not None
+        assert "Let me think" in reasoning_text
         assert resp.reasoning[0].signature == "sig-abc"
 
     def test_error_event_captured_in_warnings(self):

@@ -28,6 +28,10 @@ from attractor_agent.subagent import spawn_subagent
 from attractor_pipeline.server.app import app
 
 
+async def _ok_tool(**kw: Any) -> str:
+    return "ok"
+
+
 class TestMaxTurnsDefaults:
     """Task 1 — §9 SessionConfig defaults."""
 
@@ -75,8 +79,6 @@ class TestMaxTurnsDefaults:
         mock_response = Response(
             id="resp-1",
             model="test-model",
-            content=[],
-            stop_reason="end_turn",
             usage=Usage(input_tokens=10, output_tokens=5),
             provider="test",
         )
@@ -165,8 +167,6 @@ class TestMaxTurnsDefaults:
         mock_response = Response(
             id="resp-1",
             model="test-model",
-            content=[],
-            stop_reason="end_turn",
             usage=Usage(input_tokens=10, output_tokens=5),
             provider="test",
         )
@@ -339,8 +339,6 @@ class TestSessionEndEvent:
         resp = Response(
             id="r1",
             model="m",
-            content=[],
-            stop_reason="end_turn",
             usage=Usage(input_tokens=5, output_tokens=5),
             provider="test",
         )
@@ -378,8 +376,6 @@ class TestSessionEndEvent:
             resp = Response(
                 id="r1",
                 model="m",
-                content=[],
-                stop_reason="end_turn",
                 usage=Usage(input_tokens=5, output_tokens=5),
                 provider="test",
             )
@@ -433,8 +429,6 @@ class TestMiddlewareChain:
         mock_resp = Response(
             id="r1",
             model="m",
-            content=[],
-            stop_reason="end_turn",
             usage=Usage(input_tokens=1, output_tokens=1),
             provider="test",
         )
@@ -677,7 +671,7 @@ class TestAnthropicDescriptions:
             name="edit_file",
             description=caller_desc,
             parameters={"type": "object", "properties": {}},
-            execute=lambda **kw: "ok",
+            execute=_ok_tool,
         )
         profile = AnthropicProfile()
         result_tools = profile.get_tools([tool])
@@ -702,7 +696,7 @@ class TestAnthropicDescriptions:
             name="edit_file",
             description="",
             parameters={"type": "object", "properties": {}},
-            execute=lambda **kw: "ok",
+            execute=_ok_tool,
         )
         profile = AnthropicProfile()
         result_tools = profile.get_tools([tool_no_desc])
@@ -719,7 +713,7 @@ class TestAnthropicDescriptions:
             name="my_custom_tool",
             description="Does something custom",
             parameters={"type": "object", "properties": {}},
-            execute=lambda **kw: "ok",
+            execute=_ok_tool,
         )
         profile = AnthropicProfile()
         result_tools = profile.get_tools([tool])

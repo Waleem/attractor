@@ -41,10 +41,11 @@ rewriting the audit model.
 
 The phases follow the dependency order in Appendix B. The two Phase 1-to-2
 spines are durability and isolation. Durability enables run history, API
-resources, queueing, artifacts, and GUI replay. Isolation enables safe execution,
-git checkpoints, branch-backed write-back, and eventual PR automation. The Phase
-2 trusted-LAN preview ends with approved branch promotion, so worktree isolation
-and git checkpointing cannot be deferred to a vague later phase.
+resources, artifacts, and GUI replay. Isolation enables safe execution, git
+checkpoints, branch-backed write-back, and eventual PR automation. Phase 2 has
+now shipped those spines plus a minimal Operations Console. Phase 3 shifts the
+roadmap from platform scaffolding to the product experience of running real
+workflows well.
 
 ### Phase 1: Engine Contracts and Parity Audit
 
@@ -79,53 +80,81 @@ than directly in the registered repo.
 These spines should be built in parallel. They unblock the Phase 2 platform
 surface and the safe write-back milestone.
 
-### Phase 2: Shared Server, Git Checkpoints, and Operations Console
+### Phase 2: Shared Server, Git Checkpoints, and Minimal Operations Console
 
-Phase 2 introduces the platform surface:
+Phase 2 is complete. It delivered the durability and isolation spines plus a
+minimal platform surface:
 
-1. Git checkpointing with per-stage commits to managed refs for resume, revert,
-   and trace.
-2. Docker wired through `RunEnvironment` for shared mutating runs.
-3. Durable run queue for 24/7 background runs.
-4. `.attractor/project.toml` plus per-workflow `workflow.toml`, including the
-   server-owned environment domain.
-5. Secret vault and workflow-visible variables.
-6. FastAPI resources for repos, workflows, runs, events, approvals, artifacts,
-   cancellation, settings, health, capacity, and write-back.
-7. SSE repointed to durable events.
+1. Durable `RunRecord` and append-only `RunEvent` storage.
+2. Worktree-local run isolation and branch-backed write-back.
+3. Git checkpoint commits and refs for run traceability.
+4. Filesystem artifacts and centralized event/log redaction.
+5. `.attractor/project.toml` plus per-workflow `workflow.toml` config loading.
+6. Starlette/FastAPI-compatible platform endpoints for repos, workflows, runs,
+   events, approvals, artifacts, cancellation, health, capacity, and write-back.
+7. SSE streaming from durable events.
 8. Persistent `ApprovalDecision` records.
-9. React/Vite Operations Console.
-10. Branch-from-worktree write-back after human approval.
+9. A minimal React/Vite Operations Console.
 
-The GUI center of gravity is an Operations Console: active runs, queued runs,
-approvals, queue health, failures, artifacts, branch/write-back review, and
-system settings. Repo catalog and graph inspection are supporting views rather
-than the home screen.
+Important Phase 2 limits remain: platform codergen still runs in dry-run mode
+because no real LLM backend is threaded into `DurableRunExecutor`; a fresh
+SQLite platform database is not initialized by server startup; Docker exists as
+a `RunEnvironment` option but is not yet proven as a console-visible vertical
+slice; settings, secrets, variables, embedded SPA serving, graph inspection,
+typed inputs, and live run-list ergonomics remain product work.
 
-### Phase 3: Factory Features and Fabro UX Attachments
+### Phase 3: Real Workflows & Console Product
 
-Phase 3 builds factory features and late-attached Fabro UX capabilities on top
-of the reliable runner:
+Phase 3 turns the shipped spines into a product that can run real workflows
+through one durable path. The first vertical slice must be real-agent execution
+from the console end to end: register a repo, launch a workflow with configured
+LLM credentials, stream durable events, handle approvals, capture artifacts, and
+write back from the managed branch.
+
+Phase 3 deliverables:
+
+1. Schema initialization for fresh SQLite platform startup, while keeping
+   Alembic as the Postgres migration path.
+2. Real codergen backend wiring in `DurableRunExecutor` from configured
+   provider credentials, initially through environment variables.
+3. Settings pages and APIs for Models, Environments, Variables, Server, Storage,
+   and Monitoring, including a write-only local secret vault.
+4. `attractor run <workflow>` CLI that launches through the same
+   `DurableRunExecutor` path as the console.
+5. DOT graph viewer with live node and edge highlighting from durable events.
+6. Docker as a selectable, end-to-end verified environment.
+7. Embedded serving of the built React console from the platform server.
+8. Repo-registration folder browser and console ergonomics: live-updating run
+   list with filters, cancel/re-run controls, typed inputs, branch-diff viewer,
+   workflow validation diagnostics, and complete empty/error/loading states.
+
+### Phase 4: Factory Features
+
+Phase 4 builds factory features and late-attached Fabro UX capabilities on top
+of the reliable real-workflow runner:
 
 1. GitHub auth and PR automation: branch -> commit -> PR with run evidence.
-2. Scheduled automations and cron-style recurring runs.
-3. MCP client support for external tool servers.
-4. User lifecycle hooks, including `project.toml [[run.hooks]]` and
-   `post_tool_use`.
-5. Spec and work-order interview flows that launch workflows from the generated
-   repo-local work.
-6. Steering API and console steer bar that expose the engine's existing steering
-   queue for mid-turn intervention.
-7. Review and repair loops: automated code review, test failure triage, and
+2. Review and repair loops: automated code review, test failure triage, and
    iterative repair workflows.
+3. Steering API and console steer bar that expose the engine's existing steering
+   queue for mid-turn intervention.
+4. MCP client support for external tool servers.
+5. User lifecycle hooks, including `project.toml [[run.hooks]]` and
+   `post_tool_use`.
+6. Scheduled automations and cron-style recurring runs.
+7. Spec and work-order interview flows that launch workflows from the generated
+   repo-local work and surface interview state in the console.
+8. Robust durable queue and capacity management beyond per-run asyncio tasks.
+9. Typed API client for the platform surface.
 
-### Phase 4: Control Plane and Remote Execution
+### Phase 5: Control Plane and Remote Execution
 
-Phase 4 expands toward an SDLC control plane: organization-wide traceability,
+Phase 5 expands toward an SDLC control plane: organization-wide traceability,
 governance, living requirements, decision history, cross-repo visibility,
-policy, roles, SSO, cloud or remote sandbox adapters, SSH/preview links, Slack
-or tracker integrations, object-native storage adapters such as SlateDB, and
-deeper SDLC reporting.
+policy, roles, SSO, cloud or remote sandbox adapters such as Daytona,
+SSH/preview links, Slack or tracker integrations, MCP stdio server and catalog,
+ACP, object-native storage adapters such as SlateDB, telemetry, full install
+wizard, and deeper SDLC reporting.
 
 ## Repo Workflow Layout
 
@@ -346,7 +375,8 @@ preserves a place for later attribution.
 not approval to patch arbitrary files into the live registered repo. The agent
 works in a git worktree on a branch created from the recorded base commit. Human
 approval makes that branch available as the accepted output of the run. Phase 3
-PR automation turns the same branch into a commit/PR with run evidence.
+keeps this branch-backed write-back path as the product run output. Phase 4 PR
+automation turns the same branch into a commit/PR with run evidence.
 
 Branch-from-worktree is safer than patch-apply-to-dirty-repo because the
 registered repo is not mutated during agent execution, the base commit is fixed,
@@ -363,7 +393,7 @@ Write-back/branch promotion must refuse to proceed when:
 - filesystem permissions prevent the write
 
 The trusted-LAN preview's final step is branch-backed write-back. Pull request
-creation waits for Phase 3, but it should reuse this branch rather than invent a
+creation waits for Phase 4, but it should reuse this branch rather than invent a
 separate patch mechanism.
 
 ## Runtime Behavior
@@ -411,12 +441,14 @@ selected artifacts. Full workspace bundles are retained only when requested by
 workflow or run policy, or when a selected failure class requires extra debugging
 context.
 
-## FastAPI Backend
+## Platform API Backend
 
 The backend should expose product APIs around repo registration, workflow
 discovery, runs, durable events, approvals, artifacts, write-back, settings, and
-capacity. The existing Starlette server can either be wrapped or evolved into
-FastAPI, but the final Phase 2 surface should be FastAPI.
+capacity. The Phase 2 platform currently uses Starlette routes with a
+FastAPI-compatible shape. A later FastAPI-specific polish pass can add OpenAPI
+schema generation and dependency-injection cleanup without changing the product
+API contract.
 
 Initial API resources:
 
@@ -451,9 +483,9 @@ Initial API resources:
 The API has no authentication requirement in the first trusted-LAN release, but
 approval and write-back endpoints accept `actor_label`.
 
-The steering endpoint can be added once the FastAPI run surface exists. The
-engine already has a steer queue; Phase 3 exposes it through an API and console
-steer bar.
+The steering endpoint can be added once the real-workflow run surface exists.
+The engine already has a steer queue; Phase 4 exposes it through an API and
+console steer bar.
 
 ## React Operations Console
 
@@ -530,7 +562,7 @@ Security boundaries that are required even without auth:
 - server settings should make the current no-auth posture explicit
 
 Roles, SSO, organization governance, and policy enforcement beyond these
-guardrails are Phase 4 work.
+guardrails are Phase 5 work.
 
 ## Testing
 
@@ -553,14 +585,17 @@ Phase 1 tests:
 
 Phase 2 tests:
 
-- FastAPI API tests for repos, workflows, runs, events, approvals, artifacts,
-  cancellation, write-back, settings, health, and capacity
+- platform API tests for repos, workflows, runs, events, approvals, artifacts,
+  cancellation, write-back, health, and capacity
 - Postgres integration tests for run records, event append/replay, and artifact
   metadata
 - Docker integration tests for actual per-run workspaces
-- durable queue tests for restart-safe queued/background runs
 - React route and component tests for Home, Runs, Approvals, Artifacts, Repos,
   Workflow Detail, Settings, and System
+
+Phase 3 tests add fresh SQLite startup, real codergen backend wiring, settings
+and secret-vault APIs, platform-backed CLI launch, graph APIs, selectable Docker
+end-to-end runs, embedded SPA serving, and console ergonomics contracts.
 - end-to-end tests for register repo, index workflow, launch run, approve gate,
   inspect artifacts, and promote the managed branch
 
@@ -617,43 +652,45 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |Conditions / branching / loops|`fabro-workflow`|✅ `conditions.py`, `transforms.py`|-- (Have)|
 |Parallelism / fan-out / fan-in|`fabro-workflow`|✅ `handlers/parallel.py`|-- (Have)|
 |Supervisor / subagent (child runs)|`fabro-agent`|✅ `subagent.py`, `subagent_manager.py`|-- (Have)|
-|Variable expansion / templating|`fabro-variable`, `fabro-template`|⚠️ `variable_expansion.py` (custom, not MiniJinja)|Confirm feature parity (escaping, nested); P1|
-|Graph validation / lint rules|`fabro-validate`|⚠️ `validation.py` (spec checks; fewer lint rules)|Port Fabro lint set; P1|
-|Run manifest construction|`fabro-manifest`|❌ (assembled ad-hoc)|Formalize `RunSpec` as manifest; P1-P2|
+|Variable expansion / templating|`fabro-variable`, `fabro-template`|⚠️ `variable_expansion.py` custom semantics, audited in Phase 1|MiniJinja parity remains intentionally different unless later needed|
+|Graph validation / lint rules|`fabro-validate`|⚠️ `validation.py` plus Phase 1 audit coverage|Fabro-exact lint parity remains optional|
+|Run manifest construction|`fabro-manifest`|✅ `RunSpec` in `src/attractor_platform/runspec.py`|-- (Have)|
+|`attractor run <workflow>` through durable executor|`fabro-cli`|❌ existing CLI does not launch platform runs|Build unified CLI entry point; P3|
 
 ### A.2 Sandboxing and environments
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Local execution|`fabro-sandbox` (`local.rs`)|⚠️ `LocalEnvironment` = direct host, **no worktree isolation**|Add git-worktree local mode; P1-P2|
-|Worktree isolation for runs|`fabro-sandbox` (`worktree.rs`)|❌|Build; **P1-P2 [original draft left local as raw host exec; now placed]**|
-|Docker sandbox per run|`fabro-sandbox` (`docker.rs`)|⚠️ `DockerEnvironment` exists but not wired to runs|Wire to `RunEnvironment.docker`; P2|
-|Cloud sandbox (Daytona)|`fabro-sandbox` (`daytona/`)|❌|`RunEnvironment.remote` adapter; P4|
-|Server-owned environment domain|`fabro-environment`|❌|`project.toml [environments.*]`; P2|
-|SSH into sandbox|`fabro-cli sandbox ssh`|❌|P4|
-|Preview links / port expose|`fabro-cli sandbox preview`|❌|P4|
+|Local execution|`fabro-sandbox` (`local.rs`)|✅ direct `LocalEnvironment` remains available for trusted local paths|-- (Have)|
+|Worktree isolation for runs|`fabro-sandbox` (`worktree.rs`)|✅ `WorktreeManager` + `WorktreeLocalRunEnvironment`|-- (Have)|
+|Docker sandbox per run|`fabro-sandbox` (`docker.rs`)|⚠️ `DockerRunEnvironment` exists and is selectable by request, but not product-verified end to end|Console-selectable verified Docker path; P3|
+|Cloud sandbox (Daytona)|`fabro-sandbox` (`daytona/`)|❌|`RunEnvironment.remote` adapter; P5|
+|Server-owned environment domain|`fabro-environment`|✅ `project.toml` / `workflow.toml` config types include environment policy|Console settings and selection UX; P3|
+|SSH into sandbox|`fabro-cli sandbox ssh`|❌|P5|
+|Preview links / port expose|`fabro-cli sandbox preview`|❌|P5|
 
 ### A.3 Run state, history and observability
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Durable run records|`fabro-store`, `fabro-types`|❌ in-memory `pipeline_manager._runs`|Postgres `RunRecord`; P1-P2|
-|Append-only durable events|`fabro-store`|⚠️ in-memory `events.py` (not persisted)|Durable `RunEvent`; P1-P2|
-|SSE event streaming|`fabro-server`|✅ `server/sse.py` (projection of in-mem)|Repoint to durable events; P2|
-|Git checkpoints per stage (resume/revert/trace)|`fabro-checkpoint`|⚠️ in-memory `Checkpoint`/`CheckpointSaved` only -- **not git-backed**|Build git checkpointing; **P2 [original draft deferred to open decisions; now placed]**|
-|Artifact storage + metadata|`fabro-store` (`artifact_store.rs`)|❌|`ArtifactRecord` + fs/object store; P2|
-|Object-native store backend|`fabro-store` (`slate/`, SlateDB)|❌|Optional adapter; P4 (Postgres first)|
-|Telemetry / analytics / crash|`fabro-telemetry`|❌|Optional; P4|
-|Secret/credential redaction|`fabro-redact`|⚠️ env-suffix redaction in `tools/core.py`|Centralize redaction layer; P2|
+|Durable run records|`fabro-store`, `fabro-types`|✅ `RunRecordModel` + repository layer|-- (Have)|
+|Append-only durable events|`fabro-store`|✅ `RunEventModel` with per-run sequence|-- (Have)|
+|SSE event streaming|`fabro-server`|✅ platform SSE streams durable events|-- (Have)|
+|Git checkpoints per stage (resume/revert/trace)|`fabro-checkpoint`|✅ git checkpoint commits/refs via `GitCheckpointService`|-- (Have)|
+|Artifact storage + metadata|`fabro-store` (`artifact_store.rs`)|✅ `ArtifactModel` + filesystem artifact store|-- (Have)|
+|DOT/graph viewer with live node+edge highlighting|`apps/fabro-web` graph views|❌ no console graph visualization yet|Build event-driven graph view; P3|
+|Object-native store backend|`fabro-store` (`slate/`, SlateDB)|❌|Optional adapter; P5 (SQL first)|
+|Telemetry / analytics / crash|`fabro-telemetry`|❌|Optional; P5|
+|Secret/credential redaction|`fabro-redact`|✅ centralized platform redaction layer|-- (Have)|
 
 ### A.4 Human-in-the-loop and steering
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Approval / human gates|`fabro-workflow`|✅ `handlers/human.py`|Persist decisions (`ApprovalDecision`); P2|
-|Interview steps (structured input)|`fabro-interview`|✅ `server/interviewer.py`|Surface in GUI; P2-P3|
-|Mid-turn steering of running agent|`fabro-agent` + web `steer-bar`|⚠️ steer queue in `session.py`/`manager.py`, **no API/UI**|Expose via API + console; **P3 [unplaced in original draft; now placed]**|
-|Slack interviewer channel|`fabro-slack`|❌|P4 (Settings -> Integrations)|
+|Approval / human gates|`fabro-workflow`|✅ `handlers/human.py` with persisted `ApprovalDecisionModel`|-- (Have)|
+|Interview steps (structured input)|`fabro-interview`|✅ legacy `server/interviewer.py`, not surfaced in platform console|Surface spec/work-order interview flow; P4|
+|Mid-turn steering of running agent|`fabro-agent` + web `steer-bar`|⚠️ steer queue in `session.py`/`manager.py`, no platform API/UI|Expose via API + console; P4|
+|Slack interviewer channel|`fabro-slack`|❌|P5 (Settings -> Integrations)|
 
 ### A.5 LLM and model routing
 
@@ -663,8 +700,9 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |Model catalog / resolution|`fabro-model`|✅ `attractor_llm/catalog.py`|-- (Have)|
 |CSS-like model stylesheet routing|`fabro-llm`|✅ `stylesheet.py`|-- (Have)|
 |Retry / fallback chains|`fabro-llm`|✅ `retry.py`, `middleware.py`|-- (Have)|
-|Provider credential storage/resolution|`fabro-auth`, `fabro-vault`, `fabro-oauth`|⚠️ env-var only|Settings -> Models credential store; P2|
-|ACP backend (agent client protocol)|`fabro-acp`|❌|Out of scope unless needed; P4|
+|Real agent execution through the platform (codergen backend wired into the executor)|`fabro-agent`, `fabro-llm`|❌ `DurableRunExecutor` calls `register_default_handlers(self._handlers)` without `codergen_backend`, so codergen is placeholder dry-run behavior|Wire backend from credentials; P3|
+|Provider credential storage/resolution|`fabro-auth`, `fabro-vault`, `fabro-oauth`|⚠️ legacy server reads env vars; platform executor has no credential store|Settings -> Models credential store; P3|
+|ACP backend (agent client protocol)|`fabro-acp`|❌|Out of scope unless needed; P5|
 
 ### A.6 Tools and extensibility
 
@@ -672,45 +710,47 @@ prose roadmap, the divergence is called out as **[doc gap]**.
 |---|---|---|---|
 |Core dev tools (read/write/edit/shell/grep/glob)|`fabro-tool`|✅ `attractor_agent/tools`|-- (Have)|
 |apply_patch tool|`fabro-tool`|✅ `tools/apply_patch.py`|-- (Have)|
-|MCP client (external tool servers)|`fabro-mcp`|❌|Build; **P3 [unplaced in original draft; now placed]**|
-|MCP stdio server (expose Fabro as MCP)|`fabro-mcp-server`|❌|P4|
-|Server-managed MCP catalog|`fabro-mcp-store`|❌|P4 (Settings -> Integrations)|
-|User lifecycle hooks (post_tool_use scripts)|`fabro-hooks`|❌ (only LLM middleware hooks)|`project.toml [[run.hooks]]`; **P3 [unplaced in original draft; now placed]**|
+|MCP client (external tool servers)|`fabro-mcp`|❌|Build; P4|
+|MCP stdio server (expose Fabro as MCP)|`fabro-mcp-server`|❌|P5|
+|Server-managed MCP catalog|`fabro-mcp-store`|❌|P5 (Settings -> Integrations)|
+|User lifecycle hooks (post_tool_use scripts)|`fabro-hooks`|❌ only LLM middleware hooks|`project.toml [[run.hooks]]`; P4|
 
 ### A.7 Integrations
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|GitHub App auth + API|`fabro-github`|❌ (grep hits were the word "issue")|P3 (PR automation)|
-|PR creation from approved changes|`fabro-cli` + `fabro-github`|❌|P3|
-|Issue tracker integration|`fabro-tracker`|❌|P4|
-|Slack socket mode|`fabro-slack`|❌|P4|
+|GitHub App auth + API|`fabro-github`|❌|P4 (PR automation)|
+|PR creation from approved changes|`fabro-cli` + `fabro-github`|❌|P4|
+|Issue tracker integration|`fabro-tracker`|❌|P5|
+|Slack socket mode|`fabro-slack`|❌|P5|
 
 ### A.8 Secrets, variables and config
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Workflow-visible non-secret variables|`fabro-variable`|⚠️ via context only|Settings -> Variables; P2|
-|Workflow-visible secret vault|`fabro-vault`|❌|Settings -> Secrets (write-only); P2|
-|Centralized config types|`fabro-config`|⚠️ scattered|`project.toml` + config objects; P1-P2|
-|project.toml / workflow.toml split|`fabro-config`|❌ (no TOML layer)|Build both; P1-P2 (**recommend splitting env config into project.toml**)|
+|Workflow-visible non-secret variables|`fabro-variable`|⚠️ via context/config only; no Settings -> Variables product surface|Settings -> Variables; P3|
+|Workflow-visible secret vault|`fabro-vault`|❌ no local write-only platform vault|Settings -> Secrets; P3|
+|Centralized config types|`fabro-config`|✅ platform config models|-- (Have)|
+|project.toml / workflow.toml split|`fabro-config`|✅ repo/workflow TOML loader and config models|-- (Have)|
+|Schema-init / first-run setup|`fabro-install`|❌ `--platform` startup builds the engine/session but does not create tables|SQLite `create_all` startup path plus Postgres migration guidance; P3|
 
 ### A.9 API, client and web UI
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|REST API server|`fabro-server`, `fabro-api`|⚠️ ~9 Starlette routes, in-memory|FastAPI, ~30 resources; P2|
-|Typed API client|`fabro-client`|❌|Optional generated client; P3|
-|React/Vite web console|`apps/fabro-web`|❌|Operations Console; P2|
-|Embedded SPA serving|`fabro-spa`, `fabro-static`|❌|Serve built SPA; P2|
-|Install wizard / setup flow|`fabro-install`|❌|Optional; P3-P4|
+|REST API server|`fabro-server`, `fabro-api`|✅ platform API routes in `src/attractor_server/platform_app.py`|FastAPI-specific polish remains optional|
+|Typed API client|`fabro-client`|❌|Generated/typed client; P4|
+|React/Vite web console|`apps/fabro-web`|✅ minimal Operations Console in `web/`|Product ergonomics; P3|
+|Embedded SPA serving|`fabro-spa`, `fabro-static`|❌ Vite dev server only; platform app does not mount built assets|Serve built SPA from platform server; P3|
+|Repo-registration folder browser + console ergonomics|`apps/fabro-web`|❌ path entry and minimal console routes only|Directory-listing endpoint plus polished console states/actions; P3|
+|Install wizard / setup flow|`fabro-install`|❌|Full install wizard; P5|
 
 ### A.10 Automation and scheduling
 
 |Capability|Fabro crate(s)|Python today|Gap and target phase|
 |---|---|---|---|
-|Scheduled / cron automations|`fabro-automation`|❌|Build; **P3-P4 [unplaced in original draft; now placed]**|
-|24/7 queued background runs|`fabro-server`|⚠️ runs are asyncio tasks, no queue/persistence|Durable run queue; P2|
+|Scheduled / cron automations|`fabro-automation`|❌|Build; P4|
+|Durable, restart-safe run queue + capacity|`fabro-server`|⚠️ runs are per-process asyncio tasks with durable records, not a restart-safe queue|Robust queue/capacity; P4|
 
 ### A.11 Infrastructure -- accounted, no Python analog required ➖
 
@@ -724,32 +764,26 @@ deliverable.
 |`fabro-http`, `fabro-static`, `fabro-util`, `fabro-types`|Shared Rust HTTP/string/util/type libs (Python uses stdlib + pydantic)|
 |`fabro-options-metadata`, `fabro-manifest` (partial)|Internal metadata models (folded into Python config objects)|
 |`fabro-dev`, `fabro-test`, `fabro-dump`, `fabro-install` (dev parts)|Internal dev/test/diagnostic tooling|
-|`fabro-cli`|Rust binary entrypoint; Python equivalent is `attractor_pipeline/cli.py` (✅ exists, to be extended)|
+|`fabro-cli`|Rust binary entrypoint; Python equivalent is `attractor_pipeline/cli.py` (✅ exists, platform run path arrives in Phase 3)|
 
 ### Summary of doc gaps surfaced by the exercise
 
-The matrix flags six capabilities the prose roadmap did not originally place,
-all of which bear on the "walk-away safety + Fabro UX" this design adopts from
-Fabro:
-
-1. Git-worktree local isolation -- the original doc left local as raw host exec.
-2. Git checkpointing -- the original doc deferred this to open decisions later;
-   this revision pulls it into Phase 2.
-3. Mid-turn steering API/UI -- engine plumbing exists, but it was not mentioned.
-4. MCP client -- not mentioned.
-5. Lifecycle hooks (`project.toml` post-tool-use) -- not mentioned.
-6. Scheduled automations -- not mentioned.
-
-Items 1 and 2 are the spine of Fabro's safety story and are pulled earlier than
-the original draft because write-back, the Phase 2 milestone's final step,
-transitively requires the isolation chain.
+The matrix now separates shipped Phase 2 infrastructure from missing product
+experience. Worktree isolation, durable records/events, durable SSE, checkpoints,
+artifacts, redaction, approvals, config split, the platform API surface, and the
+minimal console are marked complete. The main Phase 3 gaps are the ones that
+make the platform drivable for real work: schema initialization, real LLM-backed
+platform execution, credential/settings surfaces, a unified CLI run path, graph
+inspection, selectable Docker, embedded SPA serving, and console ergonomics.
 
 ## Appendix B: Dependency-Ordered Build Sequence
 
 Read top-to-bottom. Each item lists what it **needs** (↑) and what it
 **unblocks** (→). Items in the same layer have no dependency on each other and
 can be built in parallel. The **critical path** is marked ★ -- these gate the
-most downstream work.
+most downstream work. Layers 0-4 are complete at the infrastructure/minimal
+console level, with the limits called out in Appendix A. Layer 5 is the new
+Phase 3 product layer.
 
 ```text
 ────────────────────────────────────────────────────────────────────────
@@ -775,21 +809,17 @@ SPINE A -- Durability                       SPINE B -- Isolation
       ↑ 1a → safe event/log persistence            ↑ 1b → docker (2b), cloud (4)
 
 ────────────────────────────────────────────────────────────────────────
-LAYER 2 -- Built on a spine (Phase 2)
+LAYER 2 -- Built on a spine (Phase 2, done)
 ────────────────────────────────────────────────────────────────────────
 2a ★ Git checkpointing (per-stage commits to refs)
       ↑ 1b (worktree)        → resume/revert/trace, PR provenance
-2b   Docker sandbox wired to RunEnvironment
-      ↑ 1b.1                 → shared mutating runs default
-2c   Durable run queue (24/7 background runs)
-      ↑ 1a                   → automations (5b), capacity/health
+2b   Docker sandbox adapter wired to RunEnvironment
+      ↑ 1b.1                 → Phase 3 selectable verified Docker path
 2d   project.toml / workflow.toml + environment domain
       ↑ 0a, 1b.1             → per-repo env config, Settings→Environments
-2e   Secret vault + variables (write-only secrets)
-      ↑ 1a                   → credentialed runs, Settings→Secrets/Variables
 
 ────────────────────────────────────────────────────────────────────────
-LAYER 3 -- Platform surface (Phase 2)
+LAYER 3 -- Platform surface (Phase 2, done)
 ────────────────────────────────────────────────────────────────────────
 3a ★ FastAPI surface (repos, workflows, runs, events, approvals,
        artifacts, cancel, settings, health, capacity)
@@ -800,66 +830,95 @@ LAYER 3 -- Platform surface (Phase 2)
       ↑ 1a, 3a               → durable gates, write-back authorization
 
 ────────────────────────────────────────────────────────────────────────
-LAYER 4 -- Console + safe apply (Phase 2 milestone = "trusted-LAN preview")
+LAYER 4 -- Console + safe apply (Phase 2 milestone = "trusted-LAN preview", done)
 ────────────────────────────────────────────────────────────────────────
 4a ★ React/Vite Operations Console (Home, Runs, Approvals, Artifacts,
        Repos, Workflow Detail, Settings, System)
       ↑ 3a, 3b               → operator UX
 4b   Write-back / apply-to-repo  ⚠ prefer branch-from-worktree over patch-apply
       ↑ 1b, 2a, 3c           → completes the preview rollout
-4c   Steering API + steer-bar UI (engine plumbing already exists)
-      ↑ 3a, 4a               → mid-turn intervention
 
   ▶ MILESTONE: register repo → discover → validate → run (local/docker)
     → stream+persist events → human gate → artifacts → approve → apply
 
 ────────────────────────────────────────────────────────────────────────
-LAYER 5 -- Factory features (Phase 3)
+LAYER 5 -- Product & Real Workflows (Phase 3)
 ────────────────────────────────────────────────────────────────────────
-5a   GitHub auth + PR automation (branch → commit → PR + evidence)
-      ↑ 2a (checkpoint), 1b (worktree), 1a.1 (artifacts)
-5b   Scheduled automations (cron)
-      ↑ 2c (durable queue), 3a
-5c   MCP client (external tool servers)
-      ↑ tools layer (✅), 3a → additive, no hard upstream dep
-5d   Lifecycle hooks (project.toml post_tool_use)
-      ↑ 2d (project.toml), tools layer (✅)
-5e   Spec / work-order interview → run
-      ↑ interviewer (✅), 3a, 4a
+5a ★ Schema-init / first-run setup
+      ↑ 1a, 3a               → fresh SQLite startup, local adoption
+5b ★ Real codergen backend through DurableRunExecutor
+      ↑ 0c, 1a, 1b, 3a       → console and CLI real-agent runs
+5c   Models settings + local secret vault + variables
+      ↑ 1a, 3a, 5b           → credentialed runs without env-only setup
+5d   `attractor run <workflow>` through same durable executor
+      ↑ 5a, 5b               → CLI and console share telemetry and history
+5e   DOT/graph viewer with live node+edge highlighting
+      ↑ 3b, 4a               → inspect running workflows
+5f   Docker selectable and end-to-end verified
+      ↑ 2b, 4a               → safe shared mutating runs default
+5g   Embedded SPA serving
+      ↑ 3a, 4a               → one-process platform deployment
+5h   Repo folder browser + console ergonomics
+      ↑ 3a, 4a               → usable registration, launch, diff, filters,
+                                validation diagnostics, empty/error/loading states
+
+  ▶ MILESTONE: register repo → launch real agent → live durable events
+    → gate → artifacts → write-back, with equivalent CLI launch visible
+    in the same console history
 
 ────────────────────────────────────────────────────────────────────────
-LAYER 6 -- Control plane (Phase 4)
+LAYER 6 -- Factory features (Phase 4)
 ────────────────────────────────────────────────────────────────────────
-6a   Cloud/remote sandbox (Daytona adapter)  ↑ 1b.1
-6b   SSH / preview links                     ↑ 6a
-6c   Object-native store (SlateDB adapter)   ↑ 1a (behind interface)
-6d   Slack / tracker integrations            ↑ 3a, 5e
-6e   Auth / roles / SSO / governance         ↑ actor_label hooks (everywhere)
+6a   GitHub auth + PR automation (branch → commit → PR + evidence)
+      ↑ 2a (checkpoint), 1b (worktree), 1a.1 (artifacts)
+6b   Review / repair loops
+      ↑ 5b, 5d, tests/artifacts → automated review, triage, iterative repair
+6c   Steering API + steer-bar UI (engine plumbing already exists)
+      ↑ 3a, 4a, 5b        → mid-turn intervention
+6d   MCP client (external tool servers)
+      ↑ tools layer (✅), 3a → additive, no hard upstream dep
+6e   Lifecycle hooks (project.toml post_tool_use)
+      ↑ 2d (project.toml), tools layer (✅)
+6f   Scheduled automations (cron)
+      ↑ robust queue (6h), 3a
+6g   Spec / work-order interview → run
+      ↑ interviewer (✅), 3a, 4a
+6h   Robust durable queue + capacity
+      ↑ 1a, 3a           → restart-safe automations and multi-run capacity
+6i   Typed API client
+      ↑ 3a               → external integrations and future SDKs
+
+────────────────────────────────────────────────────────────────────────
+LAYER 7 -- Control plane (Phase 5)
+────────────────────────────────────────────────────────────────────────
+7a   Cloud/remote sandbox (Daytona adapter)  ↑ 1b.1
+7b   SSH / preview links                     ↑ 7a
+7c   Object-native store (SlateDB adapter)   ↑ 1a (behind interface)
+7d   Slack / tracker integrations            ↑ 3a, 6g
+7e   MCP stdio server + catalog              ↑ 6d
+7f   ACP                                     ↑ 5b, provider abstraction
+7g   Telemetry                               ↑ durable event stream
+7h   Full install wizard                     ↑ 5a, 5g
+7i   Auth / roles / SSO / governance         ↑ actor_label hooks (everywhere)
 
 ────────────────────────────────────────────────────────────────────────
 CRITICAL PATH (longest chain):
-  0a → 1a → 3a → 4a → 4b
-        └─ 1b → 2a → 4b      (isolation chain rejoins at write-back)
+  0a → 1a → 3a → 4a → 5a → 5b → 5d
+        └─ 1b → 2a → 4b ───────┘
 Everything else hangs off these. If you serialize, do 0a, then 1a‖1b,
-then 2a‖2d, then 3a, then 4a, then 4b.
+then 2a‖2d, then 3a, then 4a, then 4b, then Phase 3's
+schema-init and real-backend vertical slice before factory work.
 ```
 
 Three things worth pulling out of the diagram:
 
 - The two Layer-1 spines, durability `1a` and isolation `1b`, are the whole
-  game. They share no dependencies, so put one person/agent on each. Nearly
-  everything downstream needs one or both. The original doc treated `1a`
-  durability as foundational and let `1b`/`2a` drift to later; this sequence
-  shows why that ordering is wrong. Write-back (`4b`), the Phase 2 milestone's
-  final step, transitively requires the isolation chain (`1b → 2a`). Defer
-  isolation and the preview either ships without safe apply or bolts worktrees on
-  under deadline.
-- Steering (`4c`), MCP (`5c`), and hooks (`5d`) are cheap re-attachments, not
-  new spines. The engine already has the steer queue; tools already exist.
-  They're late only because they need the API/console to be visible, not because
-  they're hard. That helps the Fabro UX feel arrive sooner than their phase
-  number suggests.
-- `actor_label` is the one thing that must be threaded everywhere from day one:
-  `RunSpec`, events, approvals, write-back. It is the only Layer-6 concern
-  (`6e`, auth/SSO) that is not cheap to retrofit, which is why this design stubs
+  game. They are now present, and Phase 3 should build on them instead of
+  inventing a second runner for the CLI, console, or future automations.
+- Layer 5 is intentionally before factory features. Without schema-init and real
+  codergen backend wiring, the console can prove the durable shell but cannot run
+  real agent workflows on a fresh local setup.
+- `actor_label` is the one thing that must stay threaded everywhere from day
+  one: `RunSpec`, events, approvals, write-back. It is the only Layer-7 concern
+  (`7i`, auth/SSO) that is not cheap to retrofit, which is why this design stubs
   it early.

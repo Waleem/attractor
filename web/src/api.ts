@@ -1,3 +1,5 @@
+import { apiPath } from "./appBase";
+
 export type RunStatus =
   | "queued"
   | "preparing"
@@ -49,9 +51,49 @@ export interface Workflow {
   indexed_at?: string | null;
 }
 
+export interface WorkflowGraphNode {
+  id: string;
+  shape: string;
+  label: string;
+  effective_handler: string;
+  attrs: Record<string, unknown>;
+}
+
+export interface WorkflowGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  condition: string;
+  weight: number;
+  attrs: Record<string, unknown>;
+}
+
+export interface WorkflowGraph {
+  workflow_id: string;
+  repo_id: string;
+  name: string;
+  dot: string;
+  nodes: WorkflowGraphNode[];
+  edges: WorkflowGraphEdge[];
+  diagnostics: {
+    error?: string;
+    items?: WorkflowDiagnostic[];
+  };
+}
+
 export interface ProjectConfig {
   default_environment?: string;
   allowed_execution_modes?: string[];
+  environments?: Record<
+    string,
+    {
+      mode?: string;
+      description?: string;
+      image?: string;
+      working_dir?: string;
+    }
+  >;
   [key: string]: unknown;
 }
 
@@ -66,7 +108,25 @@ export interface LaunchRunInput {
   workflow_name?: string;
   workflow?: string;
   actor_label: string;
-  inputs: Record<string, unknown>;
+  inputs: Record<string, string>;
+  requested_environment?: string;
+}
+
+export interface SerializedRunSpec {
+  run_id?: string;
+  repo_path?: string;
+  workflow_name?: string;
+  workflow?: string;
+  actor_label?: string;
+  inputs?: Record<string, string>;
+  requested_environment?:
+    | string
+    | {
+        mode?: string;
+        name?: string;
+        image?: string;
+      };
+  [key: string]: unknown;
 }
 
 export interface RunRecord {
@@ -74,6 +134,7 @@ export interface RunRecord {
   status: RunStatus;
   repo_id: string;
   workflow_id: string;
+  run_spec: SerializedRunSpec | null;
   actor_label: string;
   source_commit?: string;
   source_branch?: string;
@@ -154,6 +215,34 @@ export interface WriteBackRecord {
   applied_at: string | null;
 }
 
+export interface FsBrowseEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+  is_git_repo: boolean;
+}
+
+export interface FsBrowseResult {
+  path: string;
+  items: FsBrowseEntry[];
+  truncated: boolean;
+}
+
+export interface RunDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface RunDiff {
+  run_id: string;
+  base_commit: string;
+  head_commit: string;
+  truncated: boolean;
+  files: RunDiffFile[];
+}
+
 export interface SystemHealth {
   status: string;
 }
@@ -164,14 +253,59 @@ export interface SystemCapacity {
   available_slots: number | null;
 }
 
+export interface SecretMetadata {
+  name: string;
+  configured: boolean;
+  updated_at: string | null;
+}
+
+export interface SettingsVariable {
+  key: string;
+  value: string;
+  updated_at: string | null;
+}
+
+export interface SettingsOverview {
+  models: {
+    default_provider: string;
+    default_model: string;
+    provider_credentials: Record<
+      string,
+      {
+        name: string;
+        env_var: string;
+        configured: boolean;
+        updated_at: string | null;
+        source: string;
+      }
+    >;
+  };
+  environments: {
+    default: string;
+    items: Array<{ name: string; mode: string; description: string }>;
+  };
+  variables: {
+    items: SettingsVariable[];
+  };
+  server: {
+    status: string;
+    max_concurrent_runs: number | null;
+  };
+  storage: {
+    status: string;
+  };
+  monitoring: {
+    active_runs: number;
+    event_stream: string;
+  };
+}
+
 interface ItemsResponse<T> {
   items: T[];
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-
 function apiUrl(path: string): string {
-  return `${API_BASE}${path}`;
+  return apiPath(path);
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -243,6 +377,10 @@ export async function validateWorkflow(workflowId: string): Promise<Workflow> {
   });
 }
 
+export async function getWorkflowGraph(workflowId: string): Promise<WorkflowGraph> {
+  return requestJson<WorkflowGraph>(`/api/workflows/${encodeURIComponent(workflowId)}/graph`);
+}
+
 export async function launchRun(input: LaunchRunInput): Promise<RunRecord> {
   return requestJson<RunRecord>("/api/runs", {
     method: "POST",
@@ -250,13 +388,66 @@ export async function launchRun(input: LaunchRunInput): Promise<RunRecord> {
   });
 }
 
-export async function listRuns(): Promise<RunRecord[]> {
-  const response = await requestJson<ItemsResponse<RunRecord>>("/api/runs");
+export function runSpecToLaunchInput(runSpec: SerializedRunSpec | null): LaunchRunInput | null {
+  if (!runSpec || typeof runSpec.repo_path !== "string") {
+    return null;
+  }
+  const workflowName =
+    typeof runSpec.workflow_name === "string" ? runSpec.workflow_name : runSpec.workflow;
+  if (typeof workflowName !== "string") {
+    return null;
+  }
+  const requestedEnvironment =
+    typeof runSpec.requested_environment === "string"
+      ? runSpec.requested_environment
+      : runSpec.requested_environment?.name ?? runSpec.requested_environment?.mode ?? "";
+  return {
+    repo_path: runSpec.repo_path,
+    workflow_name: workflowName,
+    actor_label: typeof runSpec.actor_label === "string" ? runSpec.actor_label : "operator",
+    inputs: runSpec.inputs && typeof runSpec.inputs === "object" ? runSpec.inputs : {},
+    requested_environment: requestedEnvironment
+  };
+}
+
+export async function listRuns(filters: {
+  status?: string;
+  repo_id?: string;
+  workflow_id?: string;
+  actor_label?: string;
+} = {}): Promise<RunRecord[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await requestJson<ItemsResponse<RunRecord>>(`/api/runs${suffix}`);
   return response.items;
 }
 
 export async function getRun(runId: string): Promise<RunRecord> {
   return requestJson<RunRecord>(`/api/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function cancelRun(runId: string): Promise<{ id: string; status: string }> {
+  return requestJson<{ id: string; status: string }>(
+    `/api/runs/${encodeURIComponent(runId)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({})
+    }
+  );
+}
+
+export async function getRunDiff(runId: string): Promise<RunDiff> {
+  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff`);
+}
+
+export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
+  const params = new URLSearchParams({ path });
+  return requestJson<FsBrowseResult>(`/api/fs/browse?${params.toString()}`);
 }
 
 export async function listRunEvents(runId: string): Promise<RunEvent[]> {
@@ -317,6 +508,52 @@ export async function getSystemHealth(): Promise<SystemHealth> {
 
 export async function getSystemCapacity(): Promise<SystemCapacity> {
   return requestJson<SystemCapacity>("/api/system/capacity");
+}
+
+export async function getSettings(): Promise<SettingsOverview> {
+  return requestJson<SettingsOverview>("/api/settings");
+}
+
+export async function listSettingsSecrets(): Promise<SecretMetadata[]> {
+  const response = await requestJson<ItemsResponse<SecretMetadata>>("/api/settings/secrets");
+  return response.items;
+}
+
+export async function putSettingsSecret(name: string, value: string): Promise<SecretMetadata> {
+  return requestJson<SecretMetadata>(`/api/settings/secrets/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value })
+  });
+}
+
+export async function deleteSettingsSecret(name: string): Promise<SecretMetadata> {
+  return requestJson<SecretMetadata>(`/api/settings/secrets/${encodeURIComponent(name)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function listSettingsVariables(): Promise<SettingsVariable[]> {
+  const response = await requestJson<ItemsResponse<SettingsVariable>>("/api/settings/variables");
+  return response.items;
+}
+
+export async function putSettingsVariable(
+  key: string,
+  value: string
+): Promise<SettingsVariable> {
+  return requestJson<SettingsVariable>(`/api/settings/variables/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value })
+  });
+}
+
+export async function deleteSettingsVariable(key: string): Promise<{ key: string; deleted: boolean }> {
+  return requestJson<{ key: string; deleted: boolean }>(
+    `/api/settings/variables/${encodeURIComponent(key)}`,
+    {
+      method: "DELETE"
+    }
+  );
 }
 
 export function openRunEventSource(runId: string): EventSource {

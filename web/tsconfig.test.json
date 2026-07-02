@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-test",
+    "tsBuildInfoFile": "./dist-test/tsconfig.test.tsbuildinfo"
+  },
+  "include": [
+    "src/appBase.test.ts",
+    "src/appBase.ts",
+    "src/graphHighlight.test.ts",
+    "src/graphHighlight.ts",
+    "src/graphViewerController.ts",
+    "src/components/GraphViewer.tsx"
+  ]
+}

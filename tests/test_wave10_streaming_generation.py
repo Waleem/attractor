@@ -26,6 +26,7 @@ from attractor_llm.types import (
     Message,
     Request,
     Response,
+    Role,
     StreamEvent,
     StreamEventKind,
     TimeoutConfig,
@@ -300,7 +301,7 @@ class TestGenerateAbortSignal:
         # First response has tool calls, second would be text
         tool_call_response = Response(
             message=Message(
-                role="assistant",
+                role=Role.ASSISTANT,
                 content=[
                     ContentPart.tool_call_part("tc1", "my_tool", '{"x": 1}'),
                 ],

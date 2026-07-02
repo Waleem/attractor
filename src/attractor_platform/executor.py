@@ -38,13 +38,17 @@ from attractor_pipeline.engine.runner import (
     run_pipeline,
 )
 from attractor_pipeline.graph import Graph, Node
-from attractor_pipeline.handlers import register_default_handlers
+from attractor_pipeline.handlers import CodergenBackend, CodergenHandler, register_default_handlers
 from attractor_pipeline.handlers.human import Answer, HumanHandler, Question
 from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
 from attractor_platform.git import GitRunner, PreparedWorktree, WorktreeManager
 from attractor_platform.packages import WorkflowPackage, load_workflow_package
-from attractor_platform.run_environment import select_run_environment
+from attractor_platform.redaction import redact_text
+from attractor_platform.run_environment import (
+    materialize_run_environment_request,
+    select_run_environment,
+)
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
 from attractor_platform.storage.models import (
@@ -56,6 +60,7 @@ from attractor_platform.storage.models import (
 from attractor_platform.storage.repositories import PlatformRepository
 
 _QUEUE_SENTINEL = object()
+CODERGEN_OUTPUT_PREVIEW_MAX_CHARS = 4096
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,7 @@ class DurableRunExecutor:
         worktree_root: str | Path,
         artifact_root: str | Path,
         git: GitRunner | None = None,
+        codergen_backend: CodergenBackend | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.repository = PlatformRepository(session_factory)
@@ -130,7 +136,7 @@ class DurableRunExecutor:
         self._artifact_store = FileSystemArtifactStore(self._artifact_root)
         self._checkpoint_service = GitCheckpointService(self._git)
         self._handlers = HandlerRegistry()
-        register_default_handlers(self._handlers)
+        register_default_handlers(self._handlers, codergen_backend=codergen_backend)
         self._handlers.register(
             "wait.human",
             cast(Any, HumanHandler(interviewer=_ServerRunInterviewer(self))),
@@ -147,6 +153,13 @@ class DurableRunExecutor:
             contextvars.ContextVar("durable_run_interviewer_context", default=None)
         )
 
+    def configure_codergen_backend(self, codergen_backend: CodergenBackend | None) -> None:
+        handler = self._handlers.get("codergen")
+        if isinstance(handler, CodergenHandler):
+            handler._backend = codergen_backend
+            return
+        self._handlers.register("codergen", CodergenHandler(backend=codergen_backend))
+
     @classmethod
     def for_tests(
         cls,
@@ -154,11 +167,13 @@ class DurableRunExecutor:
         session_factory: async_sessionmaker[AsyncSession],
         worktree_root: str | Path,
         artifact_root: str | Path,
+        codergen_backend: CodergenBackend | None = None,
     ) -> DurableRunExecutor:
         return cls(
             session_factory=session_factory,
             worktree_root=worktree_root,
             artifact_root=artifact_root,
+            codergen_backend=codergen_backend,
         )
 
     async def register_and_launch(
@@ -168,10 +183,24 @@ class DurableRunExecutor:
         workflow_name: str,
         actor_label: str,
         inputs: dict[str, str],
+        requested_environment: str = "",
     ) -> str:
         package = load_workflow_package(repo_path, workflow_name)
-        run_spec = build_run_spec(package, inputs=inputs, actor_label=actor_label).model_copy(
+        run_spec = build_run_spec(
+            package,
+            inputs=inputs,
+            actor_label=actor_label,
+            requested_environment=requested_environment,
+        )
+        run_spec = run_spec.model_copy(
             update={"repo_id": _repo_identifier(package.repo_path)}
+        )
+        persisted_run_spec = run_spec.model_copy(
+            update={
+                "effective_environment": materialize_run_environment_request(
+                    run_spec.effective_environment
+                )
+            }
         )
         workflow_id = _workflow_identifier(run_spec.repo_id, package.name)
         now = dt.datetime.now(dt.UTC)
@@ -202,7 +231,7 @@ class DurableRunExecutor:
             run_id=run_spec.run_id,
             repo_id=run_spec.repo_id,
             workflow_id=workflow_id,
-            run_spec=run_spec.model_dump(mode="json"),
+            run_spec=persisted_run_spec.model_dump(mode="json"),
             actor_label=actor_label,
             source_commit=run_spec.source_commit,
             source_branch=run_spec.source_branch,
@@ -863,6 +892,17 @@ class DurableRunExecutor:
         terminal_event_type: str | None,
         terminal_payload: dict[str, Any] | None,
     ) -> tuple[str | None, dict[str, Any] | None]:
+        if terminal_event_type is None and result.status == PipelineStatus.COMPLETED:
+            outputs = {
+                key: _preview_codergen_output(value)
+                for key, value in result.context.items()
+                if (
+                    key.startswith("codergen.")
+                    and key.endswith(".output")
+                    and isinstance(value, str)
+                )
+            }
+            return "run.completed", {"outputs": outputs}
         if terminal_event_type is None and result.status == PipelineStatus.FAILED:
             return "run.failed", {"error": result.error or "unknown"}
         return terminal_event_type, terminal_payload
@@ -1137,6 +1177,16 @@ def _durable_event_payload(event: PipelineEvent) -> tuple[str, dict[str, Any]]:
     if isinstance(event, PipelineFailed):
         return "pipeline.failed", payload
     return "pipeline.event", payload
+
+
+def _preview_codergen_output(value: str) -> str:
+    redacted = redact_text(value)
+    if len(redacted) <= CODERGEN_OUTPUT_PREVIEW_MAX_CHARS:
+        return redacted
+    return (
+        redacted[:CODERGEN_OUTPUT_PREVIEW_MAX_CHARS]
+        + f"\n[truncated to {CODERGEN_OUTPUT_PREVIEW_MAX_CHARS} of {len(redacted)} characters]"
+    )
 
 
 def _serialize_diagnostics(package: WorkflowPackage) -> dict[str, Any]:

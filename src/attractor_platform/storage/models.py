@@ -168,3 +168,19 @@ class WriteBackModel(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SettingSecretModel(Base):
+    __tablename__ = "setting_secrets"
+
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SettingVariableModel(Base):
+    __tablename__ = "setting_variables"
+
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)

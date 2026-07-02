@@ -24,6 +24,7 @@ Quick deterministic subset:
 from __future__ import annotations
 
 import pytest
+from _pytest.mark.structures import ParameterSet
 
 from attractor_llm import (
     Client,
@@ -99,7 +100,7 @@ _P = ("provider_client", "provider", "model")
 
 
 def _providers(
-    params: list[pytest.ParameterSet],
+    params: list[ParameterSet],
 ) -> pytest.MarkDecorator:
     """Parametrize over provider/model with indirect client resolution."""
     return pytest.mark.parametrize(
@@ -109,7 +110,7 @@ def _providers(
     )
 
 
-def _gemini_xfail(reason: str) -> pytest.ParameterSet:
+def _gemini_xfail(reason: str) -> ParameterSet:
     """Gemini param with an additional non-strict xfail."""
     return pytest.param(
         "gemini",

@@ -691,7 +691,7 @@ class TestServerRouteAliases:
         from attractor_pipeline.server.app import app
 
         routes_by_path: dict[str, Any] = {
-            str(r.path): r
+            str(getattr(r, "path", "")): r
             for r in app.routes  # type: ignore[attr-defined]
         }
         assert "POST" in routes_by_path["/run"].methods

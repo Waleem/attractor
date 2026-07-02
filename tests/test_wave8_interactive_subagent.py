@@ -315,6 +315,7 @@ class TestInteractiveTools:
         _register_fake_agent(manager, "agent-001", delay=5)
         tools = create_interactive_tools(manager)
         send_tool = next(t for t in tools if t.name == "send_input")
+        assert send_tool.execute is not None
 
         result = await send_tool.execute(agent_id="agent-001", message="hello")
         assert "sent" in result.lower()
@@ -327,6 +328,7 @@ class TestInteractiveTools:
         _register_fake_agent(manager, "agent-001", result="final answer")
         tools = create_interactive_tools(manager)
         wait_tool = next(t for t in tools if t.name == "wait")
+        assert wait_tool.execute is not None
 
         result = await wait_tool.execute(agent_id="agent-001")
         parsed = json.loads(result)
@@ -340,6 +342,7 @@ class TestInteractiveTools:
         _register_fake_agent(manager, "agent-001", abort=abort, delay=10)
         tools = create_interactive_tools(manager)
         close_tool = next(t for t in tools if t.name == "close_agent")
+        assert close_tool.execute is not None
 
         result = await close_tool.execute(agent_id="agent-001")
         assert "terminated" in result.lower()

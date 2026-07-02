@@ -1,11 +1,9 @@
 """CLI entry point for Attractor pipeline runner.
 
 Usage:
-    attractor run pipeline.dot                    # Run with Anthropic (default)
-    attractor run pipeline.dot --provider openai  # Run with OpenAI
-    attractor run pipeline.dot --model gpt-5.2    # Specify model
-    attractor run pipeline.dot --validate-only    # Just validate, don't execute
-    attractor validate pipeline.dot               # Validate a DOT file
+    attractor run release-checks --repo /repo --server-url http://127.0.0.1:8080
+    attractor run --legacy-local pipeline.dot --provider openai
+    attractor validate pipeline.dot
 """
 
 from __future__ import annotations
@@ -36,8 +34,50 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # --- run command ---
-    run_parser = subparsers.add_parser("run", help="Execute a DOT pipeline")
-    run_parser.add_argument("dotfile", type=str, help="Path to the DOT pipeline file")
+    run_parser = subparsers.add_parser("run", help="Launch a platform workflow run")
+    run_parser.add_argument(
+        "workflow",
+        nargs="?",
+        type=str,
+        help="Workflow name to launch on the platform",
+    )
+    run_parser.add_argument(
+        "--repo",
+        type=str,
+        default=None,
+        help="Local repository path for the platform run",
+    )
+    run_parser.add_argument(
+        "--server-url",
+        type=str,
+        default=None,
+        help="Platform server URL. Defaults to ATTRACTOR_PLATFORM_URL.",
+    )
+    run_parser.add_argument(
+        "--input",
+        action="append",
+        default=[],
+        help="Workflow input as key=value. May be provided more than once.",
+    )
+    run_parser.add_argument(
+        "--environment",
+        type=str,
+        default="",
+        help="Requested platform execution environment",
+    )
+    run_parser.add_argument(
+        "--actor-label",
+        type=str,
+        default="",
+        help="Actor label recorded on the durable run",
+    )
+    run_parser.add_argument(
+        "--legacy-local",
+        type=str,
+        default=None,
+        metavar="DOTFILE",
+        help="Run a DOT file with the legacy local runner",
+    )
     run_parser.add_argument(
         "--provider",
         type=str,
@@ -97,10 +137,46 @@ def main() -> None:
     if args.command == "validate":
         _cmd_validate(args.dotfile)
     elif args.command == "run":
-        if args.validate_only:
-            _cmd_validate(args.dotfile)
+        if args.legacy_local:
+            args.dotfile = args.legacy_local
+            if args.validate_only:
+                _cmd_validate(args.dotfile)
+            else:
+                asyncio.run(_cmd_run(args))
         else:
-            asyncio.run(_cmd_run(args))
+            _cmd_platform_run(args, parser)
+
+
+def _cmd_platform_run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Launch a durable platform run through the HTTP API."""
+    from attractor_cli.platform import launch_platform_run
+
+    if args.validate_only:
+        parser.error("run --validate-only requires --legacy-local")
+    if not args.workflow:
+        parser.error("run requires a workflow name or --legacy-local DOTFILE")
+    if not args.repo:
+        parser.error("run requires --repo for platform launches")
+    server_url = args.server_url or os.environ.get("ATTRACTOR_PLATFORM_URL", "")
+    if not server_url:
+        parser.error(
+            "run requires --server-url or ATTRACTOR_PLATFORM_URL for platform launches"
+        )
+
+    try:
+        exit_code = launch_platform_run(
+            workflow_name=args.workflow,
+            repo_path=args.repo,
+            server_url=server_url,
+            inputs=args.input,
+            actor_label=args.actor_label,
+            requested_environment=args.environment,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def _cmd_validate(dotfile: str) -> None:
