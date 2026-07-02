@@ -49,6 +49,37 @@ export interface Workflow {
   indexed_at?: string | null;
 }
 
+export interface WorkflowGraphNode {
+  id: string;
+  shape: string;
+  label: string;
+  effective_handler: string;
+  attrs: Record<string, unknown>;
+}
+
+export interface WorkflowGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  condition: string;
+  weight: number;
+  attrs: Record<string, unknown>;
+}
+
+export interface WorkflowGraph {
+  workflow_id: string;
+  repo_id: string;
+  name: string;
+  dot: string;
+  nodes: WorkflowGraphNode[];
+  edges: WorkflowGraphEdge[];
+  diagnostics: {
+    error?: string;
+    items?: WorkflowDiagnostic[];
+  };
+}
+
 export interface ProjectConfig {
   default_environment?: string;
   allowed_execution_modes?: string[];
@@ -298,6 +329,10 @@ export async function validateWorkflow(workflowId: string): Promise<Workflow> {
     method: "POST",
     body: JSON.stringify({})
   });
+}
+
+export async function getWorkflowGraph(workflowId: string): Promise<WorkflowGraph> {
+  return requestJson<WorkflowGraph>(`/api/workflows/${encodeURIComponent(workflowId)}/graph`);
 }
 
 export async function launchRun(input: LaunchRunInput): Promise<RunRecord> {

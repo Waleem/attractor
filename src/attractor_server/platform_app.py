@@ -237,6 +237,48 @@ def _serialize_diagnostics(package: WorkflowPackage) -> dict[str, Any]:
     }
 
 
+def _serialize_graph_package(
+    workflow_id: str,
+    repo_id: str,
+    package: WorkflowPackage,
+    dot: str,
+) -> dict[str, Any]:
+    graph = package.graph
+    return {
+        "workflow_id": workflow_id,
+        "repo_id": repo_id,
+        "name": package.name,
+        "dot": dot,
+        "nodes": []
+        if graph is None
+        else [
+            {
+                "id": node.id,
+                "shape": node.shape,
+                "label": node.label,
+                "effective_handler": node.effective_handler,
+                "attrs": node.attrs,
+            }
+            for node in graph.nodes.values()
+        ],
+        "edges": []
+        if graph is None
+        else [
+            {
+                "id": f"{edge.source}->{edge.target}",
+                "source": edge.source,
+                "target": edge.target,
+                "label": edge.label,
+                "condition": edge.condition,
+                "weight": edge.weight,
+                "attrs": edge.attrs,
+            }
+            for edge in graph.edges
+        ],
+        "diagnostics": _serialize_diagnostics(package),
+    }
+
+
 def _parse_non_negative_int(value: str | None, default: int) -> int:
     if value is None:
         return default
@@ -947,6 +989,28 @@ async def validate_workflow(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_workflow_package(workflow_id, repo.id, package))
 
 
+async def get_workflow_graph(request: Request) -> JSONResponse:
+    services = _services(request)
+    workflow_id = request.path_params["workflow_id"]
+    workflow = await _get_workflow(services, workflow_id)
+    if workflow is None:
+        return _json_error(f"Workflow {workflow_id} not found", 404)
+
+    repo = await _get_repo(services, workflow.repo_id)
+    if repo is None:
+        return _json_error(f"Repository {workflow.repo_id} not found", 404)
+
+    try:
+        package = load_workflow_package(repo.local_path, workflow.name)
+        dot = package.dot_path.read_text(encoding="utf-8")
+    except AttractorPlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+    except OSError as exc:
+        return _json_error(f"Unable to read workflow DOT: {exc}", 400)
+
+    return JSONResponse(_serialize_graph_package(workflow_id, repo.id, package, dot))
+
+
 async def create_run(request: Request) -> JSONResponse:
     services = _services(request)
     try:
@@ -1648,6 +1712,7 @@ def create_platform_app(
             Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
             Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
             Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
+            Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),
             Route("/api/workflows/{workflow_id}/validate", validate_workflow, methods=["POST"]),
             Route("/api/runs", create_run, methods=["POST"]),
             Route("/api/runs", list_runs, methods=["GET"]),

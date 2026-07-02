@@ -14,6 +14,7 @@ import {
   type CheckpointRecord,
   type RunEvent
 } from "../api";
+import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
 import { EmptyState, ErrorBanner, Field, KeyValue, Loading, PageHeader, Panel, StatusBadge, formatDate, shortSha } from "../components/ui";
 
@@ -98,6 +99,7 @@ export function RunDetailRoute({ runId }: { runId: string }) {
             </dl>
             {run.error_message ? <div className="error-banner">{run.error_message}</div> : null}
           </Panel>
+          <GraphViewer workflowId={run.workflow_id} events={events} />
           <PendingApprovals
             runId={runId}
             runStatus={run.status}
