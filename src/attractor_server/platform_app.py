@@ -19,8 +19,15 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -1690,36 +1697,73 @@ async def system_capacity(request: Request) -> JSONResponse:
     )
 
 
-def _platform_spa_routes(spa_dist: str | Path | None) -> list[Mount | Route]:
+def _platform_spa_paths(spa_dist: str | Path | None) -> tuple[Path, Path] | None:
     if spa_dist is None:
-        return []
+        return None
 
     dist_path = Path(spa_dist).expanduser().resolve()
     index_path = dist_path / "index.html"
     if not dist_path.is_dir() or not index_path.is_file():
+        return None
+    return dist_path, index_path
+
+
+def _is_api_path(path: str) -> bool:
+    stripped = path.lstrip("/")
+    return stripped == "api" or stripped.startswith("api/")
+
+
+def _default_not_found_response(exc: Exception) -> PlainTextResponse:
+    headers = exc.headers if isinstance(exc, HTTPException) else None
+    detail = exc.detail if isinstance(exc, HTTPException) else "Not Found"
+    return PlainTextResponse(detail, status_code=404, headers=headers)
+
+
+def _platform_spa_routes(spa_dist: str | Path | None) -> list[Mount | Route]:
+    spa_paths = _platform_spa_paths(spa_dist)
+    if spa_paths is None:
         return []
 
-    async def spa_fallback(request: Request) -> FileResponse | JSONResponse:
-        path = request.path_params.get("path", "")
-        if path == "api" or path.startswith("api/"):
-            return _json_error("Not found", 404)
-
-        requested_path = (dist_path / path).resolve()
-        try:
-            requested_path.relative_to(dist_path)
-        except ValueError:
-            return _json_error("Not found", 404)
-
-        if requested_path.is_file():
-            return FileResponse(requested_path)
-        return FileResponse(index_path)
+    dist_path, _index_path = spa_paths
 
     routes: list[Mount | Route] = []
     assets_path = dist_path / "assets"
     if assets_path.is_dir():
         routes.append(Mount("/assets", app=StaticFiles(directory=assets_path), name="assets"))
-    routes.append(Route("/{path:path}", spa_fallback, methods=["GET", "HEAD"]))
     return routes
+
+
+def _platform_spa_not_found_handler(
+    spa_dist: str | Path | None,
+) -> Callable[[Request, Exception], Awaitable[Response]] | None:
+    spa_paths = _platform_spa_paths(spa_dist)
+    if spa_paths is None:
+        return None
+
+    dist_path, index_path = spa_paths
+
+    async def spa_not_found(request: Request, exc: Exception) -> Response:
+        path = request.url.path.lstrip("/")
+        if _is_api_path(path):
+            return _json_error("Not found", 404)
+
+        if request.method not in {"GET", "HEAD"}:
+            return _default_not_found_response(exc)
+
+        if path == "assets" or path.startswith("assets/"):
+            return _default_not_found_response(exc)
+
+        requested_path = (dist_path / path).resolve()
+        try:
+            requested_path.relative_to(dist_path)
+        except ValueError:
+            return _default_not_found_response(exc)
+
+        if requested_path.is_file():
+            return FileResponse(requested_path)
+        return FileResponse(index_path)
+
+    return spa_not_found
 
 
 def create_platform_app(
@@ -1773,7 +1817,16 @@ def create_platform_app(
     ]
     routes.extend(_platform_spa_routes(spa_dist))
 
-    app = Starlette(lifespan=lifespan, routes=routes)
+    exception_handlers: dict[Any, Callable[[Request, Exception], Awaitable[Response]]] = {}
+    spa_not_found_handler = _platform_spa_not_found_handler(spa_dist)
+    if spa_not_found_handler is not None:
+        exception_handlers[404] = spa_not_found_handler
+
+    app = Starlette(
+        lifespan=lifespan,
+        routes=routes,
+        exception_handlers=exception_handlers or None,
+    )
     app.state.platform_services = _PlatformServices(
         executor=executor,
         repository=executor.repository,

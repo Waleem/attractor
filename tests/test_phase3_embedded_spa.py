@@ -45,6 +45,9 @@ def test_platform_app_serves_embedded_spa_without_intercepting_api(
         asset = client.get("/assets/app.js")
         health = client.get("/api/system/health")
         unknown_api = client.get("/api/unknown")
+        unknown_api_post = client.post("/api/unknown")
+        unknown_api_put = client.put("/api/unknown")
+        wrong_method_health = client.post("/api/system/health")
 
     assert root.status_code == 200
     assert root.text == (
@@ -58,6 +61,12 @@ def test_platform_app_serves_embedded_spa_without_intercepting_api(
     assert health.json() == {"status": "ok"}
     assert unknown_api.status_code == 404
     assert "Attractor Console" not in unknown_api.text
+    assert unknown_api_post.status_code == 404
+    assert "Attractor Console" not in unknown_api_post.text
+    assert unknown_api_put.status_code == 404
+    assert "Attractor Console" not in unknown_api_put.text
+    assert wrong_method_health.status_code == 405
+    assert "Attractor Console" not in wrong_method_health.text
 
 
 def test_platform_spa_dist_resolver_prefers_explicit_path_then_environment(
