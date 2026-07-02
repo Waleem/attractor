@@ -11,12 +11,42 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from importlib import resources
 from pathlib import Path
 
 import uvicorn
 
 from attractor_server.app import create_app
 from attractor_server.pipeline_manager import PipelineManager
+
+
+def _existing_spa_dist(path: Path) -> Path | None:
+    resolved = path.expanduser().resolve()
+    if resolved.is_dir() and (resolved / "index.html").is_file():
+        return resolved
+    return None
+
+
+def _resolve_platform_spa_dist(explicit_spa_dist: str | None) -> Path | None:
+    if explicit_spa_dist:
+        return Path(explicit_spa_dist).expanduser().resolve()
+
+    env_spa_dist = os.environ.get("ATTRACTOR_SPA_DIST", "").strip()
+    if env_spa_dist:
+        return Path(env_spa_dist).expanduser().resolve()
+
+    try:
+        packaged_dist = resources.files("attractor_server").joinpath("web", "dist")
+    except (AttributeError, ModuleNotFoundError):
+        packaged_dist = None
+    if packaged_dist is not None and packaged_dist.is_dir():
+        packaged_path = Path(str(packaged_dist))
+        existing_packaged_dist = _existing_spa_dist(packaged_path)
+        if existing_packaged_dist is not None:
+            return existing_packaged_dist
+
+    dev_dist = Path.cwd() / "web" / "dist"
+    return _existing_spa_dist(dev_dist)
 
 
 def main() -> None:
@@ -58,6 +88,14 @@ def main() -> None:
         "--artifact-root",
         default=os.environ.get("ATTRACTOR_ARTIFACT_ROOT", ".attractor-artifacts"),
         help="Platform artifact root",
+    )
+    parser.add_argument(
+        "--spa-dist",
+        default=None,
+        help=(
+            "Platform SPA dist directory "
+            "(defaults to ATTRACTOR_SPA_DIST, bundled web/dist, or local web/dist)"
+        ),
     )
     args = parser.parse_args()
 
@@ -112,6 +150,7 @@ def main() -> None:
             engine=engine,
             default_provider=runtime_default_provider,
             default_model=runtime_default_model,
+            spa_dist=_resolve_platform_spa_dist(args.spa_dist),
         )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")

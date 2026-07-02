@@ -20,8 +20,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
@@ -1689,6 +1690,38 @@ async def system_capacity(request: Request) -> JSONResponse:
     )
 
 
+def _platform_spa_routes(spa_dist: str | Path | None) -> list[Mount | Route]:
+    if spa_dist is None:
+        return []
+
+    dist_path = Path(spa_dist).expanduser().resolve()
+    index_path = dist_path / "index.html"
+    if not dist_path.is_dir() or not index_path.is_file():
+        return []
+
+    async def spa_fallback(request: Request) -> FileResponse | JSONResponse:
+        path = request.path_params.get("path", "")
+        if path == "api" or path.startswith("api/"):
+            return _json_error("Not found", 404)
+
+        requested_path = (dist_path / path).resolve()
+        try:
+            requested_path.relative_to(dist_path)
+        except ValueError:
+            return _json_error("Not found", 404)
+
+        if requested_path.is_file():
+            return FileResponse(requested_path)
+        return FileResponse(index_path)
+
+    routes: list[Mount | Route] = []
+    assets_path = dist_path / "assets"
+    if assets_path.is_dir():
+        routes.append(Mount("/assets", app=StaticFiles(directory=assets_path), name="assets"))
+    routes.append(Route("/{path:path}", spa_fallback, methods=["GET", "HEAD"]))
+    return routes
+
+
 def create_platform_app(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1697,6 +1730,7 @@ def create_platform_app(
     secret_key_path: str | Path | None = None,
     default_provider: str | None = None,
     default_model: str | None = None,
+    spa_dist: str | Path | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -1704,42 +1738,42 @@ def create_platform_app(
             await initialize_platform_schema(engine)
         yield
 
-    app = Starlette(
-        lifespan=lifespan,
-        routes=[
-            Route("/api/repos", register_repo, methods=["POST"]),
-            Route("/api/repos", list_repos, methods=["GET"]),
-            Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
-            Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
-            Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
-            Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),
-            Route("/api/workflows/{workflow_id}/validate", validate_workflow, methods=["POST"]),
-            Route("/api/runs", create_run, methods=["POST"]),
-            Route("/api/runs", list_runs, methods=["GET"]),
-            Route("/api/runs/{run_id}", get_run, methods=["GET"]),
-            Route("/api/runs/{run_id}/events", list_run_events, methods=["GET"]),
-            Route("/api/runs/{run_id}/events/stream", stream_run_events, methods=["GET"]),
-            Route("/api/runs/{run_id}/approvals", list_approvals, methods=["GET"]),
-            Route(
-                "/api/runs/{run_id}/approvals/{approval_id}",
-                decide_approval,
-                methods=["POST"],
-            ),
-            Route("/api/runs/{run_id}/artifacts", list_artifacts, methods=["GET"]),
-            Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
-            Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
-            Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
-            Route("/api/settings", get_settings, methods=["GET"]),
-            Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
-            Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
-            Route("/api/settings/secrets/{name}", delete_settings_secret, methods=["DELETE"]),
-            Route("/api/settings/variables", list_settings_variables, methods=["GET"]),
-            Route("/api/settings/variables/{key}", put_settings_variable, methods=["PUT"]),
-            Route("/api/settings/variables/{key}", delete_settings_variable, methods=["DELETE"]),
-            Route("/api/system/health", system_health, methods=["GET"]),
-            Route("/api/system/capacity", system_capacity, methods=["GET"]),
-        ]
-    )
+    routes: list[Mount | Route] = [
+        Route("/api/repos", register_repo, methods=["POST"]),
+        Route("/api/repos", list_repos, methods=["GET"]),
+        Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
+        Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
+        Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
+        Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),
+        Route("/api/workflows/{workflow_id}/validate", validate_workflow, methods=["POST"]),
+        Route("/api/runs", create_run, methods=["POST"]),
+        Route("/api/runs", list_runs, methods=["GET"]),
+        Route("/api/runs/{run_id}", get_run, methods=["GET"]),
+        Route("/api/runs/{run_id}/events", list_run_events, methods=["GET"]),
+        Route("/api/runs/{run_id}/events/stream", stream_run_events, methods=["GET"]),
+        Route("/api/runs/{run_id}/approvals", list_approvals, methods=["GET"]),
+        Route(
+            "/api/runs/{run_id}/approvals/{approval_id}",
+            decide_approval,
+            methods=["POST"],
+        ),
+        Route("/api/runs/{run_id}/artifacts", list_artifacts, methods=["GET"]),
+        Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
+        Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
+        Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
+        Route("/api/settings", get_settings, methods=["GET"]),
+        Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
+        Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
+        Route("/api/settings/secrets/{name}", delete_settings_secret, methods=["DELETE"]),
+        Route("/api/settings/variables", list_settings_variables, methods=["GET"]),
+        Route("/api/settings/variables/{key}", put_settings_variable, methods=["PUT"]),
+        Route("/api/settings/variables/{key}", delete_settings_variable, methods=["DELETE"]),
+        Route("/api/system/health", system_health, methods=["GET"]),
+        Route("/api/system/capacity", system_capacity, methods=["GET"]),
+    ]
+    routes.extend(_platform_spa_routes(spa_dist))
+
+    app = Starlette(lifespan=lifespan, routes=routes)
     app.state.platform_services = _PlatformServices(
         executor=executor,
         repository=executor.repository,
@@ -1760,6 +1794,7 @@ def create_app(
     secret_key_path: str | Path | None = None,
     default_provider: str | None = None,
     default_model: str | None = None,
+    spa_dist: str | Path | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
@@ -1768,4 +1803,5 @@ def create_app(
         secret_key_path=secret_key_path,
         default_provider=default_provider,
         default_model=default_model,
+        spa_dist=spa_dist,
     )
