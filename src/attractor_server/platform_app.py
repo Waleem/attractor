@@ -95,6 +95,7 @@ def _serialize_run(run: RunRecordModel) -> dict[str, Any]:
         "status": run.status,
         "repo_id": run.repo_id,
         "workflow_id": run.workflow_id,
+        "run_spec": getattr(run, "run_spec", None),
         "actor_label": run.actor_label,
         "source_commit": getattr(run, "source_commit", None),
         "source_branch": getattr(run, "source_branch", None),
@@ -593,6 +594,96 @@ async def _list_runs(services: _PlatformServices) -> list[Any]:
     raise RuntimeError("Repository does not support listing runs")
 
 
+_BROWSE_ITEM_LIMIT = 500
+_HIDDEN_BROWSE_NAMES = {
+    ".attractor",
+    ".DS_Store",
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
+
+
+def _is_relative_to_path(candidate: Path, root: Path) -> bool:
+    return candidate == root or root in candidate.parents
+
+
+def _is_hidden_browse_name(name: str) -> bool:
+    return name.startswith(".") or name in _HIDDEN_BROWSE_NAMES
+
+
+def _is_hidden_browse_path(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        if not _is_relative_to_path(path, root):
+            continue
+        if path == root:
+            return False
+        return any(_is_hidden_browse_name(part) for part in path.relative_to(root).parts)
+    return False
+
+
+async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
+    roots: list[Path] = []
+    for repo in await _list_repos(services):
+        local_path = getattr(repo, "local_path", None)
+        if isinstance(local_path, str) and local_path:
+            roots.append(Path(local_path).expanduser().resolve())
+
+    for run in await _list_runs(services):
+        worktree_path = getattr(run, "worktree_path", None)
+        if isinstance(worktree_path, str) and worktree_path:
+            roots.append(Path(worktree_path).expanduser().resolve())
+
+    if not roots:
+        roots.extend([Path.cwd().resolve(), Path.home().resolve()])
+
+    unique_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        root_key = str(root)
+        if root_key not in seen and root.is_dir():
+            seen.add(root_key)
+            unique_roots.append(root)
+    return unique_roots
+
+
+def _browse_entry(path: Path) -> dict[str, Any]:
+    is_directory = path.is_dir()
+    return {
+        "name": path.name,
+        "path": str(path),
+        "kind": "directory" if is_directory else "file",
+        "is_git_repo": bool(is_directory and (path / ".git").is_dir()),
+    }
+
+
+async def _safe_browse_entries(
+    services: _PlatformServices,
+    directory: Path,
+) -> tuple[list[dict[str, Any]], bool]:
+    roots = await _browse_allowed_roots(services)
+    entries: list[Path] = []
+    for child in directory.iterdir():
+        if _is_hidden_browse_name(child.name):
+            continue
+        try:
+            resolved = child.resolve()
+        except OSError:
+            continue
+        if _is_hidden_browse_path(resolved, roots):
+            continue
+        if not any(_is_relative_to_path(resolved, root) for root in roots):
+            continue
+        entries.append(resolved)
+
+    entries.sort(key=lambda item: (not item.is_dir(), item.name.casefold()))
+    truncated = len(entries) > _BROWSE_ITEM_LIMIT
+    return [_browse_entry(item) for item in entries[:_BROWSE_ITEM_LIMIT]], truncated
+
+
 async def _list_events_for_run(
     services: _PlatformServices,
     run_id: str,
@@ -1081,6 +1172,18 @@ async def create_run(request: Request) -> JSONResponse:
 async def list_runs(request: Request) -> JSONResponse:
     services = _services(request)
     runs = await _list_runs(services)
+    status = request.query_params.get("status")
+    repo_id = request.query_params.get("repo_id")
+    workflow_id = request.query_params.get("workflow_id")
+    actor_label = request.query_params.get("actor_label")
+    if status:
+        runs = [run for run in runs if getattr(run, "status", None) == status]
+    if repo_id:
+        runs = [run for run in runs if getattr(run, "repo_id", None) == repo_id]
+    if workflow_id:
+        runs = [run for run in runs if getattr(run, "workflow_id", None) == workflow_id]
+    if actor_label:
+        runs = [run for run in runs if getattr(run, "actor_label", None) == actor_label]
     return JSONResponse({"items": [_serialize_run(run) for run in runs]})
 
 
@@ -1090,6 +1193,153 @@ async def get_run(request: Request) -> JSONResponse:
     if isinstance(run, JSONResponse):
         return run
     return JSONResponse(_serialize_run(run))
+
+
+async def browse_filesystem(request: Request) -> JSONResponse:
+    services = _services(request)
+    path_param = request.query_params.get("path")
+    if not path_param:
+        return _json_error("Missing 'path' query parameter", 400)
+
+    try:
+        requested_path = Path(path_param).expanduser().resolve()
+    except OSError as exc:
+        return _json_error(f"Path could not be resolved: {exc}", 400)
+
+    allowed_roots = await _browse_allowed_roots(services)
+    if not any(_is_relative_to_path(requested_path, root) for root in allowed_roots):
+        return _json_error(f"Path {requested_path} is not allowed", 403)
+    if not requested_path.is_dir():
+        return _json_error(f"Path {requested_path} is not a directory", 400)
+    if _is_hidden_browse_path(requested_path, allowed_roots):
+        return _json_error(f"Path {requested_path} is not allowed", 403)
+
+    try:
+        entries, truncated = await _safe_browse_entries(services, requested_path)
+    except OSError as exc:
+        return _json_error(f"Path {requested_path} could not be listed: {exc}", 400)
+
+    return JSONResponse(
+        {
+            "path": str(requested_path),
+            "items": entries,
+            "truncated": truncated,
+        }
+    )
+
+
+def _git_diff_status_name(code: str) -> str:
+    if code.startswith("A"):
+        return "added"
+    if code.startswith("D"):
+        return "deleted"
+    if code.startswith("R"):
+        return "renamed"
+    if code.startswith("C"):
+        return "copied"
+    if code.startswith("T"):
+        return "type_changed"
+    if code.startswith("M"):
+        return "modified"
+    return "changed"
+
+
+def _parse_diff_name_status(output: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        code = parts[0]
+        path = parts[-1]
+        statuses[path] = _git_diff_status_name(code)
+    return statuses
+
+
+def _parse_diff_numstat(output: str, statuses: dict[str, str]) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        additions_text, deletions_text, path = parts[0], parts[1], parts[-1]
+        additions = 0 if additions_text == "-" else int(additions_text)
+        deletions = 0 if deletions_text == "-" else int(deletions_text)
+        files.append(
+            {
+                "path": path,
+                "status": statuses.get(path, "changed"),
+                "additions": additions,
+                "deletions": deletions,
+            }
+        )
+    return files
+
+
+async def get_run_diff(request: Request) -> JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    repo = await _get_repo(services, run.repo_id)
+    if repo is None:
+        return _json_error(f"Repository {run.repo_id} not found", 404)
+
+    base_commit = _run_source_commit(run)
+    if base_commit is None:
+        return _json_error("Run source commit is missing", 409)
+
+    worktree_path = getattr(run, "worktree_path", None)
+    managed_branch = getattr(run, "managed_branch", None)
+    diff_cwd = (
+        Path(worktree_path).expanduser().resolve()
+        if isinstance(worktree_path, str) and worktree_path
+        else Path(repo.local_path).expanduser().resolve()
+    )
+    if not diff_cwd.is_dir():
+        return _json_error(f"Diff path {diff_cwd} is not available", 409)
+
+    git = _executor_git_runner(services.executor)
+    try:
+        head_commit = git.run(diff_cwd, "rev-parse", "HEAD").stdout
+        if not worktree_path and isinstance(managed_branch, str) and managed_branch:
+            head_commit = git.run(diff_cwd, "rev-parse", managed_branch).stdout
+        status_output = git.run(
+            diff_cwd,
+            "diff",
+            "--name-status",
+            "--find-renames",
+            base_commit,
+            head_commit,
+            "--",
+        ).stdout
+        numstat_output = git.run(
+            diff_cwd,
+            "diff",
+            "--numstat",
+            "--find-renames",
+            base_commit,
+            head_commit,
+            "--",
+        ).stdout
+    except RuntimeError as exc:
+        return _json_error(f"Diff could not be computed: {exc}", 409)
+
+    statuses = _parse_diff_name_status(status_output)
+    files = _parse_diff_numstat(numstat_output, statuses)
+    limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+    truncated = len(files) > limit
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "base_commit": base_commit,
+            "head_commit": head_commit,
+            "truncated": truncated,
+            "files": files[:limit],
+        }
+    )
 
 
 async def list_run_events(request: Request) -> JSONResponse:
@@ -1480,9 +1730,7 @@ async def list_settings_secrets(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
         secrets = list(
-            await session.scalars(
-                select(SettingSecretModel).order_by(SettingSecretModel.name)
-            )
+            await session.scalars(select(SettingSecretModel).order_by(SettingSecretModel.name))
         )
     return JSONResponse({"items": [_serialize_secret_metadata(secret) for secret in secrets]})
 
@@ -1552,9 +1800,7 @@ async def list_settings_variables(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
         variables = list(
-            await session.scalars(
-                select(SettingVariableModel).order_by(SettingVariableModel.key)
-            )
+            await session.scalars(select(SettingVariableModel).order_by(SettingVariableModel.key))
         )
     return JSONResponse({"items": [_serialize_variable(variable) for variable in variables]})
 
@@ -1587,9 +1833,7 @@ async def put_settings_variable(request: Request) -> JSONResponse:
             value=value,
             updated_at=now,
         )
-    payload = _serialize_variable(
-        SettingVariableModel(key=key, value=value, updated_at=now)
-    )
+    payload = _serialize_variable(SettingVariableModel(key=key, value=value, updated_at=now))
     return JSONResponse(payload)
 
 
@@ -1613,13 +1857,10 @@ async def get_settings(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
         secrets_by_name = {
-            secret.name: secret
-            for secret in await session.scalars(select(SettingSecretModel))
+            secret.name: secret for secret in await session.scalars(select(SettingSecretModel))
         }
         variables = list(
-            await session.scalars(
-                select(SettingVariableModel).order_by(SettingVariableModel.key)
-            )
+            await session.scalars(select(SettingVariableModel).order_by(SettingVariableModel.key))
         )
 
     provider_api_keys = await _provider_api_keys_from_vault(services)
@@ -1828,9 +2069,11 @@ def create_platform_app(
         Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
         Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),
         Route("/api/workflows/{workflow_id}/validate", validate_workflow, methods=["POST"]),
+        Route("/api/fs/browse", browse_filesystem, methods=["GET"]),
         Route("/api/runs", create_run, methods=["POST"]),
         Route("/api/runs", list_runs, methods=["GET"]),
         Route("/api/runs/{run_id}", get_run, methods=["GET"]),
+        Route("/api/runs/{run_id}/diff", get_run_diff, methods=["GET"]),
         Route("/api/runs/{run_id}/events", list_run_events, methods=["GET"]),
         Route("/api/runs/{run_id}/events/stream", stream_run_events, methods=["GET"]),
         Route("/api/runs/{run_id}/approvals", list_approvals, methods=["GET"]),

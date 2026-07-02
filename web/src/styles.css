@@ -20,6 +20,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -62,6 +63,7 @@ button:disabled {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid #bac4cf;
@@ -296,6 +298,43 @@ td {
   gap: 0.75rem;
 }
 
+.browser-controls,
+.filter-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.browser-controls .field {
+  flex: 1 1 360px;
+}
+
+.filter-row select {
+  min-width: 150px;
+}
+
+.launch-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.diagnostics-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.diagnostic-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+  padding: 0.55rem 0.65rem;
+}
+
 .form-stack {
   display: grid;
   gap: 0.75rem;
@@ -465,6 +504,7 @@ button.tab.active {
 
   .form-grid,
   .writeback-form,
+  .launch-form,
   .settings-variable-form,
   .approval-row {
     grid-template-columns: 1fr;

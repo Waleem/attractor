@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   answerApproval,
+  cancelRun,
   getRun,
+  getRunDiff,
   knownRunEventTypes,
+  launchRun,
   listApprovals,
   listArtifacts,
   listCheckpoints,
   listRunEvents,
   openRunEventSource,
   promoteWriteBack,
+  runSpecToLaunchInput,
   type ApprovalDecision,
   type ArtifactRecord,
   type CheckpointRecord,
+  type RunDiff,
   type RunEvent
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
@@ -39,7 +44,11 @@ export function RunDetailRoute({ runId }: { runId: string }) {
     },
     [runId]
   );
+  const diffState = useAsync(() => getRunDiff(runId), [runId]);
   const [liveEvents, setLiveEvents] = useState<RunEvent[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
   const run = runState.data;
   const related = relatedState.data;
   const events = useMemo(
@@ -82,7 +91,8 @@ export function RunDetailRoute({ runId }: { runId: string }) {
   return (
     <>
       <PageHeader title={run?.id ?? "Run"} eyebrow="Run Detail" />
-      <ErrorBanner message={runState.error ?? relatedState.error} />
+      <ErrorBanner message={runState.error ?? relatedState.error ?? actionError} />
+      {actionMessage ? <div className="notice">{actionMessage}</div> : null}
       {runState.loading ? <Loading /> : null}
       {run ? (
         <>
@@ -98,6 +108,22 @@ export function RunDetailRoute({ runId }: { runId: string }) {
               <KeyValue label="Completed" value={formatDate(run.completed_at)} />
             </dl>
             {run.error_message ? <div className="error-banner">{run.error_message}</div> : null}
+          </Panel>
+          <RunActions
+            run={run}
+            busy={actionBusy}
+            onBusy={setActionBusy}
+            onMessage={setActionMessage}
+            onError={setActionError}
+            onChanged={() => {
+              runState.refresh();
+              relatedState.refresh();
+              diffState.refresh();
+            }}
+          />
+          <Panel title="Branch Diff">
+            <ErrorBanner message={diffState.error} />
+            <BranchDiff diff={diffState.data} loading={diffState.loading} />
           </Panel>
           <GraphViewer workflowId={run.workflow_id} events={events} />
           <PendingApprovals
@@ -129,6 +155,117 @@ export function RunDetailRoute({ runId }: { runId: string }) {
           </Panel>
         </>
       ) : null}
+    </>
+  );
+}
+
+function RunActions({
+  run,
+  busy,
+  onBusy,
+  onMessage,
+  onError,
+  onChanged
+}: {
+  run: {
+    id: string;
+    status: string;
+    run_spec: Parameters<typeof runSpecToLaunchInput>[0];
+  };
+  busy: boolean;
+  onBusy: (value: boolean) => void;
+  onMessage: (value: string | null) => void;
+  onError: (value: string | null) => void;
+  onChanged: () => void;
+}) {
+  async function cancelCurrentRun() {
+    onBusy(true);
+    onMessage(null);
+    onError(null);
+    try {
+      const result = await cancelRun(run.id);
+      onMessage(`${run.id}: ${result.status}`);
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  async function rerunCurrentRun() {
+    const input = runSpecToLaunchInput(run.run_spec);
+    if (!input) {
+      onError("This run does not include enough run_spec metadata to re-run.");
+      return;
+    }
+    onBusy(true);
+    onMessage(null);
+    onError(null);
+    try {
+      const nextRun = await launchRun(input);
+      onMessage(`Re-ran ${run.id} as ${nextRun.id}`);
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  return (
+    <Panel title="Run Actions">
+      <div className="button-row">
+        <button type="button" className="secondary" disabled={!canCancel(run.status) || busy} onClick={cancelCurrentRun}>
+          Cancel
+        </button>
+        <button type="button" disabled={busy} onClick={rerunCurrentRun}>
+          Re-run
+        </button>
+      </div>
+      {!canCancel(run.status) ? <div className="subtle">Cancel is available only while a run is active.</div> : null}
+    </Panel>
+  );
+}
+
+function BranchDiff({ diff, loading }: { diff: RunDiff | null; loading: boolean }) {
+  if (loading) {
+    return <Loading label="Loading diff" />;
+  }
+  if (!diff) {
+    return <EmptyState>No diff loaded</EmptyState>;
+  }
+  if (diff.files.length === 0) {
+    return <EmptyState>No file changes between source and run HEAD</EmptyState>;
+  }
+  return (
+    <>
+      <dl className="kv-grid">
+        <KeyValue label="Base" value={<span className="mono">{shortSha(diff.base_commit)}</span>} />
+        <KeyValue label="Head" value={<span className="mono">{shortSha(diff.head_commit)}</span>} />
+        <KeyValue label="Files" value={diff.files.length} />
+        <KeyValue label="Truncated" value={diff.truncated ? "Yes" : "No"} />
+      </dl>
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Status</th>
+            <th>+</th>
+            <th>-</th>
+          </tr>
+        </thead>
+        <tbody>
+          {diff.files.map((file) => (
+            <tr key={file.path}>
+              <td className="path-cell">{file.path}</td>
+              <td>{file.status}</td>
+              <td className="mono">{file.additions}</td>
+              <td className="mono">{file.deletions}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </>
   );
 }
@@ -413,4 +550,8 @@ function mergeEvents(events: RunEvent[]): RunEvent[] {
 
 function isTerminal(status: string): boolean {
   return ["completed", "failed", "cancelled", "writeback_applied", "writeback_failed"].includes(status);
+}
+
+function canCancel(status: string): boolean {
+  return !isTerminal(status);
 }

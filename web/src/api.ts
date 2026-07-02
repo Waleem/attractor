@@ -112,11 +112,29 @@ export interface LaunchRunInput {
   requested_environment?: string;
 }
 
+export interface SerializedRunSpec {
+  run_id?: string;
+  repo_path?: string;
+  workflow_name?: string;
+  workflow?: string;
+  actor_label?: string;
+  inputs?: Record<string, string>;
+  requested_environment?:
+    | string
+    | {
+        mode?: string;
+        name?: string;
+        image?: string;
+      };
+  [key: string]: unknown;
+}
+
 export interface RunRecord {
   id: string;
   status: RunStatus;
   repo_id: string;
   workflow_id: string;
+  run_spec: SerializedRunSpec | null;
   actor_label: string;
   source_commit?: string;
   source_branch?: string;
@@ -195,6 +213,34 @@ export interface WriteBackRecord {
   error_message: string | null;
   created_at: string | null;
   applied_at: string | null;
+}
+
+export interface FsBrowseEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+  is_git_repo: boolean;
+}
+
+export interface FsBrowseResult {
+  path: string;
+  items: FsBrowseEntry[];
+  truncated: boolean;
+}
+
+export interface RunDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface RunDiff {
+  run_id: string;
+  base_commit: string;
+  head_commit: string;
+  truncated: boolean;
+  files: RunDiffFile[];
 }
 
 export interface SystemHealth {
@@ -342,13 +388,66 @@ export async function launchRun(input: LaunchRunInput): Promise<RunRecord> {
   });
 }
 
-export async function listRuns(): Promise<RunRecord[]> {
-  const response = await requestJson<ItemsResponse<RunRecord>>("/api/runs");
+export function runSpecToLaunchInput(runSpec: SerializedRunSpec | null): LaunchRunInput | null {
+  if (!runSpec || typeof runSpec.repo_path !== "string") {
+    return null;
+  }
+  const workflowName =
+    typeof runSpec.workflow_name === "string" ? runSpec.workflow_name : runSpec.workflow;
+  if (typeof workflowName !== "string") {
+    return null;
+  }
+  const requestedEnvironment =
+    typeof runSpec.requested_environment === "string"
+      ? runSpec.requested_environment
+      : runSpec.requested_environment?.name ?? runSpec.requested_environment?.mode ?? "";
+  return {
+    repo_path: runSpec.repo_path,
+    workflow_name: workflowName,
+    actor_label: typeof runSpec.actor_label === "string" ? runSpec.actor_label : "operator",
+    inputs: runSpec.inputs && typeof runSpec.inputs === "object" ? runSpec.inputs : {},
+    requested_environment: requestedEnvironment
+  };
+}
+
+export async function listRuns(filters: {
+  status?: string;
+  repo_id?: string;
+  workflow_id?: string;
+  actor_label?: string;
+} = {}): Promise<RunRecord[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await requestJson<ItemsResponse<RunRecord>>(`/api/runs${suffix}`);
   return response.items;
 }
 
 export async function getRun(runId: string): Promise<RunRecord> {
   return requestJson<RunRecord>(`/api/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function cancelRun(runId: string): Promise<{ id: string; status: string }> {
+  return requestJson<{ id: string; status: string }>(
+    `/api/runs/${encodeURIComponent(runId)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({})
+    }
+  );
+}
+
+export async function getRunDiff(runId: string): Promise<RunDiff> {
+  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff`);
+}
+
+export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
+  const params = new URLSearchParams({ path });
+  return requestJson<FsBrowseResult>(`/api/fs/browse?${params.toString()}`);
 }
 
 export async function listRunEvents(runId: string): Promise<RunEvent[]> {

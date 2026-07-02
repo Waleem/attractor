@@ -309,6 +309,18 @@ async def _register_repo(harness: _Harness, repo_path: Path) -> None:
     assert response.status_code == 201
 
 
+def _git_commit(repo_path: Path, message: str) -> str:
+    subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo_path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 async def test_create_run_preserves_typed_launch_metadata_and_queues_event(
     platform_harness: _Harness,
     sample_repo: Path,
@@ -394,3 +406,198 @@ async def test_create_run_rejects_non_string_requested_environment(
 
     assert response.status_code == 400
     assert "requested_environment" in response.json()["error"]
+
+
+async def test_fs_browse_lists_directory_metadata_without_file_contents(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    nested_repo = sample_repo / "packages" / "tool"
+    nested_repo.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=nested_repo, check=True, stdout=subprocess.DEVNULL)
+    (sample_repo / "README.md").write_text("secret file content\n", encoding="utf-8")
+    (sample_repo / ".venv").mkdir()
+    (sample_repo / "node_modules").mkdir()
+    await _register_repo(platform_harness, sample_repo)
+
+    response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(sample_repo)},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(sample_repo.resolve())
+    assert body["truncated"] is False
+    entries = body["items"]
+    assert entries[:1] == [
+        {
+            "name": "packages",
+            "path": str((sample_repo / "packages").resolve()),
+            "kind": "directory",
+            "is_git_repo": False,
+        }
+    ]
+    assert {
+        "name": "README.md",
+        "path": str((sample_repo / "README.md").resolve()),
+        "kind": "file",
+        "is_git_repo": False,
+    } in entries
+    assert not any(
+        entry["name"] in {".git", ".attractor", ".venv", "node_modules"} for entry in entries
+    )
+    assert "secret file content" not in response.text
+
+    nested_response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(sample_repo / "packages")},
+    )
+    assert nested_response.status_code == 200
+    assert nested_response.json()["items"] == [
+        {
+            "name": "tool",
+            "path": str(nested_repo.resolve()),
+            "kind": "directory",
+            "is_git_repo": True,
+        }
+    ]
+
+
+async def test_fs_browse_rejects_missing_non_directory_and_path_escape(
+    platform_harness: _Harness,
+    sample_repo: Path,
+    tmp_path: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink = sample_repo / "outside-link"
+    symlink.symlink_to(outside, target_is_directory=True)
+
+    missing = await platform_harness.client.get("/api/fs/browse")
+    assert missing.status_code == 400
+    assert "path" in missing.json()["error"]
+
+    file_response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(sample_repo / ".attractor" / "project.toml")},
+    )
+    assert file_response.status_code == 400
+    assert "directory" in file_response.json()["error"]
+
+    parent_response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(sample_repo / "..")},
+    )
+    assert parent_response.status_code == 403
+    assert "not allowed" in parent_response.json()["error"]
+
+    symlink_response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(symlink)},
+    )
+    assert symlink_response.status_code == 403
+    assert "not allowed" in symlink_response.json()["error"]
+
+
+async def test_run_responses_include_run_spec_for_re_run(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    create_response = await platform_harness.client.post(
+        "/api/runs",
+        json={
+            "repo_path": str(sample_repo),
+            "workflow_name": "release",
+            "actor_label": "alice",
+            "inputs": {"ticket": "TASK-9"},
+            "requested_environment": "local",
+        },
+    )
+    assert create_response.status_code == 201
+    run_id = create_response.json()["id"]
+
+    response = await platform_harness.client.get(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.json()["run_spec"] == {
+        "run_id": run_id,
+        "repo_path": str(sample_repo),
+        "workflow_name": "release",
+        "actor_label": "alice",
+        "inputs": {"ticket": "TASK-9"},
+        "requested_environment": {
+            "mode": "local",
+            "name": "local",
+            "image": "",
+        },
+    }
+
+
+async def test_list_runs_filters_by_status_and_repo_id(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    first = await platform_harness.client.post(
+        "/api/runs",
+        json={"repo_path": str(sample_repo), "workflow_name": "release", "actor_label": "alice"},
+    )
+    second = await platform_harness.client.post(
+        "/api/runs",
+        json={"repo_path": str(sample_repo), "workflow_name": "release", "actor_label": "bob"},
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+    platform_harness.repository.runs[first.json()["id"]].status = RunStatus.COMPLETED.value
+    platform_harness.repository.runs[second.json()["id"]].status = RunStatus.FAILED.value
+
+    response = await platform_harness.client.get(
+        "/api/runs",
+        params={
+            "status": RunStatus.FAILED.value,
+            "repo_id": next(iter(platform_harness.repository.repos)),
+        },
+    )
+
+    assert response.status_code == 200
+    assert [run["id"] for run in response.json()["items"]] == [second.json()["id"]]
+
+
+async def test_get_run_diff_returns_bounded_file_metadata(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    create_response = await platform_harness.client.post(
+        "/api/runs",
+        json={"repo_path": str(sample_repo), "workflow_name": "release", "actor_label": "alice"},
+    )
+    assert create_response.status_code == 201
+    run_id = create_response.json()["id"]
+    source_commit = platform_harness.repository.runs[run_id].source_commit
+    (sample_repo / "generated.txt").write_text("new line\n", encoding="utf-8")
+    head_commit = _git_commit(sample_repo, "generated")
+    platform_harness.repository.runs[run_id].status = RunStatus.COMPLETED.value
+    platform_harness.repository.runs[run_id].worktree_path = str(sample_repo)
+    platform_harness.repository.runs[run_id].managed_branch = "master"
+
+    response = await platform_harness.client.get(f"/api/runs/{run_id}/diff")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": run_id,
+        "base_commit": source_commit,
+        "head_commit": head_commit,
+        "truncated": False,
+        "files": [
+            {
+                "path": "generated.txt",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0,
+            }
+        ],
+    }
