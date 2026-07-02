@@ -8,7 +8,7 @@ from hatchling.builders.hooks.plugin.interface import (  # type: ignore[import-n
 )
 
 SPA_DIST_SOURCE = "web/dist"
-BUNDLED_SPA_DIST_TARGET = "src/attractor_server/web/dist"
+BUNDLED_SPA_DIST_TARGET = "attractor_server/web/dist"
 
 
 class BuildHook(BuildHookInterface):

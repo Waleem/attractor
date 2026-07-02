@@ -9,7 +9,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 from importlib import resources
 from pathlib import Path
@@ -113,12 +112,10 @@ def main() -> None:
     if args.platform:
         from attractor_platform.executor import DurableRunExecutor
         from attractor_platform.llm_backend import build_platform_codergen_backend
-        from attractor_platform.secrets import SecretVault, load_provider_secret_values
         from attractor_platform.storage.db import (
             DatabaseSettings,
             create_platform_engine,
             create_session_factory,
-            initialize_platform_schema,
         )
         from attractor_server.platform_app import create_platform_app
 
@@ -128,15 +125,6 @@ def main() -> None:
             else DatabaseSettings.from_env()
         )
         session_factory = create_session_factory(engine)
-        secret_vault = SecretVault()
-
-        async def load_provider_api_keys() -> dict[str, str]:
-            await initialize_platform_schema(engine)
-            return await load_provider_secret_values(
-                session_factory=session_factory,
-                secret_vault=secret_vault,
-                provider_names=("anthropic", "openai", "gemini"),
-            )
 
         runtime_default_provider = (
             args.provider or os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip() or None
@@ -147,7 +135,6 @@ def main() -> None:
         codergen_backend = build_platform_codergen_backend(
             default_provider=runtime_default_provider,
             default_model=runtime_default_model,
-            provider_api_keys=asyncio.run(load_provider_api_keys()),
         )
         executor = DurableRunExecutor(
             session_factory=session_factory,

@@ -2083,6 +2083,7 @@ def create_platform_app(
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         if engine is not None:
             await initialize_platform_schema(engine)
+            await _refresh_codergen_backend(_app.state.platform_services)
         yield
 
     routes: list[Mount | Route] = [

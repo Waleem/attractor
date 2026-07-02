@@ -201,7 +201,7 @@ def test_wheel_build_hook_bundles_platform_spa_dist_when_present(
     hook = hook_module.BuildHook(str(tmp_path), {})
     hook.initialize("standard", build_data)
 
-    assert build_data["force_include"]["web/dist"] == "src/attractor_server/web/dist"
+    assert build_data["force_include"]["web/dist"] == "attractor_server/web/dist"
 
 
 def test_wheel_build_hook_skips_platform_spa_dist_when_missing(
