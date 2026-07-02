@@ -1,4 +1,8 @@
-import { buildGraphHighlightState } from "./graphHighlight.js";
+import {
+  applyGraphHighlightClassesToTargets,
+  buildGraphHighlightState,
+  type GraphHighlightClassTarget
+} from "./graphHighlight.js";
 import type { RunEvent, WorkflowGraph } from "./api";
 
 function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
@@ -11,6 +15,25 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
 
 function mapEntries(map: Map<string, string[]>) {
   return Array.from(map.entries()).sort(([left], [right]) => left.localeCompare(right));
+}
+
+function target(
+  kind: GraphHighlightClassTarget["kind"],
+  id: string | null,
+  initialClasses: string[] = []
+): GraphHighlightClassTarget & { classNames: Set<string> } {
+  const classNames = new Set(initialClasses);
+  return {
+    kind,
+    id,
+    classNames,
+    addClass(className: string) {
+      classNames.add(className);
+    },
+    removeClass(className: string) {
+      classNames.delete(className);
+    }
+  };
 }
 
 const graph: WorkflowGraph = {
@@ -137,4 +160,45 @@ assertDeepEqual(
   mapEntries(highlightState.edgeClasses),
   [["approve->deploy", ["active"]]],
   "marks the edge from the latest completed node to the active node"
+);
+
+const buildNode = target("node", "build", ["node", "active", "checkpointed"]);
+const deployNode = target("node", "deploy", ["node", "complete"]);
+const activeEdge = target("edge", "approve->deploy", ["edge"]);
+const staleEdge = target("edge", "deploy->notify", ["edge", "active"]);
+const untitledNode = target("node", null, ["node", "failed"]);
+
+applyGraphHighlightClassesToTargets(
+  [buildNode, deployNode, activeEdge, staleEdge, untitledNode],
+  highlightState
+);
+
+assertDeepEqual(
+  Array.from(buildNode.classNames).sort(),
+  ["checkpointed", "complete", "node"],
+  "updates node targets by removing stale highlight classes and adding current classes"
+);
+
+assertDeepEqual(
+  Array.from(deployNode.classNames).sort(),
+  ["active", "node"],
+  "applies current active class to node targets"
+);
+
+assertDeepEqual(
+  Array.from(activeEdge.classNames).sort(),
+  ["active", "edge"],
+  "applies current active class to edge targets"
+);
+
+assertDeepEqual(
+  Array.from(staleEdge.classNames).sort(),
+  ["edge"],
+  "removes stale edge highlights when highlight state changes"
+);
+
+assertDeepEqual(
+  Array.from(untitledNode.classNames).sort(),
+  ["failed", "node"],
+  "leaves unidentified graph groups unchanged"
 );

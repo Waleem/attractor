@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   getWorkflowGraph,
   type RunEvent,
   type WorkflowGraph
 } from "../api";
 import {
+  applyGraphHighlightClassesToTargets,
   buildGraphHighlightState,
   graphEdgeId,
+  type GraphHighlightClassTarget,
   type GraphHighlightState
 } from "../graphHighlight";
 import { useAsync } from "./useAsync";
@@ -20,6 +22,7 @@ type GraphvizModule = {
     load: () => Promise<GraphvizRenderer>;
   };
 };
+let graphvizLoadPromise: Promise<GraphvizRenderer> | null = null;
 
 const GRAPH_SVG_STYLE = `
 svg {
@@ -110,11 +113,14 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   const [svgMarkup, setSvgMarkup] = useState("");
   const [renderError, setRenderError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
+  const graphCanvasRef = useRef<HTMLDivElement | null>(null);
+  const graphDot = graph?.dot ?? null;
 
   useEffect(() => {
     let active = true;
-    if (!graph) {
+    if (!graph || graphDot === null) {
       setSvgMarkup("");
+      setRendering(false);
       return () => {
         active = false;
       };
@@ -122,8 +128,8 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
 
     setRendering(true);
     setRenderError(null);
-    renderDotToSvg(graph.dot)
-      .then((svg) => applyGraphHighlights(svg, graph, highlightState))
+    renderDotToSvg(graphDot)
+      .then((svg) => prepareGraphSvg(svg, graph))
       .then((svg) => {
         if (active) {
           setSvgMarkup(svg);
@@ -144,7 +150,14 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
     return () => {
       active = false;
     };
-  }, [graph, highlightState]);
+  }, [graphDot]);
+
+  useLayoutEffect(() => {
+    if (!graphCanvasRef.current || !svgMarkup) {
+      return;
+    }
+    applyGraphHighlightsToRenderedSvg(graphCanvasRef.current, highlightState);
+  }, [highlightState, svgMarkup]);
 
   return (
     <Panel title="Workflow Graph">
@@ -156,6 +169,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
         ) : null}
         {svgMarkup ? (
           <div
+            ref={graphCanvasRef}
             style={graphCanvasStyle}
             aria-label={`${graph?.name ?? "workflow"} graph`}
             dangerouslySetInnerHTML={{ __html: svgMarkup }}
@@ -201,15 +215,27 @@ function emptyHighlightState(): GraphHighlightState {
 }
 
 async function renderDotToSvg(dot: string): Promise<string> {
-  const graphvizModule = (await import("@hpcc-js/wasm/graphviz")) as unknown as GraphvizModule;
-  const graphviz = await graphvizModule.Graphviz.load();
+  const graphviz = await loadGraphvizRenderer();
   return graphviz.layout(dot, "svg", "dot");
 }
 
-function applyGraphHighlights(
+async function loadGraphvizRenderer(): Promise<GraphvizRenderer> {
+  if (!graphvizLoadPromise) {
+    graphvizLoadPromise = import("@hpcc-js/wasm/graphviz")
+      .then((graphvizModule) =>
+        (graphvizModule as unknown as GraphvizModule).Graphviz.load()
+      )
+      .catch((caught: unknown) => {
+        graphvizLoadPromise = null;
+        throw caught;
+      });
+  }
+  return graphvizLoadPromise;
+}
+
+function prepareGraphSvg(
   svgText: string,
-  graph: WorkflowGraph,
-  highlightState: GraphHighlightState
+  graph: WorkflowGraph
 ): string {
   const document = new DOMParser().parseFromString(svgText, "image/svg+xml");
   const parserError = document.querySelector("parsererror");
@@ -235,10 +261,6 @@ function applyGraphHighlights(
       return;
     }
     group.setAttribute("data-node-id", nodeId);
-    const classes = highlightState.nodeClasses.get(nodeId);
-    if (classes) {
-      group.classList.add(...classes);
-    }
   });
 
   const edgeTitleById = new Map<string, string>();
@@ -256,13 +278,41 @@ function applyGraphHighlights(
       return;
     }
     group.setAttribute("data-edge-id", edgeIdFromTitle);
-    const classes = highlightState.edgeClasses.get(edgeIdFromTitle);
-    if (classes) {
-      group.classList.add(...classes);
-    }
   });
 
   return new XMLSerializer().serializeToString(svg);
+}
+
+function applyGraphHighlightsToRenderedSvg(root: ParentNode, highlightState: GraphHighlightState) {
+  const targets: GraphHighlightClassTarget[] = [];
+
+  root.querySelectorAll<SVGGElement>("g.node").forEach((group) => {
+    targets.push({
+      kind: "node",
+      id: group.getAttribute("data-node-id") ?? groupTitle(group),
+      addClass(className: string) {
+        group.classList.add(className);
+      },
+      removeClass(className: string) {
+        group.classList.remove(className);
+      }
+    });
+  });
+
+  root.querySelectorAll<SVGGElement>("g.edge").forEach((group) => {
+    targets.push({
+      kind: "edge",
+      id: group.getAttribute("data-edge-id") ?? groupTitle(group),
+      addClass(className: string) {
+        group.classList.add(className);
+      },
+      removeClass(className: string) {
+        group.classList.remove(className);
+      }
+    });
+  });
+
+  applyGraphHighlightClassesToTargets(targets, highlightState);
 }
 
 function sanitizeSvg(document: Document) {

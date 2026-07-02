@@ -3,9 +3,24 @@ import type { RunEvent, WorkflowGraph, WorkflowGraphEdge } from "./api";
 export type GraphNodeClass = "active" | "complete" | "failed" | "checkpointed";
 export type GraphEdgeClass = "active";
 
+export const GRAPH_NODE_HIGHLIGHT_CLASSES: readonly GraphNodeClass[] = [
+  "active",
+  "complete",
+  "failed",
+  "checkpointed"
+];
+export const GRAPH_EDGE_HIGHLIGHT_CLASSES: readonly GraphEdgeClass[] = ["active"];
+
 export interface GraphHighlightState {
   nodeClasses: Map<string, GraphNodeClass[]>;
   edgeClasses: Map<string, GraphEdgeClass[]>;
+}
+
+export interface GraphHighlightClassTarget {
+  kind: "node" | "edge";
+  id: string | null;
+  addClass: (className: string) => void;
+  removeClass: (className: string) => void;
 }
 
 export function buildGraphHighlightState(
@@ -76,6 +91,33 @@ export function buildGraphHighlightState(
 
 export function graphEdgeId(edge: WorkflowGraphEdge): string {
   return edge.id || `${edge.source}->${edge.target}`;
+}
+
+export function applyGraphHighlightClassesToTargets(
+  targets: GraphHighlightClassTarget[],
+  highlightState: GraphHighlightState
+) {
+  for (const target of targets) {
+    if (!target.id) {
+      continue;
+    }
+
+    const managedClasses =
+      target.kind === "node" ? GRAPH_NODE_HIGHLIGHT_CLASSES : GRAPH_EDGE_HIGHLIGHT_CLASSES;
+    for (const className of managedClasses) {
+      target.removeClass(className);
+    }
+
+    const classes =
+      target.kind === "node"
+        ? highlightState.nodeClasses.get(target.id)
+        : highlightState.edgeClasses.get(target.id);
+    if (classes) {
+      for (const className of classes) {
+        target.addClass(className);
+      }
+    }
+  }
 }
 
 function eventNodeId(event: RunEvent): string | null {
