@@ -5,12 +5,15 @@ import {
   type WorkflowGraph
 } from "../api";
 import {
-  applyGraphHighlightClassesToTargets,
   buildGraphHighlightState,
   graphEdgeId,
-  type GraphHighlightClassTarget,
   type GraphHighlightState
 } from "../graphHighlight";
+import {
+  applyGraphHighlightsToRenderedSvg,
+  graphGroupTitle,
+  graphLayoutKey
+} from "../graphViewerController";
 import { useAsync } from "./useAsync";
 import { EmptyState, ErrorBanner, Loading, Panel } from "./ui";
 
@@ -114,7 +117,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   const [renderError, setRenderError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
   const graphCanvasRef = useRef<HTMLDivElement | null>(null);
-  const graphDot = graph?.dot ?? null;
+  const graphDot = graphLayoutKey(graph);
 
   useEffect(() => {
     let active = true;
@@ -256,7 +259,7 @@ function prepareGraphSvg(
   svg.insertBefore(style, svg.firstChild);
 
   document.querySelectorAll<SVGGElement>("g.node").forEach((group) => {
-    const nodeId = groupTitle(group);
+    const nodeId = graphGroupTitle(group);
     if (!nodeId) {
       return;
     }
@@ -269,7 +272,7 @@ function prepareGraphSvg(
   }
 
   document.querySelectorAll<SVGGElement>("g.edge").forEach((group) => {
-    const title = groupTitle(group);
+    const title = graphGroupTitle(group);
     if (!title) {
       return;
     }
@@ -283,38 +286,6 @@ function prepareGraphSvg(
   return new XMLSerializer().serializeToString(svg);
 }
 
-function applyGraphHighlightsToRenderedSvg(root: ParentNode, highlightState: GraphHighlightState) {
-  const targets: GraphHighlightClassTarget[] = [];
-
-  root.querySelectorAll<SVGGElement>("g.node").forEach((group) => {
-    targets.push({
-      kind: "node",
-      id: group.getAttribute("data-node-id") ?? groupTitle(group),
-      addClass(className: string) {
-        group.classList.add(className);
-      },
-      removeClass(className: string) {
-        group.classList.remove(className);
-      }
-    });
-  });
-
-  root.querySelectorAll<SVGGElement>("g.edge").forEach((group) => {
-    targets.push({
-      kind: "edge",
-      id: group.getAttribute("data-edge-id") ?? groupTitle(group),
-      addClass(className: string) {
-        group.classList.add(className);
-      },
-      removeClass(className: string) {
-        group.classList.remove(className);
-      }
-    });
-  });
-
-  applyGraphHighlightClassesToTargets(targets, highlightState);
-}
-
 function sanitizeSvg(document: Document) {
   document.querySelectorAll("script").forEach((element) => element.remove());
   document.querySelectorAll<Element>("*").forEach((element) => {
@@ -324,9 +295,4 @@ function sanitizeSvg(document: Document) {
       }
     }
   });
-}
-
-function groupTitle(group: SVGGElement): string | null {
-  const title = group.querySelector("title")?.textContent?.trim();
-  return title && title.length > 0 ? title : null;
 }

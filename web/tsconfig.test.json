@@ -5,5 +5,10 @@
     "outDir": "dist-test",
     "tsBuildInfoFile": "./dist-test/tsconfig.test.tsbuildinfo"
   },
-  "include": ["src/graphHighlight.test.ts", "src/graphHighlight.ts"]
+  "include": [
+    "src/graphHighlight.test.ts",
+    "src/graphHighlight.ts",
+    "src/graphViewerController.ts",
+    "src/components/GraphViewer.tsx"
+  ]
 }
