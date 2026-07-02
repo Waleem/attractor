@@ -329,6 +329,7 @@ async def test_create_run_preserves_typed_launch_metadata_and_queues_event(
     assert response.status_code == 201
     run_id = response.json()["id"]
     run = platform_harness.repository.runs[run_id]
+    assert run.run_spec["repo_path"] == str(sample_repo)
     assert run.run_spec["workflow_name"] == "release"
     assert run.run_spec["actor_label"] == "alice"
     assert run.run_spec["inputs"] == {"ticket": "TASK-3"}
