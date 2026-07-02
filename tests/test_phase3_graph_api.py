@@ -369,7 +369,7 @@ async def test_get_workflow_graph_returns_raw_dot_nodes_and_edges(
     assert body["diagnostics"] == {"items": []}
 
 
-async def test_run_events_can_map_to_graph_highlight_state(
+async def test_run_events_expose_graph_highlight_inputs(
     platform_harness: _Harness,
     sample_repo: Path,
 ) -> None:
@@ -404,35 +404,21 @@ async def test_run_events_can_map_to_graph_highlight_state(
     assert events_response.status_code == 200
     graph = graph_response.json()
     events = events_response.json()["items"]
-    completed_node = _latest_event_node(events, "stage.completed")
-    active_node = _latest_event_node(events, "stage.started")
-    checkpointed_nodes = {
-        node_id
+    highlight_events = [
+        {"event_type": event["event_type"], "payload": event["payload"]}
         for event in events
-        if event["event_type"] == "checkpoint.saved"
-        for node_id in [_event_node_id(event)]
-        if node_id is not None
-    }
-    active_edge = next(
-        edge["id"]
+        if event["event_type"] in {"stage.completed", "checkpoint.saved", "stage.started"}
+    ]
+
+    assert {"event_type": "stage.completed", "payload": {"name": "build"}} in highlight_events
+    assert {
+        "event_type": "checkpoint.saved",
+        "payload": {"node_id": "build", "commit_sha": "a" * 40},
+    } in highlight_events
+    assert {"event_type": "stage.started", "payload": {"name": "approve"}} in highlight_events
+    assert any(
+        edge["id"] == "build->approve"
+        and edge["source"] == "build"
+        and edge["target"] == "approve"
         for edge in graph["edges"]
-        if edge["source"] == completed_node and edge["target"] == active_node
     )
-
-    assert completed_node == "build"
-    assert active_node == "approve"
-    assert checkpointed_nodes == {"build"}
-    assert active_edge == "build->approve"
-
-
-def _event_node_id(event: dict[str, Any]) -> str | None:
-    payload = event["payload"]
-    value = payload.get("node_id") or payload.get("name")
-    return value if isinstance(value, str) else None
-
-
-def _latest_event_node(events: list[dict[str, Any]], event_type: str) -> str | None:
-    for event in reversed(events):
-        if event["event_type"] == event_type:
-            return _event_node_id(event)
-    return None

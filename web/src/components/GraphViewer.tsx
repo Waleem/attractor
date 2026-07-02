@@ -2,14 +2,16 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   getWorkflowGraph,
   type RunEvent,
-  type WorkflowGraph,
-  type WorkflowGraphEdge
+  type WorkflowGraph
 } from "../api";
+import {
+  buildGraphHighlightState,
+  graphEdgeId,
+  type GraphHighlightState
+} from "../graphHighlight";
 import { useAsync } from "./useAsync";
 import { EmptyState, ErrorBanner, Loading, Panel } from "./ui";
 
-type GraphNodeClass = "active" | "complete" | "failed" | "checkpointed";
-type GraphEdgeClass = "active";
 type GraphvizRenderer = {
   layout: (dot: string, format?: string, engine?: string) => string;
 };
@@ -18,11 +20,6 @@ type GraphvizModule = {
     load: () => Promise<GraphvizRenderer>;
   };
 };
-
-export interface GraphHighlightState {
-  nodeClasses: Map<string, GraphNodeClass[]>;
-  edgeClasses: Map<string, GraphEdgeClass[]>;
-}
 
 const GRAPH_SVG_STYLE = `
 svg {
@@ -170,72 +167,6 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   );
 }
 
-export function buildGraphHighlightState(
-  graph: WorkflowGraph,
-  events: RunEvent[]
-): GraphHighlightState {
-  const nodeClasses = new Map<string, GraphNodeClass[]>();
-  const edgeClasses = new Map<string, GraphEdgeClass[]>();
-  const completed = new Set<string>();
-  const failed = new Set<string>();
-  const checkpointed = new Set<string>();
-  let activeNode: string | null = null;
-  let latestCompletedNode: string | null = null;
-
-  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
-    const nodeId = eventNodeId(event);
-    if (!nodeId) {
-      continue;
-    }
-    if (event.event_type === "stage.started") {
-      activeNode = nodeId;
-    } else if (event.event_type === "stage.completed") {
-      completed.add(nodeId);
-      latestCompletedNode = nodeId;
-      if (activeNode === nodeId) {
-        activeNode = null;
-      }
-    } else if (event.event_type === "stage.failed") {
-      failed.add(nodeId);
-      if (activeNode === nodeId) {
-        activeNode = null;
-      }
-    } else if (event.event_type === "checkpoint.saved") {
-      checkpointed.add(nodeId);
-    }
-  }
-
-  for (const node of graph.nodes) {
-    const classes: GraphNodeClass[] = [];
-    if (completed.has(node.id)) {
-      classes.push("complete");
-    }
-    if (activeNode === node.id) {
-      classes.push("active");
-    }
-    if (checkpointed.has(node.id)) {
-      classes.push("checkpointed");
-    }
-    if (failed.has(node.id)) {
-      classes.push("failed");
-    }
-    if (classes.length > 0) {
-      nodeClasses.set(node.id, classes);
-    }
-  }
-
-  if (latestCompletedNode && activeNode) {
-    const activeEdge = graph.edges.find(
-      (edge) => edge.source === latestCompletedNode && edge.target === activeNode
-    );
-    if (activeEdge) {
-      edgeClasses.set(edgeId(activeEdge), ["active"]);
-    }
-  }
-
-  return { nodeClasses, edgeClasses };
-}
-
 function GraphLegend() {
   return (
     <div style={legendStyle}>
@@ -275,11 +206,6 @@ async function renderDotToSvg(dot: string): Promise<string> {
   return graphviz.layout(dot, "svg", "dot");
 }
 
-function eventNodeId(event: RunEvent): string | null {
-  const value = event.payload.node_id ?? event.payload.name;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
 function applyGraphHighlights(
   svgText: string,
   graph: WorkflowGraph,
@@ -317,7 +243,7 @@ function applyGraphHighlights(
 
   const edgeTitleById = new Map<string, string>();
   for (const edge of graph.edges) {
-    edgeTitleById.set(edgeId(edge), edgeId(edge));
+    edgeTitleById.set(graphEdgeId(edge), graphEdgeId(edge));
   }
 
   document.querySelectorAll<SVGGElement>("g.edge").forEach((group) => {
@@ -353,8 +279,4 @@ function sanitizeSvg(document: Document) {
 function groupTitle(group: SVGGElement): string | null {
   const title = group.querySelector("title")?.textContent?.trim();
   return title && title.length > 0 ? title : null;
-}
-
-function edgeId(edge: WorkflowGraphEdge): string {
-  return edge.id || `${edge.source}->${edge.target}`;
 }
