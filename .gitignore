@@ -45,4 +45,4 @@ htmlcov/
 .superpowers/brainstorm/*
 .attractor-artifacts/*
 .attractor-platform.sqlite3
-.gitignore
+.gitignore.attractor-worktrees/
