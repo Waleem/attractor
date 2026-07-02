@@ -314,6 +314,15 @@ class PlatformRepository:
             await session.flush()
             return artifact
 
+    async def list_artifacts(self, run_id: str) -> list[ArtifactModel]:
+        async with session_scope(self._session_factory) as session:
+            result = await session.scalars(
+                select(ArtifactModel)
+                .where(ArtifactModel.run_id == run_id)
+                .order_by(ArtifactModel.created_at, ArtifactModel.id)
+            )
+            return list(result)
+
     async def create_checkpoint(
         self,
         checkpoint_id: str,

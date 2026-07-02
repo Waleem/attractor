@@ -196,6 +196,7 @@ async def test_docker_run_uses_prepared_worktree_and_persists_outputs(
     assert checkpoints
     assert artifacts
     assert any(artifact.name == "docker-handler.txt" for artifact in artifacts)
+    assert run.worktree_path is not None
 
     managed_output = Path(run.worktree_path) / "generated" / "task7.txt"
     assert managed_output.read_text(encoding="utf-8") == (

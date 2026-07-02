@@ -190,7 +190,9 @@ class TestFollowUp:
 
         await session.submit("initial prompt")
 
-        user_texts = [m.text for m in session.history if m.role.value == "user"]
+        user_texts = [
+            m.text for m in session.history if isinstance(m, Message) and m.role.value == "user"
+        ]
         assert "my follow-up" in user_texts
 
 

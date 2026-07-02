@@ -550,8 +550,17 @@ class GenerateResult:
     def __contains__(self, item: str) -> bool:
         return item in self.text
 
+    def __getitem__(self, key: int | slice) -> str:
+        return self.text[key]
+
     def __bool__(self) -> bool:
         return bool(self.text)
+
+    def lower(self) -> str:
+        return self.text.lower()
+
+    def strip(self, chars: str | None = None) -> str:
+        return self.text.strip(chars)
 
 
 @dataclass

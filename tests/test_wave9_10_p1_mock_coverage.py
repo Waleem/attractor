@@ -45,6 +45,7 @@ from attractor_llm.types import (
     Message,
     Request,
     Response,
+    Role,
     StreamEvent,
     StreamEventKind,
     TimeoutConfig,
@@ -764,7 +765,7 @@ class TestAbortSignalInToolLoop:
 
         tool_response = Response(
             message=Message(
-                role="assistant",
+                role=Role.ASSISTANT,
                 content=[ContentPart.tool_call_part("tc1", "echo_tool", '{"msg": "hi"}')],
             ),
             finish_reason=FinishReason.TOOL_CALLS,

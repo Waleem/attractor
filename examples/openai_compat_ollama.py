@@ -112,12 +112,13 @@ async def main(base_url: str, model: str, api_key: str) -> None:
 
         chunks = []
         async with client3:
-            async for chunk in stream(
+            result = await stream(
                 client3,
                 model,
                 "Count from 1 to 5, one number per line.",
                 provider="local",
-            ):
+            )
+            async for chunk in result:
                 chunks.append(chunk)
                 print(chunk, end="", flush=True)
         print()

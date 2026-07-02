@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -58,7 +58,7 @@ class _FailNHandler:
         self._fail_count = fail_count
         self._call_count = 0
 
-    async def execute(self, node, context, graph, logs_root, abort_signal) -> HandlerResult:
+    async def execute(self, node, context, graph, logs_root, abort_signal=None) -> HandlerResult:
         self._call_count += 1
         if self._call_count <= self._fail_count:
             return HandlerResult(status=Outcome.FAIL, failure_reason="deliberate failure")
@@ -656,7 +656,7 @@ class _OutcomeHandler:
     def __init__(self, status: Outcome = Outcome.SUCCESS) -> None:
         self._status = status
 
-    async def execute(self, node, context, graph, logs_root, abort_signal) -> HandlerResult:
+    async def execute(self, node, context, graph, logs_root, abort_signal=None) -> HandlerResult:
         return HandlerResult(status=self._status, output="done")
 
 
@@ -691,7 +691,7 @@ class TestGoalGateAllNodes:
         class _GateFailOnceHandler:
             """Returns SUCCESS but sets quality=low first time, high second."""
 
-            async def execute(self, node, context, graph, logs_root, abort_signal):
+            async def execute(self, node, context, graph, logs_root, abort_signal=None):
                 nonlocal call_count
                 call_count += 1
                 if call_count <= 1:
@@ -789,7 +789,7 @@ class TestPerNodeArtifacts:
         from attractor_pipeline.handlers.codergen import CodergenHandler
 
         class _MockBackend:
-            async def run(self, node, prompt, context, abort_signal):
+            async def run(self, node, prompt, context, abort_signal=None):
                 return "LLM response text"
 
         logs_root = tmp_path / "logs"
@@ -845,7 +845,7 @@ class TestPerNodeArtifacts:
         from attractor_pipeline.handlers.codergen import CodergenHandler
 
         class _MockBackend:
-            async def run(self, node, prompt, context, abort_signal):
+            async def run(self, node, prompt, context, abort_signal=None):
                 return "response"
 
         g = Graph(
@@ -1129,7 +1129,7 @@ class TestResponseMdWritten:
         from attractor_pipeline.handlers import register_default_handlers
 
         class _EmptyOutputBackend:
-            async def run(self, node, prompt, context, abort_signal):
+            async def run(self, node, prompt, context, abort_signal=None):
                 # Returns HandlerResult with NO output
                 return HandlerResult(status=Outcome.SUCCESS, output="", notes="done")
 
@@ -1163,7 +1163,7 @@ class _OutcomeHandlerWithContext:
         self._status = status
         self._updates = updates
 
-    async def execute(self, node, context, graph, logs_root, abort_signal) -> HandlerResult:
+    async def execute(self, node, context, graph, logs_root, abort_signal=None) -> HandlerResult:
         return HandlerResult(status=self._status, output="done", context_updates=self._updates)
 
 
@@ -1827,7 +1827,7 @@ class TestStreamStartEvent:
                 return _fake_aiter_lines()
 
         events = []
-        async for ev in adapter._parse_stream(_FakeResponse(), request, True):
+        async for ev in adapter._parse_stream(cast(Any, _FakeResponse()), request, True):
             events.append(ev)
             break  # only need the first event
 

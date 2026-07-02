@@ -4,7 +4,7 @@ import asyncio
 import importlib.util
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import attractor_server.platform_app as platform_app_module
 from attractor_agent.profiles import get_profile
+from attractor_pipeline.backends import DirectLLMBackend
+from attractor_pipeline.handlers import CodergenHandler
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
     DatabaseSettings,
@@ -383,7 +385,7 @@ async def test_saving_provider_secret_updates_codergen_runtime_backend(
     client, engine, executor = await _client_with_executor(tmp_path)
     try:
         _clear_llm_environment(monkeypatch)
-        handler = executor._handlers.get("codergen")
+        handler = cast(CodergenHandler, executor._handlers.get("codergen"))
         assert handler is not None
         assert handler._backend is None
 
@@ -412,7 +414,7 @@ async def test_provider_secret_write_and_delete_preserve_runtime_llm_defaults(
         default_model="gpt-cli-task-4",
     )
     try:
-        handler = executor._handlers.get("codergen")
+        handler = cast(CodergenHandler, executor._handlers.get("codergen"))
         assert handler is not None
 
         put_response = await client.put(
@@ -423,8 +425,9 @@ async def test_provider_secret_write_and_delete_preserve_runtime_llm_defaults(
 
         assert put_response.status_code == 200
         assert handler._backend is not None
-        assert handler._backend._default_provider == "openai"
-        assert handler._backend._default_model == "gpt-cli-task-4"
+        backend = cast(DirectLLMBackend, handler._backend)
+        assert backend._default_provider == "openai"
+        assert backend._default_model == "gpt-cli-task-4"
         assert settings_after_put.status_code == 200
         assert settings_after_put.json()["models"]["default_provider"] == "openai"
         assert settings_after_put.json()["models"]["default_model"] == "gpt-cli-task-4"

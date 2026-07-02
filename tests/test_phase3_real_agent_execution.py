@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from attractor_agent.abort import AbortSignal
 from attractor_agent.tools.core import get_environment
@@ -156,7 +156,9 @@ async def test_durable_executor_runs_codergen_backend_without_provider_keys(
         for event in events
     )
     response_artifact = next(
-        artifact for artifact in artifacts if artifact.kind == "generate" and artifact.name == "response.md"
+        artifact
+        for artifact in artifacts
+        if artifact.kind == "generate" and artifact.name == "response.md"
     )
     assert executor._artifact_store.read_bytes(response_artifact.uri) == b"fake codergen completed"
 

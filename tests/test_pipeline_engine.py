@@ -132,8 +132,9 @@ class TestDotParser:
         g = parse_dot("""
         digraph S { start [shape=Mdiamond]; done [shape=Msquare]; start -> done }
         """)
-        assert g.get_start_node() is not None
-        assert g.get_start_node().id == "start"
+        start_node = g.get_start_node()
+        assert start_node is not None
+        assert start_node.id == "start"
 
     def test_exit_nodes_lookup(self):
         g = parse_dot("""

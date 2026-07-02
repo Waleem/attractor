@@ -168,7 +168,7 @@ def _load_hatch_build_hook(monkeypatch: Any) -> Any:
         monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
 
     interface_module = sys.modules["hatchling.builders.hooks.plugin.interface"]
-    interface_module.BuildHookInterface = _BuildHookInterface
+    interface_module.BuildHookInterface = _BuildHookInterface  # type: ignore[attr-defined]
 
     hook_path = Path(__file__).resolve().parents[1] / "hatch_build.py"
     spec = importlib.util.spec_from_file_location("attractor_test_hatch_build", hook_path)

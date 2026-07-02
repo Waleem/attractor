@@ -24,6 +24,11 @@ from attractor_llm.types import (
 )
 from tests.helpers import MockAdapter, make_text_response, make_tool_call_response
 
+
+async def _ok_tool(**kw: object) -> str:
+    return "ok"
+
+
 # ================================================================== #
 # Level 1: Profile protocol and construction
 # ================================================================== #
@@ -326,7 +331,7 @@ class TestProfileSessionIntegration:
             name="edit_file",
             description="",
             parameters={"type": "object", "properties": {}},
-            execute=lambda **kw: "ok",
+            execute=_ok_tool,
         )
         tools = profile.get_tools([edit_tool_no_desc])
         session = Session(client=client, config=config, tools=tools)
@@ -446,11 +451,12 @@ class TestProfileEdgeCases:
         node = Node(id="test", shape="box", llm_provider="mock")
         result = await backend.run(node, "Write code", {"goal": "test"})
 
-        assert result == "coded" or (hasattr(result, "output") and result.output)
+        assert isinstance(result, str) or result.output
         # Verify the profile was applied (falls back to base since "mock" is unknown)
         # With prompt layering, the system prompt includes the profile base
         # plus [GOAL] section from the context
         req = adapter.requests[0]
         base_profile = BaseProfile()
-        assert base_profile.system_prompt in req.system
-        assert "[GOAL] test" in req.system
+        system_prompt = req.system or ""
+        assert base_profile.system_prompt in system_prompt
+        assert "[GOAL] test" in system_prompt

@@ -475,7 +475,7 @@ class TestConcurrencyStress:
 
         # Custom handler that tracks concurrency
         class ConcurrencyTracker:
-            async def execute(self, node, context, graph, logs_root, abort_signal):
+            async def execute(self, node, context, graph, logs_root, abort_signal=None):
                 nonlocal peak_concurrency, current_concurrency
                 async with lock:
                     current_concurrency += 1

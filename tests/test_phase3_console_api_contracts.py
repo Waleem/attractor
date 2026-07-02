@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import subprocess
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -206,6 +207,7 @@ class _Executor:
         self.active_tasks: dict[str, Any] = {}
         self.max_concurrent_runs = 3
         self._run_number = 0
+        self.git: GitRunner = GitRunner()
 
     async def register_and_launch(
         self,
@@ -315,7 +317,7 @@ def sample_repo(tmp_path: Path) -> Path:
 
 
 @pytest_asyncio.fixture
-async def platform_harness() -> _Harness:
+async def platform_harness() -> AsyncIterator[_Harness]:
     repository = _Repository()
     executor = _Executor(repository)
     app = create_platform_app(session_factory=cast(Any, None), executor=cast(Any, executor))

@@ -283,7 +283,12 @@ def sample_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_path, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=repo_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
     return repo_path
 
 
