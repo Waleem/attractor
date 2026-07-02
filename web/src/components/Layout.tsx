@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { getAppBasePath, toAppHref } from "../appBase";
 
 const navItems = [
   { href: "/", label: "Dashboard" },
@@ -12,10 +13,12 @@ const navItems = [
 export function Layout({
   path,
   navigate,
+  basePath,
   children
 }: {
   path: string;
   navigate: (path: string) => void;
+  basePath: string;
   children: ReactNode;
 }) {
   return (
@@ -23,7 +26,7 @@ export function Layout({
       <aside className="sidebar">
         <a
           className="brand"
-          href="/"
+          href={toAppHref("/", basePath)}
           onClick={(event) => {
             event.preventDefault();
             navigate("/");
@@ -36,7 +39,7 @@ export function Layout({
           {navItems.map((item) => (
             <a
               key={item.href}
-              href={item.href}
+              href={toAppHref(item.href, basePath)}
               className={path === item.href || (item.href !== "/" && path.startsWith(item.href)) ? "active" : ""}
               onClick={(event) => {
                 event.preventDefault();
@@ -67,7 +70,7 @@ export function LinkButton({
   return (
     <a
       className={`link-button ${className}`}
-      href={to}
+      href={toAppHref(to, getAppBasePath())}
       onClick={(event) => {
         event.preventDefault();
         navigate(to);

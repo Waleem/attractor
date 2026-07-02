@@ -23,7 +23,9 @@ def _create_platform_app_with_spa(tmp_path: Path) -> Any:
     assets_dir = spa_dist / "assets"
     assets_dir.mkdir(parents=True)
     (spa_dist / "index.html").write_text(
-        '<div id="root">Attractor Console</div><script src="/assets/app.js"></script>',
+        '<html><head><title>Attractor</title></head><body>'
+        '<div id="root">Attractor Console</div><script src="./assets/app.js"></script>'
+        "</body></html>",
         encoding="utf-8",
     )
     (assets_dir / "app.js").write_text(
@@ -54,9 +56,9 @@ def test_platform_app_serves_embedded_spa_without_intercepting_api(
         wrong_method_health = client.post("/api/system/health")
 
     assert root.status_code == 200
-    assert root.text == (
-        '<div id="root">Attractor Console</div><script src="/assets/app.js"></script>'
-    )
+    assert '<base data-attractor-base href="/">' in root.text
+    assert 'window.__ATTRACTOR_BASE_PATH__ = ""' in root.text
+    assert '<script src="./assets/app.js">' in root.text
     assert client_route.status_code == 200
     assert client_route.text == root.text
     assert asset.status_code == 200
@@ -92,6 +94,8 @@ def test_platform_app_spa_fallback_respects_root_path_prefix(tmp_path: Path) -> 
     assert "Attractor Console" not in unknown_api_put.text
     assert client_route.status_code == 200
     assert "Attractor Console" in client_route.text
+    assert '<base data-attractor-base href="/console/">' in client_route.text
+    assert 'window.__ATTRACTOR_BASE_PATH__ = "/console"' in client_route.text
     assert asset.status_code == 200
     assert "dataset.loaded" in asset.text
     assert missing_asset.status_code == 404
@@ -104,12 +108,41 @@ def test_platform_spa_dist_resolver_prefers_explicit_path_then_environment(
 ) -> None:
     explicit_dist = tmp_path / "explicit"
     explicit_dist.mkdir()
+    (explicit_dist / "index.html").write_text("<div>explicit</div>", encoding="utf-8")
     env_dist = tmp_path / "env"
     env_dist.mkdir()
+    (env_dist / "index.html").write_text("<div>env</div>", encoding="utf-8")
     monkeypatch.setenv("ATTRACTOR_SPA_DIST", str(env_dist))
 
     assert server_main._resolve_platform_spa_dist(str(explicit_dist)) == explicit_dist.resolve()
     assert server_main._resolve_platform_spa_dist(None) == env_dist.resolve()
+
+
+def test_platform_spa_dist_resolver_rejects_invalid_explicit_path(tmp_path: Path) -> None:
+    missing_index_dist = tmp_path / "missing-index"
+    missing_index_dist.mkdir()
+
+    try:
+        server_main._resolve_platform_spa_dist(str(missing_index_dist))
+    except FileNotFoundError as exc:
+        assert "SPA dist directory must contain index.html" in str(exc)
+    else:
+        raise AssertionError("expected invalid explicit SPA dist to fail fast")
+
+
+def test_platform_spa_dist_resolver_rejects_invalid_environment_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    missing_dist = tmp_path / "missing"
+    monkeypatch.setenv("ATTRACTOR_SPA_DIST", str(missing_dist))
+
+    try:
+        server_main._resolve_platform_spa_dist(None)
+    except FileNotFoundError as exc:
+        assert "Configured SPA dist directory does not exist" in str(exc)
+    else:
+        raise AssertionError("expected invalid environment SPA dist to fail fast")
 
 
 def _load_hatch_build_hook(monkeypatch: Any) -> Any:

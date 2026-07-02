@@ -1,3 +1,5 @@
+import { apiPath } from "./appBase";
+
 export type RunStatus =
   | "queued"
   | "preparing"
@@ -256,10 +258,8 @@ interface ItemsResponse<T> {
   items: T[];
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-
 function apiUrl(path: string): string {
-  return `${API_BASE}${path}`;
+  return apiPath(path);
 }
 
 async function readJson<T>(response: Response): Promise<T> {

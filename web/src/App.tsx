@@ -10,26 +10,28 @@ import { ApprovalsRoute } from "./routes/ApprovalsRoute";
 import { SystemRoute } from "./routes/SystemRoute";
 import { SettingsRoute } from "./routes/SettingsRoute";
 import { PageHeader, Panel } from "./components/ui";
+import { getAppBasePath, stripBasePath, toAppHref } from "./appBase";
 
 export default function App() {
-  const [path, setPath] = useState(window.location.pathname);
+  const basePath = useMemo(() => getAppBasePath(), []);
+  const [path, setPath] = useState(stripBasePath(window.location.pathname, basePath));
 
   useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname);
+    const onPopState = () => setPath(stripBasePath(window.location.pathname, basePath));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [basePath]);
 
   const navigate = useMemo(
     () => (nextPath: string) => {
-      window.history.pushState({}, "", nextPath);
-      setPath(window.location.pathname);
+      window.history.pushState({}, "", toAppHref(nextPath, basePath));
+      setPath(stripBasePath(window.location.pathname, basePath));
     },
-    []
+    [basePath]
   );
 
   return (
-    <Layout path={path} navigate={navigate}>
+    <Layout path={path} navigate={navigate} basePath={basePath}>
       <RouteSwitch path={path} navigate={navigate} />
     </Layout>
   );

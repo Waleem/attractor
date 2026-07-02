@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import html
 import inspect
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -1727,6 +1729,28 @@ def _request_path_relative_to_root_path(request: Request) -> str:
     return path.lstrip("/")
 
 
+def _request_root_path(request: Request) -> str:
+    root_path = str(request.scope.get("app_root_path") or request.scope.get("root_path") or "")
+    if not root_path or root_path == "/":
+        return ""
+    return "/" + root_path.strip("/")
+
+
+def _platform_spa_index_response(index_path: Path, request: Request) -> Response:
+    base_path = _request_root_path(request)
+    base_href = f"{base_path}/" if base_path else "/"
+    injection = (
+        f'<base data-attractor-base href="{html.escape(base_href, quote=True)}">'
+        f"<script>window.__ATTRACTOR_BASE_PATH__ = {json.dumps(base_path)}</script>"
+    )
+    index_html = index_path.read_text(encoding="utf-8")
+    if "<head>" in index_html:
+        index_html = index_html.replace("<head>", f"<head>{injection}", 1)
+    else:
+        index_html = f"{injection}{index_html}"
+    return Response(index_html, media_type="text/html")
+
+
 def _default_not_found_response(exc: Exception) -> PlainTextResponse:
     headers = exc.headers if isinstance(exc, HTTPException) else None
     detail = exc.detail if isinstance(exc, HTTPException) else "Not Found"
@@ -1775,7 +1799,7 @@ def _platform_spa_not_found_handler(
 
         if requested_path.is_file():
             return FileResponse(requested_path)
-        return FileResponse(index_path)
+        return _platform_spa_index_response(index_path, request)
 
     return spa_not_found
 

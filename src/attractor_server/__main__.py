@@ -27,13 +27,24 @@ def _existing_spa_dist(path: Path) -> Path | None:
     return None
 
 
+def _configured_spa_dist(path: str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Configured SPA dist directory does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"Configured SPA dist path is not a directory: {resolved}")
+    if not (resolved / "index.html").is_file():
+        raise FileNotFoundError(f"SPA dist directory must contain index.html: {resolved}")
+    return resolved
+
+
 def _resolve_platform_spa_dist(explicit_spa_dist: str | None) -> Path | None:
     if explicit_spa_dist:
-        return Path(explicit_spa_dist).expanduser().resolve()
+        return _configured_spa_dist(explicit_spa_dist)
 
     env_spa_dist = os.environ.get("ATTRACTOR_SPA_DIST", "").strip()
     if env_spa_dist:
-        return Path(env_spa_dist).expanduser().resolve()
+        return _configured_spa_dist(env_spa_dist)
 
     try:
         packaged_dist = resources.files("attractor_server").joinpath("web", "dist")
