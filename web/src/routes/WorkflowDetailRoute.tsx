@@ -145,17 +145,27 @@ function environmentNames(config: ProjectConfigStatus["config"] | undefined): st
   if (!config) {
     return [];
   }
+  const allowedModes = new Set(config.allowed_execution_modes ?? []);
   const names = new Set<string>();
-  if (config.default_environment) {
-    names.add(config.default_environment);
+
+  function addIfAllowed(name: string, mode: string | undefined = name) {
+    if (!name || !allowedModes.has(mode)) {
+      return;
+    }
+    names.add(name);
+  }
+
+  const defaultEnvironment = config.default_environment;
+  if (defaultEnvironment) {
+    addIfAllowed(defaultEnvironment, config.environments?.[defaultEnvironment]?.mode);
   }
   for (const mode of config.allowed_execution_modes ?? []) {
     names.add(mode);
   }
-  for (const name of Object.keys(config.environments ?? {})) {
-    names.add(name);
+  for (const [name, environment] of Object.entries(config.environments ?? {})) {
+    addIfAllowed(name, environment.mode);
   }
-  return [...names].filter((name) => name);
+  return [...names];
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {

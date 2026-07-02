@@ -45,7 +45,10 @@ from attractor_platform.checkpoints import GitCheckpointService
 from attractor_platform.git import GitRunner, PreparedWorktree, WorktreeManager
 from attractor_platform.packages import WorkflowPackage, load_workflow_package
 from attractor_platform.redaction import redact_text
-from attractor_platform.run_environment import select_run_environment
+from attractor_platform.run_environment import (
+    materialize_run_environment_request,
+    select_run_environment,
+)
 from attractor_platform.runspec import RunSpec, build_run_spec
 from attractor_platform.storage.db import session_scope
 from attractor_platform.storage.models import (
@@ -188,7 +191,17 @@ class DurableRunExecutor:
             inputs=inputs,
             actor_label=actor_label,
             requested_environment=requested_environment,
-        ).model_copy(update={"repo_id": _repo_identifier(package.repo_path)})
+        )
+        run_spec = run_spec.model_copy(
+            update={"repo_id": _repo_identifier(package.repo_path)}
+        )
+        persisted_run_spec = run_spec.model_copy(
+            update={
+                "effective_environment": materialize_run_environment_request(
+                    run_spec.effective_environment
+                )
+            }
+        )
         workflow_id = _workflow_identifier(run_spec.repo_id, package.name)
         now = dt.datetime.now(dt.UTC)
 
@@ -218,7 +231,7 @@ class DurableRunExecutor:
             run_id=run_spec.run_id,
             repo_id=run_spec.repo_id,
             workflow_id=workflow_id,
-            run_spec=run_spec.model_dump(mode="json"),
+            run_spec=persisted_run_spec.model_dump(mode="json"),
             actor_label=actor_label,
             source_commit=run_spec.source_commit,
             source_branch=run_spec.source_branch,
