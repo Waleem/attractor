@@ -174,6 +174,54 @@ export interface SystemCapacity {
   available_slots: number | null;
 }
 
+export interface SecretMetadata {
+  name: string;
+  configured: boolean;
+  updated_at: string | null;
+}
+
+export interface SettingsVariable {
+  key: string;
+  value: string;
+  updated_at: string | null;
+}
+
+export interface SettingsOverview {
+  models: {
+    default_provider: string;
+    default_model: string;
+    provider_credentials: Record<
+      string,
+      {
+        name: string;
+        env_var: string;
+        configured: boolean;
+        updated_at: string | null;
+        source: string;
+      }
+    >;
+  };
+  environments: {
+    default: string;
+    items: Array<{ name: string; mode: string; description: string }>;
+  };
+  variables: {
+    items: SettingsVariable[];
+  };
+  server: {
+    status: string;
+    max_concurrent_runs: number | null;
+  };
+  storage: {
+    database_url: string;
+    secret_key_path: string;
+  };
+  monitoring: {
+    active_runs: number;
+    event_stream: string;
+  };
+}
+
 interface ItemsResponse<T> {
   items: T[];
 }
@@ -327,6 +375,52 @@ export async function getSystemHealth(): Promise<SystemHealth> {
 
 export async function getSystemCapacity(): Promise<SystemCapacity> {
   return requestJson<SystemCapacity>("/api/system/capacity");
+}
+
+export async function getSettings(): Promise<SettingsOverview> {
+  return requestJson<SettingsOverview>("/api/settings");
+}
+
+export async function listSettingsSecrets(): Promise<SecretMetadata[]> {
+  const response = await requestJson<ItemsResponse<SecretMetadata>>("/api/settings/secrets");
+  return response.items;
+}
+
+export async function putSettingsSecret(name: string, value: string): Promise<SecretMetadata> {
+  return requestJson<SecretMetadata>(`/api/settings/secrets/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value })
+  });
+}
+
+export async function deleteSettingsSecret(name: string): Promise<SecretMetadata> {
+  return requestJson<SecretMetadata>(`/api/settings/secrets/${encodeURIComponent(name)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function listSettingsVariables(): Promise<SettingsVariable[]> {
+  const response = await requestJson<ItemsResponse<SettingsVariable>>("/api/settings/variables");
+  return response.items;
+}
+
+export async function putSettingsVariable(
+  key: string,
+  value: string
+): Promise<SettingsVariable> {
+  return requestJson<SettingsVariable>(`/api/settings/variables/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value })
+  });
+}
+
+export async function deleteSettingsVariable(key: string): Promise<{ key: string; deleted: boolean }> {
+  return requestJson<{ key: string; deleted: boolean }>(
+    `/api/settings/variables/${encodeURIComponent(key)}`,
+    {
+      method: "DELETE"
+    }
+  );
 }
 
 export function openRunEventSource(runId: string): EventSource {

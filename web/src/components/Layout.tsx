@@ -5,7 +5,8 @@ const navItems = [
   { href: "/repos", label: "Repos" },
   { href: "/runs", label: "Runs" },
   { href: "/approvals", label: "Approvals" },
-  { href: "/system", label: "System" }
+  { href: "/system", label: "System" },
+  { href: "/settings", label: "Settings" }
 ];
 
 export function Layout({

@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import inspect
+import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -20,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from attractor_llm.catalog import get_default_model
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
@@ -31,6 +33,7 @@ from attractor_platform.packages import (
     load_workflow_package,
 )
 from attractor_platform.runspec import read_git_metadata
+from attractor_platform.secrets import SecretVault
 from attractor_platform.storage.db import initialize_platform_schema, session_scope
 from attractor_platform.storage.models import (
     ApprovalDecisionModel,
@@ -40,6 +43,8 @@ from attractor_platform.storage.models import (
     RunEventModel,
     RunRecordModel,
     RunStatus,
+    SettingSecretModel,
+    SettingVariableModel,
     WorkflowPackageModel,
 )
 from attractor_platform.storage.repositories import PlatformRepository
@@ -51,6 +56,7 @@ class _PlatformServices:
     executor: DurableRunExecutor
     repository: PlatformRepository
     session_factory: async_sessionmaker[AsyncSession]
+    secret_vault: SecretVault
 
 
 def _services(request: Request) -> _PlatformServices:
@@ -231,6 +237,62 @@ def _parse_non_negative_int(value: str | None, default: int) -> int:
     except ValueError:
         return default
     return max(parsed, 0)
+
+
+_PROVIDER_CREDENTIALS: tuple[tuple[str, str], ...] = (
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+)
+
+
+def _default_provider() -> str:
+    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "openai").strip()
+    return configured or "openai"
+
+
+def _default_model(provider: str) -> str:
+    configured = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
+    if configured:
+        return configured
+    try:
+        return get_default_model(provider).id
+    except KeyError:
+        return ""
+
+
+def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
+    return {
+        "name": secret.name,
+        "configured": True,
+        "updated_at": _serialize_settings_timestamp(secret.updated_at),
+    }
+
+
+def _serialize_unconfigured_secret(name: str) -> dict[str, Any]:
+    return {"name": name, "configured": False, "updated_at": None}
+
+
+def _serialize_variable(variable: SettingVariableModel) -> dict[str, Any]:
+    return {
+        "key": variable.key,
+        "value": variable.value,
+        "updated_at": _serialize_settings_timestamp(variable.updated_at),
+    }
+
+
+def _valid_setting_name(value: str) -> bool:
+    return bool(value) and all(
+        character.isalnum() or character in {"_", "-"} for character in value
+    )
+
+
+def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
+    if timestamp is None:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=dt.UTC)
+    return timestamp.isoformat()
 
 
 async def _get_run_or_404(
@@ -1222,6 +1284,196 @@ async def request_writeback(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_writeback(writeback))
 
 
+async def list_settings_secrets(request: Request) -> JSONResponse:
+    services = _services(request)
+    async with session_scope(services.session_factory) as session:
+        secrets = list(
+            await session.scalars(
+                select(SettingSecretModel).order_by(SettingSecretModel.name)
+            )
+        )
+    return JSONResponse({"items": [_serialize_secret_metadata(secret) for secret in secrets]})
+
+
+async def put_settings_secret(request: Request) -> JSONResponse:
+    services = _services(request)
+    name = request.path_params["name"]
+    if not _valid_setting_name(name):
+        return _json_error("Secret name must contain only letters, numbers, '_' or '-'", 400)
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _json_error("Invalid JSON body", 400)
+    if not isinstance(body, dict):
+        return _json_error("JSON body must be an object", 400)
+
+    value = body.get("value")
+    if not isinstance(value, str) or not value:
+        return _json_error("Missing 'value' field", 400)
+
+    try:
+        encrypted_value = services.secret_vault.encrypt(value)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    now = dt.datetime.now(dt.UTC)
+    async with session_scope(services.session_factory) as session:
+        current = await session.get(SettingSecretModel, name)
+        if current is None:
+            current = SettingSecretModel(
+                name=name,
+                encrypted_value=encrypted_value,
+                updated_at=now,
+            )
+            session.add(current)
+        else:
+            current.encrypted_value = encrypted_value
+            current.updated_at = now
+        await session.flush()
+        payload = _serialize_secret_metadata(current)
+    return JSONResponse(payload)
+
+
+async def delete_settings_secret(request: Request) -> JSONResponse:
+    services = _services(request)
+    name = request.path_params["name"]
+    if not _valid_setting_name(name):
+        return _json_error("Secret name must contain only letters, numbers, '_' or '-'", 400)
+
+    async with session_scope(services.session_factory) as session:
+        current = await session.get(SettingSecretModel, name)
+        if current is not None:
+            await session.delete(current)
+    return JSONResponse(_serialize_unconfigured_secret(name))
+
+
+async def list_settings_variables(request: Request) -> JSONResponse:
+    services = _services(request)
+    async with session_scope(services.session_factory) as session:
+        variables = list(
+            await session.scalars(
+                select(SettingVariableModel).order_by(SettingVariableModel.key)
+            )
+        )
+    return JSONResponse({"items": [_serialize_variable(variable) for variable in variables]})
+
+
+async def put_settings_variable(request: Request) -> JSONResponse:
+    services = _services(request)
+    key = request.path_params["key"]
+    if not _valid_setting_name(key):
+        return _json_error("Variable key must contain only letters, numbers, '_' or '-'", 400)
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _json_error("Invalid JSON body", 400)
+    if not isinstance(body, dict):
+        return _json_error("JSON body must be an object", 400)
+
+    value = body.get("value")
+    if not isinstance(value, str):
+        return _json_error("Missing 'value' field", 400)
+
+    now = dt.datetime.now(dt.UTC)
+    async with session_scope(services.session_factory) as session:
+        current = await session.get(SettingVariableModel, key)
+        if current is None:
+            current = SettingVariableModel(key=key, value=value, updated_at=now)
+            session.add(current)
+        else:
+            current.value = value
+            current.updated_at = now
+        await session.flush()
+        payload = _serialize_variable(current)
+    return JSONResponse(payload)
+
+
+async def delete_settings_variable(request: Request) -> JSONResponse:
+    services = _services(request)
+    key = request.path_params["key"]
+    if not _valid_setting_name(key):
+        return _json_error("Variable key must contain only letters, numbers, '_' or '-'", 400)
+
+    async with session_scope(services.session_factory) as session:
+        current = await session.get(SettingVariableModel, key)
+        if current is not None:
+            await session.delete(current)
+    return JSONResponse({"key": key, "deleted": True})
+
+
+async def get_settings(request: Request) -> JSONResponse:
+    services = _services(request)
+    async with session_scope(services.session_factory) as session:
+        secrets_by_name = {
+            secret.name: secret
+            for secret in await session.scalars(select(SettingSecretModel))
+        }
+        variables = list(
+            await session.scalars(
+                select(SettingVariableModel).order_by(SettingVariableModel.key)
+            )
+        )
+
+    provider = _default_provider()
+    provider_credentials: dict[str, dict[str, Any]] = {}
+    for credential_name, env_name in _PROVIDER_CREDENTIALS:
+        secret = secrets_by_name.get(credential_name)
+        configured_from_env = bool(os.environ.get(env_name))
+        provider_credentials[credential_name] = {
+            "name": credential_name,
+            "env_var": env_name,
+            "configured": secret is not None or configured_from_env,
+            "updated_at": _serialize_settings_timestamp(secret.updated_at)
+            if secret is not None
+            else None,
+            "source": "vault"
+            if secret is not None
+            else "environment"
+            if configured_from_env
+            else "none",
+        }
+
+    active_tasks = getattr(services.executor, "active_tasks", {})
+    active_count = sum(1 for task in active_tasks.values() if not task.done())
+    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    engine = getattr(services.session_factory, "kw", {}).get("bind")
+    database_url = str(engine.url) if engine is not None else ""
+    return JSONResponse(
+        {
+            "models": {
+                "default_provider": provider,
+                "default_model": _default_model(provider),
+                "provider_credentials": provider_credentials,
+            },
+            "environments": {
+                "default": "local",
+                "items": [
+                    {
+                        "name": "local",
+                        "mode": "local",
+                        "description": "Run on the server host",
+                    }
+                ],
+            },
+            "variables": {"items": [_serialize_variable(variable) for variable in variables]},
+            "server": {
+                "status": "ok",
+                "max_concurrent_runs": max_concurrent,
+            },
+            "storage": {
+                "database_url": database_url,
+                "secret_key_path": str(services.secret_vault.key_path),
+            },
+            "monitoring": {
+                "active_runs": active_count,
+                "event_stream": "enabled",
+            },
+        }
+    )
+
+
 async def system_health(request: Request) -> JSONResponse:
     _services(request)
     return JSONResponse({"status": "ok"})
@@ -1248,6 +1500,7 @@ def create_platform_app(
     session_factory: async_sessionmaker[AsyncSession],
     executor: DurableRunExecutor,
     engine: AsyncEngine | None = None,
+    secret_key_path: str | Path | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -1279,6 +1532,13 @@ def create_platform_app(
             Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
             Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
             Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
+            Route("/api/settings", get_settings, methods=["GET"]),
+            Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
+            Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
+            Route("/api/settings/secrets/{name}", delete_settings_secret, methods=["DELETE"]),
+            Route("/api/settings/variables", list_settings_variables, methods=["GET"]),
+            Route("/api/settings/variables/{key}", put_settings_variable, methods=["PUT"]),
+            Route("/api/settings/variables/{key}", delete_settings_variable, methods=["DELETE"]),
             Route("/api/system/health", system_health, methods=["GET"]),
             Route("/api/system/capacity", system_capacity, methods=["GET"]),
         ]
@@ -1287,6 +1547,7 @@ def create_platform_app(
         executor=executor,
         repository=executor.repository,
         session_factory=session_factory,
+        secret_vault=SecretVault(secret_key_path),
     )
     return app
 
@@ -1296,5 +1557,11 @@ def create_app(
     session_factory: async_sessionmaker[AsyncSession],
     executor: DurableRunExecutor,
     engine: AsyncEngine | None = None,
+    secret_key_path: str | Path | None = None,
 ) -> Starlette:
-    return create_platform_app(session_factory=session_factory, executor=executor, engine=engine)
+    return create_platform_app(
+        session_factory=session_factory,
+        executor=executor,
+        engine=engine,
+        secret_key_path=secret_key_path,
+    )

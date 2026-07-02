@@ -8,6 +8,7 @@ import { RunsRoute } from "./routes/RunsRoute";
 import { RunDetailRoute } from "./routes/RunDetailRoute";
 import { ApprovalsRoute } from "./routes/ApprovalsRoute";
 import { SystemRoute } from "./routes/SystemRoute";
+import { SettingsRoute } from "./routes/SettingsRoute";
 import { PageHeader, Panel } from "./components/ui";
 
 export default function App() {
@@ -67,6 +68,9 @@ function RouteSwitch({
   }
   if (path === "/system") {
     return <SystemRoute />;
+  }
+  if (path === "/settings") {
+    return <SettingsRoute />;
   }
   return (
     <>
