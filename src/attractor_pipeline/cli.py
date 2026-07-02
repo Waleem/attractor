@@ -51,7 +51,7 @@ def main() -> None:
         "--server-url",
         type=str,
         default=None,
-        help="Platform server URL",
+        help="Platform server URL. Defaults to ATTRACTOR_PLATFORM_URL.",
     )
     run_parser.add_argument(
         "--input",
@@ -157,14 +157,17 @@ def _cmd_platform_run(args: argparse.Namespace, parser: argparse.ArgumentParser)
         parser.error("run requires a workflow name or --legacy-local DOTFILE")
     if not args.repo:
         parser.error("run requires --repo for platform launches")
-    if not args.server_url:
-        parser.error("run requires --server-url for platform launches")
+    server_url = args.server_url or os.environ.get("ATTRACTOR_PLATFORM_URL", "")
+    if not server_url:
+        parser.error(
+            "run requires --server-url or ATTRACTOR_PLATFORM_URL for platform launches"
+        )
 
     try:
         exit_code = launch_platform_run(
             workflow_name=args.workflow,
             repo_path=args.repo,
-            server_url=args.server_url,
+            server_url=server_url,
             inputs=args.input,
             actor_label=args.actor_label,
             requested_environment=args.environment,
