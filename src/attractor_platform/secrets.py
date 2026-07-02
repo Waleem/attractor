@@ -36,13 +36,15 @@ class SecretVault:
 
     def _load_or_create_key(self) -> bytes:
         if self.key_path.exists():
-            os.chmod(self.key_path, 0o600)
-            return self.key_path.read_bytes()
+            return self._read_existing_key()
 
         self.key_path.parent.mkdir(parents=True, exist_ok=True)
         key = Fernet.generate_key()
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        descriptor = os.open(self.key_path, flags, 0o600)
+        try:
+            descriptor = os.open(self.key_path, flags, 0o600)
+        except FileExistsError:
+            return self._read_existing_key()
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(key)
@@ -54,3 +56,7 @@ class SecretVault:
             raise
         os.chmod(self.key_path, 0o600)
         return key
+
+    def _read_existing_key(self) -> bytes:
+        os.chmod(self.key_path, 0o600)
+        return self.key_path.read_bytes()

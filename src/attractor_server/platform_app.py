@@ -21,11 +21,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from attractor_llm.catalog import get_default_model
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.git import GitRunner
+from attractor_platform.llm_backend import resolve_platform_llm_defaults
 from attractor_platform.packages import (
     WorkflowPackage,
     discover_workflow_packages,
@@ -244,21 +244,18 @@ _PROVIDER_CREDENTIALS: tuple[tuple[str, str], ...] = (
     ("anthropic", "ANTHROPIC_API_KEY"),
     ("gemini", "GOOGLE_API_KEY"),
 )
+_SECRET_NAME_MAX_LENGTH = 120
+_VARIABLE_KEY_MAX_LENGTH = 160
 
 
-def _default_provider() -> str:
-    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "openai").strip()
-    return configured or "openai"
-
-
-def _default_model(provider: str) -> str:
-    configured = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
-    if configured:
-        return configured
-    try:
-        return get_default_model(provider).id
-    except KeyError:
-        return ""
+def _default_provider_and_model() -> tuple[str, str]:
+    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip()
+    configured_model = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
+    resolved = resolve_platform_llm_defaults(
+        default_provider=configured or None,
+        default_model=configured_model or None,
+    )
+    return resolved or ("", "")
 
 
 def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
@@ -285,6 +282,14 @@ def _valid_setting_name(value: str) -> bool:
     return bool(value) and value.isascii() and all(
         character.isalnum() or character in {"_", "-"} for character in value
     )
+
+
+def _valid_secret_name(value: str) -> bool:
+    return _valid_setting_name(value) and len(value) <= _SECRET_NAME_MAX_LENGTH
+
+
+def _valid_variable_key(value: str) -> bool:
+    return _valid_setting_name(value) and len(value) <= _VARIABLE_KEY_MAX_LENGTH
 
 
 def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
@@ -1298,8 +1303,11 @@ async def list_settings_secrets(request: Request) -> JSONResponse:
 async def put_settings_secret(request: Request) -> JSONResponse:
     services = _services(request)
     name = request.path_params["name"]
-    if not _valid_setting_name(name):
-        return _json_error("Secret name must contain only letters, numbers, '_' or '-'", 400)
+    if not _valid_secret_name(name):
+        return _json_error(
+            "Secret name must be 1-120 ASCII letters, numbers, '_' or '-'",
+            400,
+        )
 
     try:
         body = await request.json()
@@ -1338,8 +1346,11 @@ async def put_settings_secret(request: Request) -> JSONResponse:
 async def delete_settings_secret(request: Request) -> JSONResponse:
     services = _services(request)
     name = request.path_params["name"]
-    if not _valid_setting_name(name):
-        return _json_error("Secret name must contain only letters, numbers, '_' or '-'", 400)
+    if not _valid_secret_name(name):
+        return _json_error(
+            "Secret name must be 1-120 ASCII letters, numbers, '_' or '-'",
+            400,
+        )
 
     async with session_scope(services.session_factory) as session:
         current = await session.get(SettingSecretModel, name)
@@ -1362,8 +1373,11 @@ async def list_settings_variables(request: Request) -> JSONResponse:
 async def put_settings_variable(request: Request) -> JSONResponse:
     services = _services(request)
     key = request.path_params["key"]
-    if not _valid_setting_name(key):
-        return _json_error("Variable key must contain only letters, numbers, '_' or '-'", 400)
+    if not _valid_variable_key(key):
+        return _json_error(
+            "Variable key must be 1-160 ASCII letters, numbers, '_' or '-'",
+            400,
+        )
 
     try:
         body = await request.json()
@@ -1393,8 +1407,11 @@ async def put_settings_variable(request: Request) -> JSONResponse:
 async def delete_settings_variable(request: Request) -> JSONResponse:
     services = _services(request)
     key = request.path_params["key"]
-    if not _valid_setting_name(key):
-        return _json_error("Variable key must contain only letters, numbers, '_' or '-'", 400)
+    if not _valid_variable_key(key):
+        return _json_error(
+            "Variable key must be 1-160 ASCII letters, numbers, '_' or '-'",
+            400,
+        )
 
     async with session_scope(services.session_factory) as session:
         current = await session.get(SettingVariableModel, key)
@@ -1416,7 +1433,7 @@ async def get_settings(request: Request) -> JSONResponse:
             )
         )
 
-    provider = _default_provider()
+    provider, model = _default_provider_and_model()
     provider_credentials: dict[str, dict[str, Any]] = {}
     for credential_name, env_name in _PROVIDER_CREDENTIALS:
         secret = secrets_by_name.get(credential_name)
@@ -1442,7 +1459,7 @@ async def get_settings(request: Request) -> JSONResponse:
         {
             "models": {
                 "default_provider": provider,
-                "default_model": _default_model(provider),
+                "default_model": model,
                 "provider_credentials": provider_credentials,
             },
             "environments": {

@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from attractor_agent.profiles import get_profile
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
     DatabaseSettings,
@@ -22,6 +23,14 @@ from attractor_platform.storage.models import SettingSecretModel
 from attractor_server.platform_app import create_platform_app
 
 pytestmark = pytest.mark.asyncio
+
+_LLM_ENV_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "ATTRACTOR_DEFAULT_PROVIDER",
+    "ATTRACTOR_DEFAULT_MODEL",
+)
 
 
 async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
@@ -50,6 +59,11 @@ async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
 
 def _assert_raw_secret_absent(payload: Any, raw_secret: str) -> None:
     assert raw_secret not in json.dumps(payload, sort_keys=True)
+
+
+def _clear_llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for env_name in _LLM_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
 
 
 async def test_secret_api_is_write_only_and_lists_metadata(tmp_path: Path) -> None:
@@ -144,9 +158,7 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
 ) -> None:
     client, engine = await _client(tmp_path)
     try:
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        _clear_llm_environment(monkeypatch)
         monkeypatch.setenv("GOOGLE_API_KEY", "google-status-only")
         await client.put("/api/settings/secrets/openai", json={"value": "sk-status-only"})
 
@@ -162,8 +174,8 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
             "storage",
             "monitoring",
         }
-        assert payload["models"]["default_provider"] == "openai"
-        assert payload["models"]["default_model"]
+        assert payload["models"]["default_provider"] == "gemini"
+        assert payload["models"]["default_model"] == get_profile("gemini").default_model
         assert payload["models"]["provider_credentials"]["openai"]["configured"] is True
         assert payload["models"]["provider_credentials"]["gemini"] == {
             "name": "gemini",
@@ -174,6 +186,69 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
         }
         assert "value" not in payload["models"]["provider_credentials"]["openai"]
         assert isinstance(payload["variables"]["items"], list)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_default_model_uses_anthropic_when_only_anthropic_key_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-status-only")
+
+        response = await client.get("/api/settings")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["default_provider"] == "anthropic"
+        assert payload["models"]["default_model"] == get_profile("anthropic").default_model
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_default_model_uses_gemini_when_only_google_key_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-status-only")
+
+        response = await client.get("/api/settings")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["default_provider"] == "gemini"
+        assert payload["models"]["default_model"] == get_profile("gemini").default_model
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_default_model_honors_explicit_provider_and_model_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-status-only")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-status-only")
+        monkeypatch.setenv("ATTRACTOR_DEFAULT_PROVIDER", "openai")
+        monkeypatch.setenv("ATTRACTOR_DEFAULT_MODEL", "gpt-task-4")
+
+        response = await client.get("/api/settings")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["default_provider"] == "openai"
+        assert payload["models"]["default_model"] == "gpt-task-4"
     finally:
         await client.aclose()
         await engine.dispose()
@@ -231,6 +306,42 @@ async def test_settings_names_are_ascii_only(tmp_path: Path) -> None:
 
         assert variable_response.status_code == 400
         assert secret_response.status_code == 400
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_setting_secret_name_rejects_database_max_length_plus_one(
+    tmp_path: Path,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        overlong_name = "a" * 121
+
+        response = await client.put(
+            f"/api/settings/secrets/{overlong_name}",
+            json={"value": "unsafe"},
+        )
+
+        assert response.status_code == 400
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_setting_variable_key_rejects_database_max_length_plus_one(
+    tmp_path: Path,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        overlong_key = "a" * 161
+
+        response = await client.put(
+            f"/api/settings/variables/{overlong_key}",
+            json={"value": "unsafe"},
+        )
+
+        assert response.status_code == 400
     finally:
         await client.aclose()
         await engine.dispose()
