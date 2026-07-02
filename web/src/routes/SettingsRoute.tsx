@@ -161,49 +161,57 @@ function ModelsSettings({
             </tr>
           </thead>
           <tbody>
-            {credentials.map((credential) => (
-              <tr key={credential.name}>
-                <td>{credential.name}</td>
-                <td>
-                  <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
-                </td>
-                <td>{credential.source}</td>
-                <td>{formatDate(credential.updated_at)}</td>
-                <td>
-                  <input
-                    aria-label={`${credential.name} secret`}
-                    type="password"
-                    value={draftSecrets[credential.name] ?? ""}
-                    placeholder={credential.configured ? "Replace secret" : "Set secret"}
-                    onChange={(event) =>
-                      setDraftSecrets((current) => ({
-                        ...current,
-                        [credential.name]: event.target.value
-                      }))
-                    }
-                  />
-                </td>
-                <td>
-                  <div className="button-row">
-                    <button
-                      type="button"
-                      disabled={saving === credential.name}
-                      onClick={() => void saveSecret(credential.name)}
-                    >
-                      Save
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={saving === credential.name || !credential.configured}
-                      onClick={() => void clearSecret(credential.name)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {credentials.map((credential) => {
+              const hasVaultSecret = credential.updated_at !== null;
+              return (
+                <tr key={credential.name}>
+                  <td>{credential.name}</td>
+                  <td>
+                    <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
+                  </td>
+                  <td>{credential.source}</td>
+                  <td>{formatDate(credential.updated_at)}</td>
+                  <td>
+                    <input
+                      aria-label={`${credential.name} secret`}
+                      type="password"
+                      value={draftSecrets[credential.name] ?? ""}
+                      placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
+                      onChange={(event) =>
+                        setDraftSecrets((current) => ({
+                          ...current,
+                          [credential.name]: event.target.value
+                        }))
+                      }
+                    />
+                  </td>
+                  <td>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        disabled={saving === credential.name}
+                        onClick={() => void saveSecret(credential.name)}
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={saving === credential.name || !hasVaultSecret}
+                        title={
+                          hasVaultSecret
+                            ? "Clear saved vault credential"
+                            : "Environment credential cannot be cleared here"
+                        }
+                        onClick={() => void clearSecret(credential.name)}
+                      >
+                        {hasVaultSecret ? "Clear vault" : "Env only"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Panel>

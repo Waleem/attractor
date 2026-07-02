@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -337,6 +339,70 @@ def _valid_secret_name(value: str) -> bool:
 
 def _valid_variable_key(value: str) -> bool:
     return _valid_setting_name(value) and len(value) <= _VARIABLE_KEY_MAX_LENGTH
+
+
+async def _upsert_setting_secret(
+    session: AsyncSession,
+    *,
+    name: str,
+    encrypted_value: str,
+    updated_at: dt.datetime,
+) -> None:
+    dialect_name = session.bind.dialect.name if session.bind is not None else ""
+    values = {
+        "name": name,
+        "encrypted_value": encrypted_value,
+        "updated_at": updated_at,
+    }
+    update_values = {
+        "encrypted_value": encrypted_value,
+        "updated_at": updated_at,
+    }
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(SettingSecretModel).values(**values)
+    elif dialect_name == "postgresql":
+        statement = postgresql_insert(SettingSecretModel).values(**values)
+    else:
+        raise RuntimeError(f"Unsupported settings secret upsert dialect: {dialect_name}")
+
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[SettingSecretModel.name],
+            set_=update_values,
+        )
+    )
+
+
+async def _upsert_setting_variable(
+    session: AsyncSession,
+    *,
+    key: str,
+    value: str,
+    updated_at: dt.datetime,
+) -> None:
+    dialect_name = session.bind.dialect.name if session.bind is not None else ""
+    values = {
+        "key": key,
+        "value": value,
+        "updated_at": updated_at,
+    }
+    update_values = {
+        "value": value,
+        "updated_at": updated_at,
+    }
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(SettingVariableModel).values(**values)
+    elif dialect_name == "postgresql":
+        statement = postgresql_insert(SettingVariableModel).values(**values)
+    else:
+        raise RuntimeError(f"Unsupported settings variable upsert dialect: {dialect_name}")
+
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[SettingVariableModel.key],
+            set_=update_values,
+        )
+    )
 
 
 def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
@@ -1374,19 +1440,19 @@ async def put_settings_secret(request: Request) -> JSONResponse:
 
     now = dt.datetime.now(dt.UTC)
     async with session_scope(services.session_factory) as session:
-        current = await session.get(SettingSecretModel, name)
-        if current is None:
-            current = SettingSecretModel(
-                name=name,
-                encrypted_value=encrypted_value,
-                updated_at=now,
-            )
-            session.add(current)
-        else:
-            current.encrypted_value = encrypted_value
-            current.updated_at = now
-        await session.flush()
-        payload = _serialize_secret_metadata(current)
+        await _upsert_setting_secret(
+            session,
+            name=name,
+            encrypted_value=encrypted_value,
+            updated_at=now,
+        )
+    payload = _serialize_secret_metadata(
+        SettingSecretModel(
+            name=name,
+            encrypted_value=encrypted_value,
+            updated_at=now,
+        )
+    )
     await _refresh_codergen_backend(services)
     return JSONResponse(payload)
 
@@ -1441,15 +1507,15 @@ async def put_settings_variable(request: Request) -> JSONResponse:
 
     now = dt.datetime.now(dt.UTC)
     async with session_scope(services.session_factory) as session:
-        current = await session.get(SettingVariableModel, key)
-        if current is None:
-            current = SettingVariableModel(key=key, value=value, updated_at=now)
-            session.add(current)
-        else:
-            current.value = value
-            current.updated_at = now
-        await session.flush()
-        payload = _serialize_variable(current)
+        await _upsert_setting_variable(
+            session,
+            key=key,
+            value=value,
+            updated_at=now,
+        )
+    payload = _serialize_variable(
+        SettingVariableModel(key=key, value=value, updated_at=now)
+    )
     return JSONResponse(payload)
 
 

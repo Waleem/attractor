@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import attractor_server.platform_app as platform_app_module
 from attractor_agent.profiles import get_profile
@@ -21,7 +22,7 @@ from attractor_platform.storage.db import (
     initialize_platform_schema,
     session_scope,
 )
-from attractor_platform.storage.models import SettingSecretModel
+from attractor_platform.storage.models import SettingSecretModel, SettingVariableModel
 from attractor_server.platform_app import create_platform_app
 
 pytestmark = pytest.mark.asyncio
@@ -180,6 +181,64 @@ async def test_secret_replace_and_delete_update_metadata_without_exposing_values
         assert list_response.json() == {"items": []}
         _assert_raw_secret_absent(second_response.json(), first_secret)
         _assert_raw_secret_absent(second_response.json(), second_secret)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_concurrent_first_secret_writes_replace_instead_of_500(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, engine, _executor = await _app_with_executor(tmp_path)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+    original_get = AsyncSession.get
+    name = "race-openai"
+    values = {"sk-race-first", "sk-race-second"}
+    both_readers_arrived = asyncio.Event()
+    reader_count = 0
+
+    async def force_both_first_writers_to_observe_missing(
+        self: AsyncSession,
+        entity: Any,
+        ident: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal reader_count
+        if entity is SettingSecretModel and ident == name:
+            reader_count += 1
+            if reader_count == 2:
+                both_readers_arrived.set()
+            else:
+                await both_readers_arrived.wait()
+            return None
+        return await original_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(
+        AsyncSession,
+        "get",
+        force_both_first_writers_to_observe_missing,
+    )
+    try:
+        responses = await asyncio.gather(
+            client.put(f"/api/settings/secrets/{name}", json={"value": "sk-race-first"}),
+            client.put(f"/api/settings/secrets/{name}", json={"value": "sk-race-second"}),
+        )
+
+        assert [response.status_code for response in responses] == [200, 200]
+        assert {response.json()["name"] for response in responses} == {name}
+        session_factory = create_session_factory(engine)
+        async with session_scope(session_factory) as session:
+            secret = await session.scalar(
+                select(SettingSecretModel).where(SettingSecretModel.name == name)
+            )
+        assert secret is not None
+        decrypted_value = app.state.platform_services.secret_vault.decrypt(
+            secret.encrypted_value
+        )
+        assert decrypted_value in values
     finally:
         await client.aclose()
         await engine.dispose()
@@ -488,6 +547,61 @@ async def test_settings_variables_are_readable_non_secret_key_value_rows(
         assert put_response.json()["key"] == "DEFAULT_REGION"
         assert put_response.json()["value"] == "us-west-2"
         assert list_response.json()["items"] == [put_response.json()]
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_concurrent_first_variable_writes_replace_instead_of_500(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, engine, _executor = await _app_with_executor(tmp_path)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+    original_get = AsyncSession.get
+    key = "RACE_REGION"
+    values = {"us-west-1", "us-east-1"}
+    both_readers_arrived = asyncio.Event()
+    reader_count = 0
+
+    async def force_both_first_writers_to_observe_missing(
+        self: AsyncSession,
+        entity: Any,
+        ident: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal reader_count
+        if entity is SettingVariableModel and ident == key:
+            reader_count += 1
+            if reader_count == 2:
+                both_readers_arrived.set()
+            else:
+                await both_readers_arrived.wait()
+            return None
+        return await original_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(
+        AsyncSession,
+        "get",
+        force_both_first_writers_to_observe_missing,
+    )
+    try:
+        responses = await asyncio.gather(
+            client.put(f"/api/settings/variables/{key}", json={"value": "us-west-1"}),
+            client.put(f"/api/settings/variables/{key}", json={"value": "us-east-1"}),
+        )
+
+        assert [response.status_code for response in responses] == [200, 200]
+        assert {response.json()["key"] for response in responses} == {key}
+        session_factory = create_session_factory(engine)
+        async with session_scope(session_factory) as session:
+            variable = await session.scalar(
+                select(SettingVariableModel).where(SettingVariableModel.key == key)
+            )
+        assert variable is not None
+        assert variable.value in values
     finally:
         await client.aclose()
         await engine.dispose()
