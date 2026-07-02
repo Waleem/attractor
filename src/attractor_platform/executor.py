@@ -38,7 +38,7 @@ from attractor_pipeline.engine.runner import (
     run_pipeline,
 )
 from attractor_pipeline.graph import Graph, Node
-from attractor_pipeline.handlers import CodergenBackend, register_default_handlers
+from attractor_pipeline.handlers import CodergenBackend, CodergenHandler, register_default_handlers
 from attractor_pipeline.handlers.human import Answer, HumanHandler, Question
 from attractor_platform.artifacts import FileSystemArtifactStore
 from attractor_platform.checkpoints import GitCheckpointService
@@ -149,6 +149,13 @@ class DurableRunExecutor:
         self._run_interviewer_context: contextvars.ContextVar[_RunInterviewerContext | None] = (
             contextvars.ContextVar("durable_run_interviewer_context", default=None)
         )
+
+    def configure_codergen_backend(self, codergen_backend: CodergenBackend | None) -> None:
+        handler = self._handlers.get("codergen")
+        if isinstance(handler, CodergenHandler):
+            handler._backend = codergen_backend
+            return
+        self._handlers.register("codergen", CodergenHandler(backend=codergen_backend))
 
     @classmethod
     def for_tests(
@@ -876,7 +883,11 @@ class DurableRunExecutor:
             outputs = {
                 key: _preview_codergen_output(value)
                 for key, value in result.context.items()
-                if key.startswith("codergen.") and key.endswith(".output") and isinstance(value, str)
+                if (
+                    key.startswith("codergen.")
+                    and key.endswith(".output")
+                    and isinstance(value, str)
+                )
             }
             return "run.completed", {"outputs": outputs}
         if terminal_event_type is None and result.status == PipelineStatus.FAILED:

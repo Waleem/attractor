@@ -33,7 +33,9 @@ _LLM_ENV_NAMES = (
 )
 
 
-async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
+async def _client_with_executor(
+    tmp_path: Path,
+) -> tuple[httpx.AsyncClient, Any, DurableRunExecutor]:
     engine = create_platform_engine(
         DatabaseSettings(url=default_test_database_url(tmp_path / "settings.sqlite3")),
     )
@@ -54,7 +56,13 @@ async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
     return (
         httpx.AsyncClient(transport=transport, base_url="http://testserver"),
         engine,
+        executor,
     )
+
+
+async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
+    client, engine, _executor = await _client_with_executor(tmp_path)
+    return client, engine
 
 
 def _assert_raw_secret_absent(payload: Any, raw_secret: str) -> None:
@@ -226,6 +234,83 @@ async def test_settings_default_model_uses_gemini_when_only_google_key_exists(
         payload = response.json()
         assert payload["models"]["default_provider"] == "gemini"
         assert payload["models"]["default_model"] == get_profile("gemini").default_model
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_default_model_uses_saved_vault_key_without_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        raw_secret = "sk-task-4-openai-runtime"
+        put_response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": raw_secret},
+        )
+
+        response = await client.get("/api/settings")
+
+        assert put_response.status_code == 200
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["default_provider"] == "openai"
+        assert payload["models"]["default_model"] == get_profile("openai").default_model
+        assert payload["models"]["provider_credentials"]["openai"]["source"] == "vault"
+        _assert_raw_secret_absent(payload, raw_secret)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_provider_credential_source_prefers_env_over_saved_vault_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-env-runtime")
+        raw_secret = "sk-task-4-openai-vault-fallback"
+        put_response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": raw_secret},
+        )
+
+        response = await client.get("/api/settings")
+
+        assert put_response.status_code == 200
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["provider_credentials"]["openai"]["source"] == "environment"
+        _assert_raw_secret_absent(payload, raw_secret)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_saving_provider_secret_updates_codergen_runtime_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine, executor = await _client_with_executor(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        handler = executor._handlers.get("codergen")
+        assert handler is not None
+        assert handler._backend is None
+
+        response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": "sk-task-4-openai-live-runtime"},
+        )
+
+        assert response.status_code == 200
+        assert handler._backend is not None
+        assert handler._backend._default_provider == "openai"
     finally:
         await client.aclose()
         await engine.dispose()

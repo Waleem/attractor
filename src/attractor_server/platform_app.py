@@ -25,7 +25,10 @@ from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.git import GitRunner
-from attractor_platform.llm_backend import resolve_platform_llm_defaults
+from attractor_platform.llm_backend import (
+    build_platform_codergen_backend,
+    resolve_platform_llm_defaults,
+)
 from attractor_platform.packages import (
     WorkflowPackage,
     discover_workflow_packages,
@@ -33,7 +36,7 @@ from attractor_platform.packages import (
     load_workflow_package,
 )
 from attractor_platform.runspec import read_git_metadata
-from attractor_platform.secrets import SecretVault
+from attractor_platform.secrets import SecretVault, load_provider_secret_values
 from attractor_platform.storage.db import initialize_platform_schema, session_scope
 from attractor_platform.storage.models import (
     ApprovalDecisionModel,
@@ -248,14 +251,38 @@ _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
 
 
-def _default_provider_and_model() -> tuple[str, str]:
+def _default_provider_and_model(
+    provider_api_keys: dict[str, str] | None = None,
+) -> tuple[str, str]:
     configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip()
     configured_model = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
     resolved = resolve_platform_llm_defaults(
         default_provider=configured or None,
         default_model=configured_model or None,
+        provider_api_keys=provider_api_keys,
     )
     return resolved or ("", "")
+
+
+async def _provider_api_keys_from_vault(services: _PlatformServices) -> dict[str, str]:
+    return await load_provider_secret_values(
+        session_factory=services.session_factory,
+        secret_vault=services.secret_vault,
+        provider_names=(credential_name for credential_name, _ in _PROVIDER_CREDENTIALS),
+    )
+
+
+async def _refresh_codergen_backend(services: _PlatformServices) -> None:
+    provider_api_keys = await _provider_api_keys_from_vault(services)
+    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip()
+    configured_model = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
+    services.executor.configure_codergen_backend(
+        build_platform_codergen_backend(
+            default_provider=configured or None,
+            default_model=configured_model or None,
+            provider_api_keys=provider_api_keys,
+        )
+    )
 
 
 def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
@@ -1340,6 +1367,7 @@ async def put_settings_secret(request: Request) -> JSONResponse:
             current.updated_at = now
         await session.flush()
         payload = _serialize_secret_metadata(current)
+    await _refresh_codergen_backend(services)
     return JSONResponse(payload)
 
 
@@ -1356,6 +1384,7 @@ async def delete_settings_secret(request: Request) -> JSONResponse:
         current = await session.get(SettingSecretModel, name)
         if current is not None:
             await session.delete(current)
+    await _refresh_codergen_backend(services)
     return JSONResponse(_serialize_unconfigured_secret(name))
 
 
@@ -1433,7 +1462,8 @@ async def get_settings(request: Request) -> JSONResponse:
             )
         )
 
-    provider, model = _default_provider_and_model()
+    provider_api_keys = await _provider_api_keys_from_vault(services)
+    provider, model = _default_provider_and_model(provider_api_keys)
     provider_credentials: dict[str, dict[str, Any]] = {}
     for credential_name, env_name in _PROVIDER_CREDENTIALS:
         secret = secrets_by_name.get(credential_name)
@@ -1445,10 +1475,10 @@ async def get_settings(request: Request) -> JSONResponse:
             "updated_at": _serialize_settings_timestamp(secret.updated_at)
             if secret is not None
             else None,
-            "source": "vault"
-            if secret is not None
-            else "environment"
+            "source": "environment"
             if configured_from_env
+            else "vault"
+            if secret is not None
             else "none",
         }
 

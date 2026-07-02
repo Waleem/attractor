@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from attractor_agent.profiles import get_profile
 from attractor_llm.adapters.anthropic import AnthropicAdapter
@@ -26,16 +26,24 @@ def resolve_platform_llm_defaults(
     *,
     default_provider: str | None = None,
     default_model: str | None = None,
+    provider_api_keys: Mapping[str, str] | None = None,
 ) -> tuple[str, str] | None:
     """Resolve the provider/model pair the platform backend would use."""
-    first_available_provider: str | None = None
     registered_providers: set[str] = set()
+    first_env_provider: str | None = None
+    first_vault_provider: str | None = None
+    provider_api_keys = provider_api_keys or {}
 
     for provider, env_name, _adapter_factory in _PROVIDER_ENV_ORDER:
         if os.environ.get(env_name):
             registered_providers.add(provider)
-            first_available_provider = first_available_provider or provider
+            first_env_provider = first_env_provider or provider
+            continue
+        if provider_api_keys.get(provider):
+            registered_providers.add(provider)
+            first_vault_provider = first_vault_provider or provider
 
+    first_available_provider = first_env_provider or first_vault_provider
     if first_available_provider is None:
         return None
 
@@ -51,6 +59,7 @@ def build_platform_codergen_backend(
     *,
     default_provider: str | None = None,
     default_model: str | None = None,
+    provider_api_keys: Mapping[str, str] | None = None,
 ) -> AgentLoopBackend | None:
     """Build the real codergen backend for platform runs.
 
@@ -58,9 +67,10 @@ def build_platform_codergen_backend(
     the existing dry-run codergen behavior explicit.
     """
     client = Client()
+    provider_api_keys = provider_api_keys or {}
 
     for provider, env_name, adapter_factory in _PROVIDER_ENV_ORDER:
-        api_key = os.environ.get(env_name)
+        api_key = os.environ.get(env_name) or provider_api_keys.get(provider)
         if not api_key:
             continue
         client.register_adapter(
@@ -76,6 +86,7 @@ def build_platform_codergen_backend(
     resolved_defaults = resolve_platform_llm_defaults(
         default_provider=default_provider,
         default_model=default_model,
+        provider_api_keys=provider_api_keys,
     )
     if resolved_defaults is None:
         return None

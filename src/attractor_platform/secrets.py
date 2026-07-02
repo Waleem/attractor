@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from attractor_platform.storage.db import session_scope
+from attractor_platform.storage.models import SettingSecretModel
 
 DEFAULT_SECRET_KEY_PATH = Path("~/.attractor/platform-secret.key")
 SECRET_KEY_PATH_ENV = "ATTRACTOR_SECRET_KEY_PATH"
@@ -60,3 +66,33 @@ class SecretVault:
     def _read_existing_key(self) -> bytes:
         os.chmod(self.key_path, 0o600)
         return self.key_path.read_bytes()
+
+
+async def load_provider_secret_values(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    secret_vault: SecretVault,
+    provider_names: Iterable[str],
+) -> dict[str, str]:
+    """Load decrypted provider credentials for runtime use.
+
+    Returned values must stay internal to backend construction and never be
+    serialized into settings responses or logs.
+    """
+
+    names = tuple(dict.fromkeys(name for name in provider_names if name))
+    if not names:
+        return {}
+
+    async with session_scope(session_factory) as session:
+        secrets = list(
+            await session.scalars(
+                select(SettingSecretModel).where(SettingSecretModel.name.in_(names))
+            )
+        )
+
+    return {
+        secret.name: secret_vault.decrypt(secret.encrypted_value)
+        for secret in secrets
+        if secret.name in names
+    }
