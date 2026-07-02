@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
@@ -14,7 +16,9 @@ from attractor_platform.storage.db import (
     create_session_factory,
     default_test_database_url,
     initialize_platform_schema,
+    session_scope,
 )
+from attractor_platform.storage.models import SettingSecretModel
 from attractor_server.platform_app import create_platform_app
 
 pytestmark = pytest.mark.asyncio
@@ -75,6 +79,30 @@ async def test_secret_api_is_write_only_and_lists_metadata(tmp_path: Path) -> No
         await engine.dispose()
 
 
+async def test_secret_api_stores_ciphertext_without_raw_secret(tmp_path: Path) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        raw_secret = "sk-task-4-ciphertext"
+
+        response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": raw_secret},
+        )
+
+        assert response.status_code == 200
+        session_factory = create_session_factory(engine)
+        async with session_scope(session_factory) as session:
+            secret = await session.scalar(
+                select(SettingSecretModel).where(SettingSecretModel.name == "openai")
+            )
+        assert secret is not None
+        assert secret.encrypted_value != raw_secret
+        assert raw_secret not in secret.encrypted_value
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
 async def test_secret_replace_and_delete_update_metadata_without_exposing_values(
     tmp_path: Path,
 ) -> None:
@@ -112,9 +140,14 @@ async def test_secret_replace_and_delete_update_metadata_without_exposing_values
 
 async def test_settings_overview_includes_required_sections_and_secret_status(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, engine = await _client(tmp_path)
     try:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-status-only")
         await client.put("/api/settings/secrets/openai", json={"value": "sk-status-only"})
 
         response = await client.get("/api/settings")
@@ -132,8 +165,33 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
         assert payload["models"]["default_provider"] == "openai"
         assert payload["models"]["default_model"]
         assert payload["models"]["provider_credentials"]["openai"]["configured"] is True
+        assert payload["models"]["provider_credentials"]["gemini"] == {
+            "name": "gemini",
+            "env_var": "GOOGLE_API_KEY",
+            "configured": True,
+            "updated_at": None,
+            "source": "environment",
+        }
         assert "value" not in payload["models"]["provider_credentials"]["openai"]
         assert isinstance(payload["variables"]["items"], list)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_overview_redacts_storage_internals(tmp_path: Path) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        response = await client.get("/api/settings")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["storage"] == {"status": "configured"}
+        serialized = json.dumps(payload, sort_keys=True)
+        assert "database_url" not in serialized
+        assert "secret_key_path" not in serialized
+        assert "settings.sqlite3" not in serialized
+        assert "platform-secret.key" not in serialized
     finally:
         await client.aclose()
         await engine.dispose()
@@ -157,3 +215,48 @@ async def test_settings_variables_are_readable_non_secret_key_value_rows(
     finally:
         await client.aclose()
         await engine.dispose()
+
+
+async def test_settings_names_are_ascii_only(tmp_path: Path) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        variable_response = await client.put(
+            "/api/settings/variables/UNICODE_é",
+            json={"value": "unsafe"},
+        )
+        secret_response = await client.put(
+            "/api/settings/secrets/gémini",
+            json={"value": "unsafe"},
+        )
+
+        assert variable_response.status_code == 400
+        assert secret_response.status_code == 400
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_phase3_settings_tables_have_alembic_revision() -> None:
+    migration_path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "attractor_platform"
+        / "storage"
+        / "alembic"
+        / "versions"
+        / "0002_phase3_settings_tables.py"
+    )
+    assert migration_path.exists()
+
+    spec = importlib.util.spec_from_file_location("phase3_settings_migration", migration_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    assert module.down_revision == "0001_phase2_platform_spines"
+    source = migration_path.read_text()
+    assert '"setting_secrets"' in source
+    assert '"setting_variables"' in source
+    assert "op.create_table" in source
+    assert "op.drop_table" in source

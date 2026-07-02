@@ -242,7 +242,7 @@ def _parse_non_negative_int(value: str | None, default: int) -> int:
 _PROVIDER_CREDENTIALS: tuple[tuple[str, str], ...] = (
     ("openai", "OPENAI_API_KEY"),
     ("anthropic", "ANTHROPIC_API_KEY"),
-    ("gemini", "GEMINI_API_KEY"),
+    ("gemini", "GOOGLE_API_KEY"),
 )
 
 
@@ -282,7 +282,7 @@ def _serialize_variable(variable: SettingVariableModel) -> dict[str, Any]:
 
 
 def _valid_setting_name(value: str) -> bool:
-    return bool(value) and all(
+    return bool(value) and value.isascii() and all(
         character.isalnum() or character in {"_", "-"} for character in value
     )
 
@@ -1438,8 +1438,6 @@ async def get_settings(request: Request) -> JSONResponse:
     active_tasks = getattr(services.executor, "active_tasks", {})
     active_count = sum(1 for task in active_tasks.values() if not task.done())
     max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
-    engine = getattr(services.session_factory, "kw", {}).get("bind")
-    database_url = str(engine.url) if engine is not None else ""
     return JSONResponse(
         {
             "models": {
@@ -1463,8 +1461,7 @@ async def get_settings(request: Request) -> JSONResponse:
                 "max_concurrent_runs": max_concurrent,
             },
             "storage": {
-                "database_url": database_url,
-                "secret_key_path": str(services.secret_vault.key_path),
+                "status": "configured",
             },
             "monitoring": {
                 "active_runs": active_count,

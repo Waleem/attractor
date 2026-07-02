@@ -349,8 +349,7 @@ function StorageSettings({ settings }: { settings: SettingsOverview }) {
   return (
     <Panel title="Storage">
       <dl className="kv-grid">
-        <KeyValue label="Database" value={<span className="path-cell">{settings.storage.database_url}</span>} />
-        <KeyValue label="Secret key" value={<span className="path-cell">{settings.storage.secret_key_path}</span>} />
+        <KeyValue label="Status" value={<StatusBadge status={settings.storage.status} />} />
       </dl>
     </Panel>
   );

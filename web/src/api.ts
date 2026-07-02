@@ -213,8 +213,7 @@ export interface SettingsOverview {
     max_concurrent_runs: number | null;
   };
   storage: {
-    database_url: string;
-    secret_key_path: string;
+    status: string;
   };
   monitoring: {
     active_runs: number;

@@ -36,6 +36,7 @@ class SecretVault:
 
     def _load_or_create_key(self) -> bytes:
         if self.key_path.exists():
+            os.chmod(self.key_path, 0o600)
             return self.key_path.read_bytes()
 
         self.key_path.parent.mkdir(parents=True, exist_ok=True)
