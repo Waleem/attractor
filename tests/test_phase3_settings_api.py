@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+import attractor_server.platform_app as platform_app_module
 from attractor_agent.profiles import get_profile
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
@@ -35,7 +37,29 @@ _LLM_ENV_NAMES = (
 
 async def _client_with_executor(
     tmp_path: Path,
+    *,
+    default_provider: str | None = None,
+    default_model: str | None = None,
 ) -> tuple[httpx.AsyncClient, Any, DurableRunExecutor]:
+    app, engine, executor = await _app_with_executor(
+        tmp_path,
+        default_provider=default_provider,
+        default_model=default_model,
+    )
+    transport = httpx.ASGITransport(app=app)
+    return (
+        httpx.AsyncClient(transport=transport, base_url="http://testserver"),
+        engine,
+        executor,
+    )
+
+
+async def _app_with_executor(
+    tmp_path: Path,
+    *,
+    default_provider: str | None = None,
+    default_model: str | None = None,
+) -> tuple[Any, Any, DurableRunExecutor]:
     engine = create_platform_engine(
         DatabaseSettings(url=default_test_database_url(tmp_path / "settings.sqlite3")),
     )
@@ -46,18 +70,19 @@ async def _client_with_executor(
         worktree_root=tmp_path / "worktrees",
         artifact_root=tmp_path / "artifacts",
     )
+    runtime_default_kwargs = {}
+    if default_provider is not None:
+        runtime_default_kwargs["default_provider"] = default_provider
+    if default_model is not None:
+        runtime_default_kwargs["default_model"] = default_model
     app = create_platform_app(
         session_factory=session_factory,
         executor=executor,
         engine=engine,
         secret_key_path=tmp_path / "platform-secret.key",
+        **runtime_default_kwargs,
     )
-    transport = httpx.ASGITransport(app=app)
-    return (
-        httpx.AsyncClient(transport=transport, base_url="http://testserver"),
-        engine,
-        executor,
-    )
+    return app, engine, executor
 
 
 async def _client(tmp_path: Path) -> tuple[httpx.AsyncClient, Any]:
@@ -316,18 +341,109 @@ async def test_saving_provider_secret_updates_codergen_runtime_backend(
         await engine.dispose()
 
 
+async def test_provider_secret_write_and_delete_preserve_runtime_llm_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_llm_environment(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-env-runtime")
+    client, engine, executor = await _client_with_executor(
+        tmp_path,
+        default_provider="openai",
+        default_model="gpt-cli-task-4",
+    )
+    try:
+        handler = executor._handlers.get("codergen")
+        assert handler is not None
+
+        put_response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": "sk-task-4-openai-cli-default"},
+        )
+        settings_after_put = await client.get("/api/settings")
+
+        assert put_response.status_code == 200
+        assert handler._backend is not None
+        assert handler._backend._default_provider == "openai"
+        assert handler._backend._default_model == "gpt-cli-task-4"
+        assert settings_after_put.status_code == 200
+        assert settings_after_put.json()["models"]["default_provider"] == "openai"
+        assert settings_after_put.json()["models"]["default_model"] == "gpt-cli-task-4"
+
+        delete_response = await client.delete("/api/settings/secrets/openai")
+        settings_after_delete = await client.get("/api/settings")
+
+        assert delete_response.status_code == 200
+        assert handler._backend is None
+        assert settings_after_delete.status_code == 200
+        assert settings_after_delete.json()["models"]["default_provider"] == ""
+        assert settings_after_delete.json()["models"]["default_model"] == ""
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_codergen_backend_refreshes_are_serialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, engine, _executor = await _app_with_executor(tmp_path)
+    services = app.state.platform_services
+    entered_first_refresh = asyncio.Event()
+    release_first_refresh = asyncio.Event()
+    active_refreshes = 0
+    max_active_refreshes = 0
+    calls = 0
+
+    async def fake_provider_api_keys_from_vault(
+        _services: Any,
+    ) -> dict[str, str]:
+        nonlocal active_refreshes, calls, max_active_refreshes
+        calls += 1
+        active_refreshes += 1
+        max_active_refreshes = max(max_active_refreshes, active_refreshes)
+        try:
+            if calls == 1:
+                entered_first_refresh.set()
+                await release_first_refresh.wait()
+            else:
+                await asyncio.sleep(0)
+            return {"openai": "sk-refresh-serialized"}
+        finally:
+            active_refreshes -= 1
+
+    monkeypatch.setattr(
+        platform_app_module,
+        "_provider_api_keys_from_vault",
+        fake_provider_api_keys_from_vault,
+    )
+    try:
+        first = asyncio.create_task(platform_app_module._refresh_codergen_backend(services))
+        await entered_first_refresh.wait()
+        second = asyncio.create_task(platform_app_module._refresh_codergen_backend(services))
+        await asyncio.sleep(0)
+        release_first_refresh.set()
+
+        await asyncio.gather(first, second)
+
+        assert calls == 2
+        assert max_active_refreshes == 1
+    finally:
+        release_first_refresh.set()
+        await engine.dispose()
+
+
 async def test_settings_default_model_honors_explicit_provider_and_model_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_llm_environment(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-status-only")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-status-only")
+    monkeypatch.setenv("ATTRACTOR_DEFAULT_PROVIDER", "openai")
+    monkeypatch.setenv("ATTRACTOR_DEFAULT_MODEL", "gpt-task-4")
     client, engine = await _client(tmp_path)
     try:
-        _clear_llm_environment(monkeypatch)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-status-only")
-        monkeypatch.setenv("OPENAI_API_KEY", "openai-status-only")
-        monkeypatch.setenv("ATTRACTOR_DEFAULT_PROVIDER", "openai")
-        monkeypatch.setenv("ATTRACTOR_DEFAULT_MODEL", "gpt-task-4")
-
         response = await client.get("/api/settings")
 
         assert response.status_code == 200

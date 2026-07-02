@@ -60,6 +60,9 @@ class _PlatformServices:
     repository: PlatformRepository
     session_factory: async_sessionmaker[AsyncSession]
     secret_vault: SecretVault
+    default_provider: str | None
+    default_model: str | None
+    codergen_backend_refresh_lock: asyncio.Lock
 
 
 def _services(request: Request) -> _PlatformServices:
@@ -251,14 +254,32 @@ _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
 
 
+def _normalized_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _platform_runtime_default_provider(value: str | None) -> str | None:
+    return _normalized_optional_text(value) or _normalized_optional_text(
+        os.environ.get("ATTRACTOR_DEFAULT_PROVIDER")
+    )
+
+
+def _platform_runtime_default_model(value: str | None) -> str | None:
+    return _normalized_optional_text(value) or _normalized_optional_text(
+        os.environ.get("ATTRACTOR_DEFAULT_MODEL")
+    )
+
+
 def _default_provider_and_model(
+    services: _PlatformServices,
     provider_api_keys: dict[str, str] | None = None,
 ) -> tuple[str, str]:
-    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip()
-    configured_model = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
     resolved = resolve_platform_llm_defaults(
-        default_provider=configured or None,
-        default_model=configured_model or None,
+        default_provider=services.default_provider,
+        default_model=services.default_model,
         provider_api_keys=provider_api_keys,
     )
     return resolved or ("", "")
@@ -273,16 +294,15 @@ async def _provider_api_keys_from_vault(services: _PlatformServices) -> dict[str
 
 
 async def _refresh_codergen_backend(services: _PlatformServices) -> None:
-    provider_api_keys = await _provider_api_keys_from_vault(services)
-    configured = os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip()
-    configured_model = os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip()
-    services.executor.configure_codergen_backend(
-        build_platform_codergen_backend(
-            default_provider=configured or None,
-            default_model=configured_model or None,
-            provider_api_keys=provider_api_keys,
+    async with services.codergen_backend_refresh_lock:
+        provider_api_keys = await _provider_api_keys_from_vault(services)
+        services.executor.configure_codergen_backend(
+            build_platform_codergen_backend(
+                default_provider=services.default_provider,
+                default_model=services.default_model,
+                provider_api_keys=provider_api_keys,
+            )
         )
-    )
 
 
 def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
@@ -1463,7 +1483,7 @@ async def get_settings(request: Request) -> JSONResponse:
         )
 
     provider_api_keys = await _provider_api_keys_from_vault(services)
-    provider, model = _default_provider_and_model(provider_api_keys)
+    provider, model = _default_provider_and_model(services, provider_api_keys)
     provider_credentials: dict[str, dict[str, Any]] = {}
     for credential_name, env_name in _PROVIDER_CREDENTIALS:
         secret = secrets_by_name.get(credential_name)
@@ -1545,6 +1565,8 @@ def create_platform_app(
     executor: DurableRunExecutor,
     engine: AsyncEngine | None = None,
     secret_key_path: str | Path | None = None,
+    default_provider: str | None = None,
+    default_model: str | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -1592,6 +1614,9 @@ def create_platform_app(
         repository=executor.repository,
         session_factory=session_factory,
         secret_vault=SecretVault(secret_key_path),
+        default_provider=_platform_runtime_default_provider(default_provider),
+        default_model=_platform_runtime_default_model(default_model),
+        codergen_backend_refresh_lock=asyncio.Lock(),
     )
     return app
 
@@ -1602,10 +1627,14 @@ def create_app(
     executor: DurableRunExecutor,
     engine: AsyncEngine | None = None,
     secret_key_path: str | Path | None = None,
+    default_provider: str | None = None,
+    default_model: str | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
         executor=executor,
         engine=engine,
         secret_key_path=secret_key_path,
+        default_provider=default_provider,
+        default_model=default_model,
     )

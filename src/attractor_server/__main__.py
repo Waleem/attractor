@@ -89,9 +89,15 @@ def main() -> None:
                 provider_names=("anthropic", "openai", "gemini"),
             )
 
+        runtime_default_provider = (
+            args.provider or os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip() or None
+        )
+        runtime_default_model = (
+            args.model or os.environ.get("ATTRACTOR_DEFAULT_MODEL", "").strip() or None
+        )
         codergen_backend = build_platform_codergen_backend(
-            default_provider=args.provider,
-            default_model=args.model,
+            default_provider=runtime_default_provider,
+            default_model=runtime_default_model,
             provider_api_keys=asyncio.run(load_provider_api_keys()),
         )
         executor = DurableRunExecutor(
@@ -104,6 +110,8 @@ def main() -> None:
             session_factory=session_factory,
             executor=executor,
             engine=engine,
+            default_provider=runtime_default_provider,
+            default_model=runtime_default_model,
         )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")
