@@ -10,6 +10,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from attractor_platform.git import GitResult, GitRunner
 from attractor_platform.storage.models import RunStatus
 from attractor_server.platform_app import create_platform_app
 
@@ -259,6 +260,28 @@ class _Executor:
 class _Harness:
     client: httpx.AsyncClient
     repository: _Repository
+    executor: _Executor
+
+
+class _RecordingGitRunner(GitRunner):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(self, repo_path: str | Path, *args: str) -> GitResult:
+        self.calls.append(args)
+        if args == ("rev-parse", "HEAD"):
+            return GitResult(stdout="head-commit", stderr="")
+        if args == ("rev-parse", "run-branch"):
+            return GitResult(stdout="head-commit", stderr="")
+        if args[:3] == ("diff", "--name-only", "--find-renames"):
+            return GitResult(stdout="alpha.txt\nbeta.txt\ngamma.txt", stderr="")
+        if args[:3] == ("diff", "--name-status", "--find-renames"):
+            path = args[-1]
+            return GitResult(stdout=f"A\t{path}", stderr="")
+        if args[:3] == ("diff", "--numstat", "--find-renames"):
+            path = args[-1]
+            return GitResult(stdout=f"1\t0\t{path}", stderr="")
+        raise AssertionError(f"Unexpected git args: {args!r}")
 
 
 @pytest.fixture
@@ -298,7 +321,7 @@ async def platform_harness() -> _Harness:
     app = create_platform_app(session_factory=cast(Any, None), executor=cast(Any, executor))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        yield _Harness(client=client, repository=repository)
+        yield _Harness(client=client, repository=repository, executor=executor)
 
 
 async def _register_repo(harness: _Harness, repo_path: Path) -> None:
@@ -501,6 +524,19 @@ async def test_fs_browse_rejects_missing_non_directory_and_path_escape(
     assert "not allowed" in symlink_response.json()["error"]
 
 
+async def test_fs_browse_rejects_home_when_no_repo_or_run_roots_exist(
+    platform_harness: _Harness,
+) -> None:
+    response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(Path.home())},
+    )
+
+    assert response.status_code == 403
+    assert "not allowed" in response.json()["error"]
+    assert "items" not in response.json()
+
+
 async def test_run_responses_include_run_spec_for_re_run(
     platform_harness: _Harness,
     sample_repo: Path,
@@ -569,6 +605,7 @@ async def test_list_runs_filters_by_status_and_repo_id(
 async def test_get_run_diff_returns_bounded_file_metadata(
     platform_harness: _Harness,
     sample_repo: Path,
+    tmp_path: Path,
 ) -> None:
     await _register_repo(platform_harness, sample_repo)
     create_response = await platform_harness.client.post(
@@ -578,11 +615,18 @@ async def test_get_run_diff_returns_bounded_file_metadata(
     assert create_response.status_code == 201
     run_id = create_response.json()["id"]
     source_commit = platform_harness.repository.runs[run_id].source_commit
-    (sample_repo / "generated.txt").write_text("new line\n", encoding="utf-8")
-    head_commit = _git_commit(sample_repo, "generated")
+    worktree_path = tmp_path / "run-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "run-branch", str(worktree_path), source_commit],
+        cwd=sample_repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    (worktree_path / "generated.txt").write_text("new line\n", encoding="utf-8")
+    head_commit = _git_commit(worktree_path, "generated")
     platform_harness.repository.runs[run_id].status = RunStatus.COMPLETED.value
-    platform_harness.repository.runs[run_id].worktree_path = str(sample_repo)
-    platform_harness.repository.runs[run_id].managed_branch = "master"
+    platform_harness.repository.runs[run_id].worktree_path = str(worktree_path)
+    platform_harness.repository.runs[run_id].managed_branch = "run-branch"
 
     response = await platform_harness.client.get(f"/api/runs/{run_id}/diff")
 
@@ -601,3 +645,71 @@ async def test_get_run_diff_returns_bounded_file_metadata(
             }
         ],
     }
+
+
+async def test_get_run_diff_rejects_run_without_owned_worktree(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    create_response = await platform_harness.client.post(
+        "/api/runs",
+        json={"repo_path": str(sample_repo), "workflow_name": "release", "actor_label": "alice"},
+    )
+    assert create_response.status_code == 201
+    run_id = create_response.json()["id"]
+    (sample_repo / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+    _git_commit(sample_repo, "unrelated repo advance")
+    platform_harness.repository.runs[run_id].status = RunStatus.FAILED.value
+
+    response = await platform_harness.client.get(f"/api/runs/{run_id}/diff")
+
+    assert response.status_code == 409
+    assert "worktree" in response.json()["error"]
+
+
+async def test_get_run_diff_limits_git_diff_work_to_requested_files(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    create_response = await platform_harness.client.post(
+        "/api/runs",
+        json={"repo_path": str(sample_repo), "workflow_name": "release", "actor_label": "alice"},
+    )
+    assert create_response.status_code == 201
+    run_id = create_response.json()["id"]
+    run = platform_harness.repository.runs[run_id]
+    run.status = RunStatus.COMPLETED.value
+    fake_worktree = sample_repo / "run-owned-worktree"
+    fake_worktree.mkdir()
+    run.worktree_path = str(fake_worktree)
+    run.managed_branch = "run-branch"
+    git = _RecordingGitRunner()
+    platform_harness.executor.git = git
+
+    response = await platform_harness.client.get(
+        f"/api/runs/{run_id}/diff",
+        params={"limit": "1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["truncated"] is True
+    assert [file["path"] for file in response.json()["files"]] == ["alpha.txt"]
+    assert (
+        "diff",
+        "--name-only",
+        "--find-renames",
+        run.source_commit,
+        "head-commit",
+        "--",
+    ) in git.calls
+    assert not any(
+        call[:3] == ("diff", "--name-status", "--find-renames") and call[-1] == "--"
+        for call in git.calls
+    )
+    assert not any(
+        call[:3] == ("diff", "--numstat", "--find-renames") and call[-1] == "--"
+        for call in git.calls
+    )
+    assert sum(1 for call in git.calls if call[-1] in {"alpha.txt", "beta.txt"}) == 2

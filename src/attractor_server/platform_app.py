@@ -637,9 +637,6 @@ async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
         if isinstance(worktree_path, str) and worktree_path:
             roots.append(Path(worktree_path).expanduser().resolve())
 
-    if not roots:
-        roots.extend([Path.cwd().resolve(), Path.home().resolve()])
-
     unique_roots: list[Path] = []
     seen: set[str] = set()
     for root in roots:
@@ -1276,6 +1273,11 @@ def _parse_diff_numstat(output: str, statuses: dict[str, str]) -> list[dict[str,
     return files
 
 
+def _parse_diff_paths(output: str, limit: int) -> tuple[list[str], bool]:
+    paths = [line for line in output.splitlines() if line]
+    return paths[:limit], len(paths) > limit
+
+
 async def get_run_diff(request: Request) -> JSONResponse:
     services = _services(request)
     run_id = request.path_params["run_id"]
@@ -1293,32 +1295,30 @@ async def get_run_diff(request: Request) -> JSONResponse:
 
     worktree_path = getattr(run, "worktree_path", None)
     managed_branch = getattr(run, "managed_branch", None)
-    diff_cwd = (
-        Path(worktree_path).expanduser().resolve()
-        if isinstance(worktree_path, str) and worktree_path
-        else Path(repo.local_path).expanduser().resolve()
-    )
+    if not isinstance(worktree_path, str) or not worktree_path:
+        return _json_error(f"Run {run_id} has no owned worktree for diff", 409)
+    diff_cwd = Path(worktree_path).expanduser().resolve()
+    repo_path = Path(repo.local_path).expanduser().resolve()
+    if diff_cwd == repo_path:
+        return _json_error(f"Run {run_id} worktree must not be the registered repo path", 409)
     if not diff_cwd.is_dir():
         return _json_error(f"Diff path {diff_cwd} is not available", 409)
 
     git = _executor_git_runner(services.executor)
     try:
         head_commit = git.run(diff_cwd, "rev-parse", "HEAD").stdout
-        if not worktree_path and isinstance(managed_branch, str) and managed_branch:
-            head_commit = git.run(diff_cwd, "rev-parse", managed_branch).stdout
-        status_output = git.run(
+        if isinstance(managed_branch, str) and managed_branch:
+            managed_commit = git.run(diff_cwd, "rev-parse", managed_branch).stdout
+            if managed_commit != head_commit:
+                return _json_error(
+                    f"Run {run_id} worktree HEAD does not match managed branch",
+                    409,
+                )
+        limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+        diff_paths_output = git.run(
             diff_cwd,
             "diff",
-            "--name-status",
-            "--find-renames",
-            base_commit,
-            head_commit,
-            "--",
-        ).stdout
-        numstat_output = git.run(
-            diff_cwd,
-            "diff",
-            "--numstat",
+            "--name-only",
             "--find-renames",
             base_commit,
             head_commit,
@@ -1327,10 +1327,34 @@ async def get_run_diff(request: Request) -> JSONResponse:
     except RuntimeError as exc:
         return _json_error(f"Diff could not be computed: {exc}", 409)
 
-    statuses = _parse_diff_name_status(status_output)
-    files = _parse_diff_numstat(numstat_output, statuses)
-    limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
-    truncated = len(files) > limit
+    paths, truncated = _parse_diff_paths(diff_paths_output, limit)
+    files: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            status_output = git.run(
+                diff_cwd,
+                "diff",
+                "--name-status",
+                "--find-renames",
+                base_commit,
+                head_commit,
+                "--",
+                path,
+            ).stdout
+            numstat_output = git.run(
+                diff_cwd,
+                "diff",
+                "--numstat",
+                "--find-renames",
+                base_commit,
+                head_commit,
+                "--",
+                path,
+            ).stdout
+        except RuntimeError as exc:
+            return _json_error(f"Diff could not be computed for {path}: {exc}", 409)
+        statuses = _parse_diff_name_status(status_output)
+        files.extend(_parse_diff_numstat(numstat_output, statuses))
     return JSONResponse(
         {
             "run_id": run_id,

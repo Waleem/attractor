@@ -7,10 +7,10 @@ import { EmptyState, ErrorBanner, Field, Loading, PageHeader, Panel, StatusBadge
 export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
   const reposState = useAsync(listRepos, []);
   const [name, setName] = useState("");
-  const [localPath, setLocalPath] = useState("~");
+  const [localPath, setLocalPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [browserPath, setBrowserPath] = useState("~");
+  const [browserPath, setBrowserPath] = useState("");
   const [browserEntries, setBrowserEntries] = useState<FsBrowseEntry[]>([]);
   const [browserTruncated, setBrowserTruncated] = useState(false);
   const [browserLoading, setBrowserLoading] = useState(false);
@@ -70,7 +70,11 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
       <Panel title="Folder Browser">
         <div className="browser-controls">
           <Field label="Path">
-            <input value={localPath} onChange={(event) => setLocalPath(event.target.value)} />
+            <input
+              value={localPath}
+              onChange={(event) => setLocalPath(event.target.value)}
+              placeholder="Enter a registered repo path"
+            />
           </Field>
           <button type="button" className="secondary" onClick={() => browse(localPath)} disabled={browserLoading}>
             {browserLoading ? "Browsing" : "Browse"}
