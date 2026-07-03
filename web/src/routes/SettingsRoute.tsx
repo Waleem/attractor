@@ -288,6 +288,7 @@ function ModelsSettings({
               <thead>
                 <tr>
                   <th>Provider</th>
+                  <th>Configured</th>
                   <th>Model</th>
                   <th>Name</th>
                   <th>Badges</th>
@@ -300,6 +301,15 @@ function ModelsSettings({
                 {filteredCatalog.map((model) => (
                   <tr key={modelKey(model.provider, model.model)}>
                     <td>{model.provider}</td>
+                    <td>
+                      <StatusBadge
+                        status={
+                          settings.models.provider_credentials[model.provider]?.configured
+                            ? "configured"
+                            : "unconfigured"
+                        }
+                      />
+                    </td>
                     <td className="mono">{model.model}</td>
                     <td>{model.display_name}</td>
                     <td>
