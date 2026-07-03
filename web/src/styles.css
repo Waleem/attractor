@@ -1280,12 +1280,50 @@ td {
 }
 
 .models-catalog-scroll .models-catalog-table {
-  min-width: 980px;
+  min-width: 1120px;
+  table-layout: fixed;
+}
+
+.models-catalog-table th:nth-child(1),
+.models-catalog-table td:nth-child(1) {
+  width: 10%;
 }
 
 .models-catalog-table th:nth-child(2),
 .models-catalog-table td:nth-child(2) {
-  min-width: 220px;
+  width: 11%;
+}
+
+.models-catalog-table th:nth-child(3),
+.models-catalog-table td:nth-child(3) {
+  width: 17%;
+}
+
+.models-catalog-table th:nth-child(4),
+.models-catalog-table td:nth-child(4) {
+  width: 16%;
+}
+
+.models-catalog-table th:nth-child(5),
+.models-catalog-table td:nth-child(5) {
+  width: 9%;
+}
+
+.models-catalog-table th:nth-child(6),
+.models-catalog-table td:nth-child(6) {
+  width: 12%;
+}
+
+.models-catalog-table th:nth-child(7),
+.models-catalog-table td:nth-child(7) {
+  width: 13%;
+}
+
+.models-catalog-table th:nth-child(8),
+.models-catalog-table td:nth-child(8) {
+  width: 12%;
+  min-width: 132px;
+  padding-right: var(--space-2);
 }
 
 .badge-row {
