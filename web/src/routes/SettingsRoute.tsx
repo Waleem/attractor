@@ -462,71 +462,75 @@ function SecretsEditor({
   return (
     <SectionCard title="Edit Secrets">
       <ErrorBanner message={error} />
-      <div className="provider-card-grid">
-        {credentials.map((credential) => {
-          const hasVaultSecret = credential.updated_at !== null;
-          const saveLabel = `Save ${credential.name} secret`;
-          const clearLabel = hasVaultSecret
-            ? `Clear ${credential.name} vault secret`
-            : `${credential.name} has no vault secret to clear`;
-          return (
-            <article className="provider-card" key={credential.name}>
-              <div className="provider-card-heading">
-                <div>
-                  <h3>{credential.name}</h3>
-                  <p>{credential.source === "none" ? credential.env_var : credential.source}</p>
+      {credentials.length === 0 ? (
+        <EmptyState>No provider credentials are available</EmptyState>
+      ) : (
+        <div className="provider-card-grid">
+          {credentials.map((credential) => {
+            const hasVaultSecret = credential.updated_at !== null;
+            const saveLabel = `Save ${credential.name} secret`;
+            const clearLabel = hasVaultSecret
+              ? `Clear ${credential.name} vault secret`
+              : `${credential.name} has no vault secret to clear`;
+            return (
+              <article className="provider-card" key={credential.name}>
+                <div className="provider-card-heading">
+                  <div>
+                    <h3>{credential.name}</h3>
+                    <p>{credential.source === "none" ? credential.env_var : credential.source}</p>
+                  </div>
+                  <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
                 </div>
-                <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
-              </div>
-              <dl className="provider-card-meta">
-                <div className="key-value">
-                  <dt>Source</dt>
-                  <dd>{formatCredentialSource(credential.source)}</dd>
+                <dl className="provider-card-meta">
+                  <div className="key-value">
+                    <dt>Source</dt>
+                    <dd>{formatCredentialSource(credential.source)}</dd>
+                  </div>
+                  <div className="key-value">
+                    <dt>Vault updated</dt>
+                    <dd>{formatDate(credential.updated_at)}</dd>
+                  </div>
+                </dl>
+                <Field label="Secret">
+                  <input
+                    aria-label={`${credential.name} secret`}
+                    type="password"
+                    value={draftSecrets[credential.name] ?? ""}
+                    placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
+                    onChange={(event) =>
+                      setDraftSecrets((current) => ({
+                        ...current,
+                        [credential.name]: event.target.value
+                      }))
+                    }
+                  />
+                </Field>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    aria-label={saveLabel}
+                    disabled={saving === credential.name}
+                    title={saveLabel}
+                    onClick={() => void saveSecret(credential.name)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    aria-label={clearLabel}
+                    disabled={saving === credential.name || !hasVaultSecret}
+                    title={clearLabel}
+                    onClick={() => void clearSecret(credential.name)}
+                  >
+                    {hasVaultSecret ? "Clear vault" : "Env only"}
+                  </button>
                 </div>
-                <div className="key-value">
-                  <dt>Vault updated</dt>
-                  <dd>{formatDate(credential.updated_at)}</dd>
-                </div>
-              </dl>
-              <Field label="Secret">
-                <input
-                  aria-label={`${credential.name} secret`}
-                  type="password"
-                  value={draftSecrets[credential.name] ?? ""}
-                  placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
-                  onChange={(event) =>
-                    setDraftSecrets((current) => ({
-                      ...current,
-                      [credential.name]: event.target.value
-                    }))
-                  }
-                />
-              </Field>
-              <div className="button-row">
-                <button
-                  type="button"
-                  aria-label={saveLabel}
-                  disabled={saving === credential.name}
-                  title={saveLabel}
-                  onClick={() => void saveSecret(credential.name)}
-                >
-                  Save
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  aria-label={clearLabel}
-                  disabled={saving === credential.name || !hasVaultSecret}
-                  title={clearLabel}
-                  onClick={() => void clearSecret(credential.name)}
-                >
-                  {hasVaultSecret ? "Clear vault" : "Env only"}
-                </button>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
     </SectionCard>
   );
 }
