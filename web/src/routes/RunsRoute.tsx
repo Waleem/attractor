@@ -582,10 +582,10 @@ function EmptyRunState({ onLaunch }: { onLaunch: () => void }) {
   return (
     <EmptyState>
       <div className="empty-run-state">
-        <strong>No runs match this view.</strong>
-        <span>Launch a workflow or adjust the filters.</span>
+        <strong>Launch your first run</strong>
+        <span>No runs match this view.</span>
         <button type="button" onClick={onLaunch}>
-          Launch
+          Launch your first run
         </button>
       </div>
     </EmptyState>
