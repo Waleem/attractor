@@ -22,7 +22,13 @@ import {
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
-import { canCancelRunStatus, eventFromSseMessage, mergeRunEvents, runWorkflowName } from "../runViewModel";
+import {
+  canCancelRunStatus,
+  eventFromSseMessage,
+  isWorkspaceCleanedDiffError,
+  mergeRunEvents,
+  runWorkflowName
+} from "../runViewModel";
 import {
   CopyButton,
   CopyableTruncatedValue,
@@ -393,7 +399,7 @@ function BranchDiffPanel({
   error: string | null;
 }) {
   if (isWorkspaceCleanedDiffError(error)) {
-    return <EmptyState>diff unavailable (workspace cleaned up)</EmptyState>;
+    return <EmptyState>diff unavailable — workspace was cleaned up</EmptyState>;
   }
   return (
     <>
@@ -689,11 +695,4 @@ function isTerminal(status: string): boolean {
 
 function canCancel(status: string): boolean {
   return canCancelRunStatus(status);
-}
-
-function isWorkspaceCleanedDiffError(message: string | null): boolean {
-  if (!message) {
-    return false;
-  }
-  return /(worktree|workspace).*(cleaned|gone|missing|not found|removed|unavailable)|no such file|does not exist/i.test(message);
 }

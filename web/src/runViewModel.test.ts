@@ -3,6 +3,7 @@ import {
   diffSummaryLabel,
   eventFromSseMessage,
   formatCompactRelativeTime,
+  isWorkspaceCleanedDiffError,
   mergeRunEvents,
   runLane,
   runListAction,
@@ -148,6 +149,16 @@ assertEqual(
   diffSummaryLabel({ status: "unavailable" }),
   "Diff unavailable",
   "unavailable diff state is explicit"
+);
+assertEqual(
+  isWorkspaceCleanedDiffError("Run does not have an owned worktree for diff"),
+  true,
+  "missing owned worktree errors are classified as cleaned workspace diff errors"
+);
+assertEqual(
+  isWorkspaceCleanedDiffError("git diff failed because refs diverged"),
+  false,
+  "non-workspace diff errors still surface as errors"
 );
 
 assertEqual(
