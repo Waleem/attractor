@@ -2,9 +2,14 @@ import { useMemo, useState } from "react";
 import {
   deleteSettingsSecret,
   deleteSettingsVariable,
+  getModelCatalog,
   getSettings,
   putSettingsSecret,
   putSettingsVariable,
+  testModels,
+  type ModelCatalogRow,
+  type ModelTestResponse,
+  type ModelTestResult,
   type SettingsOverview
 } from "../api";
 import { useAsync } from "../components/useAsync";
@@ -98,13 +103,27 @@ function ModelsSettings({
   settings: SettingsOverview;
   refresh: () => void;
 }) {
+  const catalogState = useAsync(getModelCatalog, []);
   const [draftSecrets, setDraftSecrets] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const credentials = useMemo(
     () => Object.values(settings.models.provider_credentials).sort((a, b) => a.name.localeCompare(b.name)),
     [settings.models.provider_credentials]
   );
+  const configuredCount = credentials.filter((credential) => credential.configured).length;
+  const catalog = catalogState.data ?? [];
+  const filteredCatalog = useMemo(() => filterModelCatalog(catalog, query), [catalog, query]);
+  const testResultsByModel = useMemo(() => {
+    const results = new Map<string, ModelTestResult>();
+    for (const item of testResult?.items ?? []) {
+      results.set(modelKey(item.provider, item.model), item);
+    }
+    return results;
+  }, [testResult]);
 
   async function saveSecret(name: string) {
     const value = draftSecrets[name] ?? "";
@@ -139,84 +158,268 @@ function ModelsSettings({
     }
   }
 
+  async function runModelTests() {
+    setTesting(true);
+    setError(null);
+    try {
+      setTestResult(await testModels());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setTesting(false);
+    }
+  }
+
   return (
-    <>
-      <Panel title="Defaults">
-        <dl className="kv-grid">
+    <div className="models-settings">
+      <section className="models-hero">
+        <div className="models-hero-copy">
+          <p className="eyebrow">Models</p>
+          <h2>Provider readiness and model catalog</h2>
+          <p>
+            Configure provider credentials, inspect default and small model coverage, and run
+            lightweight connectivity checks from one place.
+          </p>
+        </div>
+        <dl className="models-hero-stats">
           <KeyValue label="Default provider" value={settings.models.default_provider} />
-          <KeyValue label="Default model" value={settings.models.default_model} />
+          <KeyValue label="Default model" value={<span className="mono">{settings.models.default_model}</span>} />
+          <KeyValue label="Providers configured" value={`${configuredCount}/${credentials.length}`} />
+          <KeyValue label="Catalog models" value={catalog.length || "Loading"} />
         </dl>
-      </Panel>
+      </section>
+
+      <ErrorBanner message={error || catalogState.error} />
+
       <Panel title="Provider Credentials">
-        <ErrorBanner message={error} />
-        <table>
-          <thead>
-            <tr>
-              <th>Provider</th>
-              <th>Status</th>
-              <th>Source</th>
-              <th>Updated</th>
-              <th>Secret</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {credentials.map((credential) => {
-              const hasVaultSecret = credential.updated_at !== null;
-              return (
-                <tr key={credential.name}>
-                  <td>{credential.name}</td>
+        <div className="provider-card-grid">
+          {credentials.map((credential) => {
+            const hasVaultSecret = credential.updated_at !== null;
+            return (
+              <article className="provider-card" key={credential.name}>
+                <div className="provider-card-heading">
+                  <div>
+                    <h3>{credential.name}</h3>
+                    <p>{credential.source === "none" ? credential.env_var : credential.source}</p>
+                  </div>
+                  <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
+                </div>
+                <dl className="provider-card-meta">
+                  <KeyValue label="Source" value={formatCredentialSource(credential.source)} />
+                  <KeyValue label="Vault updated" value={formatDate(credential.updated_at)} />
+                </dl>
+                <Field label="Secret">
+                  <input
+                    aria-label={`${credential.name} secret`}
+                    type="password"
+                    value={draftSecrets[credential.name] ?? ""}
+                    placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
+                    onChange={(event) =>
+                      setDraftSecrets((current) => ({
+                        ...current,
+                        [credential.name]: event.target.value
+                      }))
+                    }
+                  />
+                </Field>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    disabled={saving === credential.name}
+                    onClick={() => void saveSecret(credential.name)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={saving === credential.name || !hasVaultSecret}
+                    title={
+                      hasVaultSecret
+                        ? "Clear saved vault credential"
+                        : "Environment credential cannot be cleared here"
+                    }
+                    onClick={() => void clearSecret(credential.name)}
+                  >
+                    {hasVaultSecret ? "Clear vault" : "Env only"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </Panel>
+
+      <Panel
+        title="Catalog"
+        actions={
+          <div className="models-test-actions">
+            {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
+            <button type="button" disabled={testing || catalogState.loading} onClick={() => void runModelTests()}>
+              {testing ? "Testing" : "Test models"}
+            </button>
+          </div>
+        }
+      >
+        <div className="models-catalog-toolbar">
+          <Field label="Search">
+            <input
+              type="search"
+              placeholder="Provider, model, or display name"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </Field>
+          <span className="subtle">
+            {filteredCatalog.length} of {catalog.length || 0} models
+          </span>
+        </div>
+        {catalogState.loading ? <Loading label="Loading model catalog" /> : null}
+        {!catalogState.loading && filteredCatalog.length === 0 ? (
+          <EmptyState>No models match this search</EmptyState>
+        ) : (
+          <table className="models-catalog-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Name</th>
+                <th>Badges</th>
+                <th>Context</th>
+                <th>Speed / capabilities</th>
+                <th>Test</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCatalog.map((model) => (
+                <tr key={modelKey(model.provider, model.model)}>
+                  <td>{model.provider}</td>
+                  <td className="mono">{model.model}</td>
+                  <td>{model.display_name}</td>
                   <td>
-                    <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
+                    <ModelBadges model={model} />
                   </td>
-                  <td>{credential.source}</td>
-                  <td>{formatDate(credential.updated_at)}</td>
                   <td>
-                    <input
-                      aria-label={`${credential.name} secret`}
-                      type="password"
-                      value={draftSecrets[credential.name] ?? ""}
-                      placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
-                      onChange={(event) =>
-                        setDraftSecrets((current) => ({
-                          ...current,
-                          [credential.name]: event.target.value
-                        }))
-                      }
-                    />
+                    <span className="mono">{formatTokens(model.context_window)}</span>
+                    {model.max_output ? (
+                      <span className="subtle"> / {formatTokens(model.max_output)} out</span>
+                    ) : null}
                   </td>
                   <td>
-                    <div className="button-row">
-                      <button
-                        type="button"
-                        disabled={saving === credential.name}
-                        onClick={() => void saveSecret(credential.name)}
-                      >
-                        Save
-                      </button>
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={saving === credential.name || !hasVaultSecret}
-                        title={
-                          hasVaultSecret
-                            ? "Clear saved vault credential"
-                            : "Environment credential cannot be cleared here"
-                        }
-                        onClick={() => void clearSecret(credential.name)}
-                      >
-                        {hasVaultSecret ? "Clear vault" : "Env only"}
-                      </button>
-                    </div>
+                    <CapabilityList model={model} />
+                  </td>
+                  <td>
+                    <ModelTestStatus result={testResultsByModel.get(modelKey(model.provider, model.model))} />
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Panel>
-    </>
+    </div>
   );
+}
+
+function ModelBadges({ model }: { model: ModelCatalogRow }) {
+  const badges = [
+    model.is_default ? "default" : null,
+    model.is_small ? "small" : null
+  ].filter(Boolean);
+  if (badges.length === 0) {
+    return <span className="subtle">None</span>;
+  }
+  return (
+    <div className="badge-row">
+      {badges.map((badge) => (
+        <span className="badge" key={badge}>
+          {badge}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function CapabilityList({ model }: { model: ModelCatalogRow }) {
+  const capabilities = [
+    model.is_small ? "fast" : "balanced",
+    model.supports_tools ? "tools" : null,
+    model.supports_vision ? "vision" : null,
+    model.supports_reasoning ? "reasoning" : null
+  ].filter(Boolean);
+  return <span>{capabilities.join(" · ")}</span>;
+}
+
+function ModelTestStatus({ result }: { result: ModelTestResult | undefined }) {
+  if (!result) {
+    return <span className="status status-neutral"><span className="status-dot" />Not tested</span>;
+  }
+  if (isSkippedModelTest(result)) {
+    return <span className="status status-neutral"><span className="status-dot" />Skipped</span>;
+  }
+  if (result.ok) {
+    return (
+      <span className="status status-good" title={formatLatency(result.latency_ms)}>
+        <span className="status-dot" />
+        Pass
+      </span>
+    );
+  }
+  return (
+    <span className="status status-bad" title={result.error ?? "Model test failed"}>
+      <span className="status-dot" />
+      Fail
+    </span>
+  );
+}
+
+function filterModelCatalog(catalog: ModelCatalogRow[], query: string): ModelCatalogRow[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return catalog;
+  }
+  return catalog.filter((model) =>
+    [model.provider, model.model, model.display_name].some((value) =>
+      value.toLowerCase().includes(normalized)
+    )
+  );
+}
+
+function modelKey(provider: string, model: string): string {
+  return `${provider}:${model}`;
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) {
+    return `${value / 1_000_000}M`;
+  }
+  if (value >= 1_000) {
+    return `${value / 1_000}K`;
+  }
+  return String(value);
+}
+
+function formatLatency(value: number | null): string {
+  return value === null ? "Latency unavailable" : `${Math.round(value)} ms`;
+}
+
+function formatCredentialSource(source: string): string {
+  if (source === "none") {
+    return "Not configured";
+  }
+  return source;
+}
+
+function isSkippedModelTest(result: ModelTestResult): boolean {
+  return !result.ok && result.error === "Missing provider API key";
+}
+
+function formatModelTestSummary(result: ModelTestResponse): string {
+  const parts = [`${result.summary.ok} ok`, `${result.summary.failed} failed`];
+  if (result.summary.skipped > 0) {
+    parts.push(`${result.summary.skipped} skipped`);
+  }
+  return parts.join(" · ");
 }
 
 function VariablesSettings({
