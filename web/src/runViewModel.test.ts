@@ -156,6 +156,11 @@ assertEqual(
   "missing owned worktree errors are classified as cleaned workspace diff errors"
 );
 assertEqual(
+  isWorkspaceCleanedDiffError("Diff path /some/.attractor-worktrees/run_x is not available"),
+  true,
+  "unavailable worktree diff paths are classified as cleaned workspace diff errors"
+);
+assertEqual(
   isWorkspaceCleanedDiffError("git diff failed because refs diverged"),
   false,
   "non-workspace diff errors still surface as errors"

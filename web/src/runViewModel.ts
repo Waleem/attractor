@@ -162,7 +162,7 @@ export function isWorkspaceCleanedDiffError(message: string | null): boolean {
   if (!message) {
     return false;
   }
-  return /(owned worktree|worktree|workspace).*(cleaned|gone|missing|not found|removed|unavailable|for diff)|no such file|does not exist/i.test(
+  return /(owned worktree|worktree|workspace).*(cleaned|gone|missing|not found|removed|unavailable|not available|for diff)|no such file|does not exist/i.test(
     message
   );
 }
