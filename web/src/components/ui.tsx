@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { RunStatus } from "../api";
 
 export function PageHeader({
@@ -60,13 +60,11 @@ export function Stat({
 
 export function StatusBadge({ status }: { status: RunStatus | string }) {
   const semanticStatus = statusSemantic(status);
+  const label = formatStatus(status);
   return (
-    <span className={`status status-${semanticStatus}`}>
+    <span className={`status status-${semanticStatus}`} aria-label={label}>
       <StatusDot status={status} />
-      <span className="status-icon" aria-hidden="true">
-        {statusIcon(semanticStatus)}
-      </span>
-      <span>{formatStatus(status)}</span>
+      <span>{label}</span>
     </span>
   );
 }
@@ -76,16 +74,43 @@ export function StatusDot({ status }: { status: RunStatus | string }) {
 }
 
 export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const feedback =
+    state === "copied" ? "Copied to clipboard" : state === "failed" ? "Copy failed" : "";
+  const buttonLabel = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label;
+
+  useEffect(() => {
+    if (state === "idle") {
+      return;
+    }
+    const timer = window.setTimeout(() => setState("idle"), 1800);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  async function copyValue() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+  }
+
   return (
-    <button
-      type="button"
-      className="icon-button secondary"
-      title={label}
-      aria-label={label}
-      onClick={() => void navigator.clipboard.writeText(value)}
-    >
-      Copy
-    </button>
+    <>
+      <button
+        type="button"
+        className="icon-button secondary"
+        title={buttonLabel}
+        aria-label={buttonLabel}
+        onClick={() => void copyValue()}
+      >
+        Copy
+      </button>
+      <span className="sr-only" aria-live="polite">
+        {feedback}
+      </span>
+    </>
   );
 }
 
@@ -201,25 +226,6 @@ function statusSemantic(status: string): "queued" | "running" | "waiting" | "com
     return "failed";
   }
   return "neutral";
-}
-
-function statusIcon(status: ReturnType<typeof statusSemantic>): string {
-  if (status === "queued") {
-    return "Queue";
-  }
-  if (status === "running") {
-    return "Run";
-  }
-  if (status === "waiting") {
-    return "Wait";
-  }
-  if (status === "completed") {
-    return "Done";
-  }
-  if (status === "failed") {
-    return "Fail";
-  }
-  return "Info";
 }
 
 function formatStatus(status: string): string {

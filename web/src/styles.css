@@ -43,6 +43,21 @@
   --status-waiting: #b45309;
   --status-completed: #15803d;
   --status-failed: #b91c1c;
+  --status-queued-fg: #111827;
+  --status-queued-badge-bg: #f3f4f6;
+  --status-queued-border: #9ca3af;
+  --status-running-fg: #1e3a8a;
+  --status-running-badge-bg: #dbeafe;
+  --status-running-border: #60a5fa;
+  --status-waiting-fg: #78350f;
+  --status-waiting-badge-bg: #fef3c7;
+  --status-waiting-border: #f59e0b;
+  --status-completed-fg: #14532d;
+  --status-completed-badge-bg: #dcfce7;
+  --status-completed-border: #22c55e;
+  --status-failed-fg: #7f1d1d;
+  --status-failed-badge-bg: #fee2e2;
+  --status-failed-border: #ef4444;
   --status-queued-bg: color-mix(in srgb, var(--status-queued) 14%, var(--bg-card));
   --status-running-bg: color-mix(in srgb, var(--status-running) 14%, var(--bg-card));
   --status-waiting-bg: color-mix(in srgb, var(--status-waiting) 16%, var(--bg-card));
@@ -79,6 +94,21 @@
     --primary: #5f91d6;
     --primary-hover: #8db4ed;
     --accent: #82c6b1;
+    --status-queued-fg: #f9fafb;
+    --status-queued-badge-bg: #374151;
+    --status-queued-border: #9ca3af;
+    --status-running-fg: #dbeafe;
+    --status-running-badge-bg: #1e3a8a;
+    --status-running-border: #93c5fd;
+    --status-waiting-fg: #fef3c7;
+    --status-waiting-badge-bg: #78350f;
+    --status-waiting-border: #fbbf24;
+    --status-completed-fg: #dcfce7;
+    --status-completed-badge-bg: #14532d;
+    --status-completed-border: #86efac;
+    --status-failed-fg: #fee2e2;
+    --status-failed-badge-bg: #7f1d1d;
+    --status-failed-border: #fca5a5;
   }
 }
 
@@ -373,36 +403,36 @@ td {
 
 .status-queued,
 .status-neutral {
-  color: var(--status-queued);
-  background: var(--status-queued-bg);
-  border-color: color-mix(in srgb, var(--status-queued) 32%, transparent);
+  color: var(--status-queued-fg);
+  background: var(--status-queued-badge-bg);
+  border-color: var(--status-queued-border);
 }
 
 .status-running {
-  color: var(--status-running);
-  background: var(--status-running-bg);
-  border-color: color-mix(in srgb, var(--status-running) 32%, transparent);
+  color: var(--status-running-fg);
+  background: var(--status-running-badge-bg);
+  border-color: var(--status-running-border);
 }
 
 .status-waiting,
 .status-warn {
-  color: var(--status-waiting);
-  background: var(--status-waiting-bg);
-  border-color: color-mix(in srgb, var(--status-waiting) 32%, transparent);
+  color: var(--status-waiting-fg);
+  background: var(--status-waiting-badge-bg);
+  border-color: var(--status-waiting-border);
 }
 
 .status-completed,
 .status-good {
-  color: var(--status-completed);
-  background: var(--status-completed-bg);
-  border-color: color-mix(in srgb, var(--status-completed) 32%, transparent);
+  color: var(--status-completed-fg);
+  background: var(--status-completed-badge-bg);
+  border-color: var(--status-completed-border);
 }
 
 .status-failed,
 .status-bad {
-  color: var(--status-failed);
-  background: var(--status-failed-bg);
-  border-color: color-mix(in srgb, var(--status-failed) 32%, transparent);
+  color: var(--status-failed-fg);
+  background: var(--status-failed-badge-bg);
+  border-color: var(--status-failed-border);
 }
 
 .icon-button {
@@ -417,6 +447,18 @@ td {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .form-grid {
