@@ -46,3 +46,4 @@ htmlcov/
 .attractor-artifacts/*
 .attractor-platform.sqlite3
 .gitignore.attractor-worktrees/
+.claude/launch.json
