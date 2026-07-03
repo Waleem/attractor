@@ -204,7 +204,7 @@ const mergedEvents = mergeRunEvents([
   {
     sequence: 43,
     event_type: "stage.completed",
-    payload: { node_id: "build", output: "saved from durable store" },
+    payload: { node_id: "build", output: "saved from durable store", commit_sha: "abc123" },
     actor_label: "durable-worker",
     created_at: "2026-07-01T10:30:00Z"
   },
@@ -220,4 +220,14 @@ assertEqual(
   mergedEvents[0]?.actor_label,
   "durable-worker",
   "durable actor_label wins when later SSE replay lacks actor_label"
+);
+assertEqual(
+  mergedEvents[0]?.payload.output,
+  "saved from durable store",
+  "durable payload output survives when later SSE replay omits output"
+);
+assertEqual(
+  mergedEvents[0]?.payload.commit_sha,
+  "abc123",
+  "durable payload commit_sha survives when later SSE replay omits commit_sha"
 );

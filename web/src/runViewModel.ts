@@ -249,9 +249,23 @@ function mergeRunEvent<T extends RunEventLike>(existing: T, incoming: T): T {
   return {
     ...existing,
     ...incoming,
+    payload: mergePayload(existing.payload, incoming.payload),
     actor_label: incoming.actor_label || existing.actor_label,
     created_at: incoming.created_at ?? existing.created_at
   };
+}
+
+function mergePayload(
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 
 function stringPayload(payload: Record<string, unknown>, key: string): string | null {
