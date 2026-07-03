@@ -390,6 +390,19 @@ if (!themedQuotedAttributeBraceDot.includes('graph [label="{quoted body brace}"]
   throw new Error("preserves quoted graph attributes containing braces");
 }
 
+const htmlStringGraphIdDot = `digraph <G{prod}> {
+  build -> deploy;
+}`;
+const themedHtmlStringGraphIdDot = buildThemedGraphDot(htmlStringGraphIdDot);
+
+if (!themedHtmlStringGraphIdDot.includes("<G{prod}> {\n  graph [bgcolor")) {
+  throw new Error("inserts graph theme after HTML-string graph IDs containing braces");
+}
+
+if (!themedHtmlStringGraphIdDot.includes("digraph <G{prod}> {")) {
+  throw new Error("preserves HTML-string graph IDs containing braces");
+}
+
 const graphviz = await Graphviz.load();
 const themedGraphSvg = graphviz.layout(graphLayoutKey(graph) ?? "", "svg", "dot");
 

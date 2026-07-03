@@ -85,6 +85,9 @@ function skipIgnoredDotRange(dot: string, startIndex: number): number {
   if (current === "\"") {
     return skipQuotedString(dot, startIndex + 1);
   }
+  if (current === "<") {
+    return skipHtmlString(dot, startIndex + 1);
+  }
   return startIndex;
 }
 
@@ -106,6 +109,28 @@ function skipQuotedString(dot: string, startIndex: number): number {
     }
     if (dot[index] === "\"") {
       return index + 1;
+    }
+  }
+
+  return dot.length;
+}
+
+function skipHtmlString(dot: string, startIndex: number): number {
+  let depth = 1;
+  for (let index = startIndex; index < dot.length; index += 1) {
+    if (dot[index] === "\"") {
+      index = skipQuotedString(dot, index + 1) - 1;
+      continue;
+    }
+    if (dot[index] === "<") {
+      depth += 1;
+      continue;
+    }
+    if (dot[index] === ">") {
+      depth -= 1;
+      if (depth === 0) {
+        return index + 1;
+      }
     }
   }
 
