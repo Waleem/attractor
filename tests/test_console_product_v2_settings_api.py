@@ -110,3 +110,21 @@ async def test_settings_reports_configured_max_concurrent_runs(tmp_path: Path) -
     finally:
         await client.aclose()
         await engine.dispose()
+
+
+async def test_system_capacity_reports_configured_max_concurrent_runs(
+    tmp_path: Path,
+) -> None:
+    client, engine = await _client_with_max_concurrent(tmp_path, 7)
+    try:
+        response = await client.get("/api/system/capacity")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "active_runs": 0,
+            "max_concurrent_runs": 7,
+            "available_slots": 7,
+        }
+    finally:
+        await client.aclose()
+        await engine.dispose()

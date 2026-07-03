@@ -804,6 +804,9 @@ def _build_settings_pages(
 ) -> list[dict[str, Any]]:
     worktree_root = _executor_root(services.executor, ("_worktree_manager", "_root"))
     artifact_root = _executor_root(services.executor, ("_artifact_root",))
+    worktree_bytes = _directory_size_bytes(worktree_root) or 0
+    artifact_bytes = _directory_size_bytes(artifact_root) or 0
+    managed_bytes = worktree_bytes + artifact_bytes
     uptime_seconds = int((dt.datetime.now(dt.UTC) - services.started_at).total_seconds())
     configured_providers = sum(
         1 for credential in provider_credentials.values() if credential["configured"]
@@ -1145,10 +1148,7 @@ def _build_settings_pages(
                         _settings_row(
                             "Managed bytes",
                             "Current disk usage under managed worktree and artifact roots.",
-                            _format_bytes(
-                                (_directory_size_bytes(worktree_root) or 0)
-                                + (_directory_size_bytes(artifact_root) or 0)
-                            ),
+                            _format_bytes(managed_bytes),
                             "read-only",
                         ),
                         _settings_row(
@@ -1184,10 +1184,7 @@ def _build_settings_pages(
                         _settings_row(
                             "Disk",
                             "Managed storage bytes are sampled from configured roots.",
-                            _format_bytes(
-                                (_directory_size_bytes(worktree_root) or 0)
-                                + (_directory_size_bytes(artifact_root) or 0)
-                            ),
+                            _format_bytes(managed_bytes),
                             "read-only",
                         ),
                         _settings_row(
@@ -2884,7 +2881,9 @@ async def system_capacity(request: Request) -> JSONResponse:
     services = _services(request)
     active_tasks = getattr(services.executor, "active_tasks", {})
     active_count = sum(1 for task in active_tasks.values() if not task.done())
-    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    max_concurrent = services.max_concurrent_runs
+    if max_concurrent is None:
+        max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
     return JSONResponse(
         {
             "active_runs": active_count,
