@@ -32,7 +32,13 @@ export function shortRunId(runId: string | null | undefined): string {
 
 export function runWorkflowName(run: Pick<RunLike, "workflow_id" | "run_spec">): string {
   const workflowName = run.run_spec?.workflow_name ?? run.run_spec?.workflow;
-  return workflowName || run.workflow_id || "Workflow";
+  if (workflowName) {
+    return workflowName;
+  }
+  if (run.workflow_id && !isHashLikeWorkflowId(run.workflow_id)) {
+    return run.workflow_id;
+  }
+  return "Workflow run";
 }
 
 export function runMetaLine(run: RunLike): string {
@@ -88,4 +94,8 @@ function shortSha(value: string | null | undefined): string {
     return "None";
   }
   return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function isHashLikeWorkflowId(value: string): boolean {
+  return /^(?:wf_)?[a-f0-9]{32,64}$/i.test(value);
 }

@@ -22,6 +22,7 @@ import {
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
+import { runWorkflowName } from "../runViewModel";
 import {
   CopyButton,
   CopyableTruncatedValue,
@@ -127,7 +128,7 @@ export function RunDetailRoute({ runId }: { runId: string }) {
   return (
     <>
       <PageHeader
-        title={run ? runWorkflowName(run) : "Run"}
+        title={run ? runWorkflowName(run) : "Run detail"}
         eyebrow="Run Detail"
         subline={run ? <RunHeaderSubline run={run} /> : null}
         actions={
@@ -200,6 +201,7 @@ function RunHeaderSubline({
   run: {
     id: string;
     source_branch?: string;
+    status: string;
     managed_branch: string | null;
     created_at: string | null;
     started_at: string | null;
@@ -208,6 +210,7 @@ function RunHeaderSubline({
 }) {
   return (
     <div className="run-header-subline">
+      <StatusBadge status={run.status} />
       <span className="copyable-value">
         <span className="mono">{shortSha(run.id)}</span>
         <CopyButton value={run.id} label="Copy run id" />
@@ -219,24 +222,6 @@ function RunHeaderSubline({
       <span>{formatDuration(run.started_at ?? run.created_at, run.completed_at)}</span>
     </div>
   );
-}
-
-function runWorkflowName(run: {
-  id: string;
-  workflow_id: string;
-  run_spec: Parameters<typeof runSpecToLaunchInput>[0];
-}): string {
-  const spec = run.run_spec;
-  const workflowName =
-    typeof spec?.workflow_name === "string"
-      ? spec.workflow_name
-      : typeof spec?.workflow === "string"
-        ? spec.workflow
-        : "";
-  if (workflowName && !/^[a-f0-9]{32}$/i.test(workflowName)) {
-    return workflowName;
-  }
-  return run.workflow_id || "Run";
 }
 
 function RunActions({

@@ -70,6 +70,16 @@ assertEqual(
   "workflow_fallback",
   "workflow_id is the final workflow label fallback"
 );
+assertEqual(
+  runWorkflowName(run({ run_spec: null, workflow_id: "wf_0123456789abcdef0123456789abcdef" })),
+  "Workflow run",
+  "hash-like workflow ids are not used as workflow labels"
+);
+assertEqual(
+  runWorkflowName(run({ run_spec: null, workflow_id: "0123456789abcdef0123456789abcdef" })),
+  "Workflow run",
+  "bare digest workflow ids are not used as workflow labels"
+);
 
 assertEqual(shortRunId("run_0123456789abcdef"), "01234567", "run_ prefix is removed before shortening");
 assertEqual(shortRunId("abc123"), "abc123", "short ids are left intact");
