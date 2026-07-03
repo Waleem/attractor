@@ -69,35 +69,31 @@ def test_all_catalog_entries_have_aliases() -> None:
 
 
 def test_alias_resolution_in_get_model_info() -> None:
-    """get_model_info('sonnet') resolves to the claude-sonnet-4-5 entry."""
+    """get_model_info('sonnet') resolves to the current Claude Sonnet entry."""
     result = get_model_info("sonnet")
     assert result is not None
-    assert result.id == "claude-sonnet-4-5"
+    assert result.id == "claude-sonnet-5"
 
 
 def test_alias_resolution_opus() -> None:
-    """get_model_info('opus') resolves to the claude-opus-4-6 entry."""
+    """get_model_info('opus') resolves to the current Claude Opus entry."""
     result = get_model_info("opus")
     assert result is not None
-    assert result.id == "claude-opus-4-6"
+    assert result.id == "claude-opus-4-8"
 
 
 def test_alias_resolution_flash() -> None:
-    """get_model_info('flash') resolves to the gemini-3-flash-preview entry."""
+    """get_model_info('flash') resolves to the current Gemini Flash entry."""
     result = get_model_info("flash")
     assert result is not None
-    assert result.id == "gemini-3-flash-preview"
+    assert result.id == "gemini-3.5-flash"
 
 
 def test_exact_id_takes_precedence_over_alias() -> None:
-    """Exact ID lookup wins over alias lookup.
-
-    'gpt-4.1-mini' is a real catalog ID; it must be returned directly
-    (not confused with an alias match on a different entry).
-    """
-    result = get_model_info("gpt-4.1-mini")
+    """Exact ID lookup wins over alias lookup."""
+    result = get_model_info("gpt-5.4-mini")
     assert result is not None
-    assert result.id == "gpt-4.1-mini"
+    assert result.id == "gpt-5.4-mini"
 
 
 def test_exact_id_lookup_still_works() -> None:

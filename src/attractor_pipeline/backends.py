@@ -20,6 +20,7 @@ from attractor_agent.profiles import get_profile
 from attractor_agent.prompt_layer import layer_prompt_for_node
 from attractor_agent.session import Session, SessionConfig
 from attractor_agent.tools.core import ALL_CORE_TOOLS
+from attractor_llm.catalog import get_default_model
 from attractor_llm.client import Client
 from attractor_llm.types import Message, Request
 from attractor_pipeline.engine.runner import HandlerResult, Outcome
@@ -46,13 +47,13 @@ class AgentLoopBackend:
         self,
         client: Client,
         *,
-        default_model: str = "claude-sonnet-4-5",
+        default_model: str | None = None,
         default_provider: str | None = None,
         system_prompt: str = "",
         include_tools: bool = True,
     ) -> None:
         self._client = client
-        self._default_model = default_model
+        self._default_model = default_model or get_default_model("anthropic").id
         self._default_provider = default_provider
         self._system_prompt = system_prompt
         self._include_tools = include_tools
@@ -141,11 +142,11 @@ class DirectLLMBackend:
         self,
         client: Client,
         *,
-        default_model: str = "claude-sonnet-4-5",
+        default_model: str | None = None,
         default_provider: str | None = None,
     ) -> None:
         self._client = client
-        self._default_model = default_model
+        self._default_model = default_model or get_default_model("anthropic").id
         self._default_provider = default_provider
 
     async def run(

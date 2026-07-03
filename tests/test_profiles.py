@@ -39,25 +39,25 @@ class TestProfileProtocol:
         p = AnthropicProfile()
         assert p.name == "anthropic"
         assert len(p.system_prompt) > 100
-        assert p.default_model == "claude-sonnet-4-5"
+        assert p.default_model == "claude-sonnet-5"
 
     def test_openai_profile_has_required_fields(self):
         p = OpenAIProfile()
         assert p.name == "openai"
         assert len(p.system_prompt) > 100
-        assert p.default_model == "gpt-5.2"
+        assert p.default_model == "gpt-5.5"
 
     def test_gemini_profile_has_required_fields(self):
         p = GeminiProfile()
         assert p.name == "gemini"
         assert len(p.system_prompt) > 100
-        assert p.default_model == "gemini-3-flash-preview"
+        assert p.default_model == "gemini-3.5-flash"
 
     def test_base_profile_has_required_fields(self):
         p = BaseProfile()
         assert p.name == "base"
         assert len(p.system_prompt) > 100
-        assert p.default_model == "claude-sonnet-4-5"
+        assert p.default_model == "claude-sonnet-5"
 
 
 class TestProfileRegistry:

@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from attractor_llm.catalog import get_default_model
 from attractor_pipeline.validation import Severity, validate
 
 
@@ -88,7 +89,7 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
-        help="LLM model ID. Default: claude-sonnet-4-5",
+        help="LLM model ID. Default: claude-sonnet-5",
     )
     run_parser.add_argument(
         "--validate-only",
@@ -272,7 +273,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     print()
 
     # Resolve provider and model
-    model = args.model or "claude-sonnet-4-5"
+    model = args.model or get_default_model("anthropic").id
     provider = args.provider
 
     # Auto-detect provider from model name
