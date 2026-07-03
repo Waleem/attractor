@@ -665,7 +665,7 @@ td {
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: 18px minmax(220px, 1.5fr) auto minmax(82px, auto) minmax(72px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: var(--space-1-5);
   align-items: center;
   border: var(--border-width) solid var(--border-subtle);
@@ -677,14 +677,28 @@ td {
   cursor: pointer;
 }
 
+.run-row-open {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(220px, 1.5fr) auto minmax(82px, auto) minmax(112px, auto);
+  gap: var(--space-1-5);
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+}
+
 .run-row:hover,
 .run-card:hover {
   border-color: var(--border-strong);
   background: var(--bg-card-muted);
 }
 
-.run-row:focus-visible,
-.run-card:focus-visible {
+.run-row-open:focus-visible,
+.run-card-open:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -783,6 +797,18 @@ td {
   color: var(--text-page);
   padding: var(--space-1-5);
   cursor: pointer;
+}
+
+.run-card-open {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: var(--space-1);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
 }
 
 .run-card-heading {
@@ -1220,15 +1246,20 @@ button.tab.active {
     grid-template-columns: 1fr;
   }
 
-  .run-row {
+  .run-row,
+  .run-row-open {
     grid-template-columns: 18px minmax(0, 1fr);
   }
 
   .run-row-pill,
   .run-row-time,
-  .diff-summary,
-  .run-row-actions {
+  .run-row-open .diff-summary {
     grid-column: 2;
+  }
+
+  .run-id-copy,
+  .run-row-actions {
+    grid-column: 1 / -1;
   }
 }
 

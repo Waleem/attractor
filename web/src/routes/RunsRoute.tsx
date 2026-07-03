@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   answerApproval,
   cancelRun,
@@ -63,8 +63,10 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [approvalRefreshToken, setApprovalRefreshToken] = useState(0);
-  const [diffSummaries, setDiffSummaries] = useState<Record<string, DiffSummary>>({});
+  const [diffSummaries, setDiffSummaries] = useState<Record<string, RunDiffSummary>>({});
   const [connectedCount, setConnectedCount] = useState(0);
+  const liveRefreshTimer = useRef<number | null>(null);
+  const diffRequestsInFlight = useRef<Set<string>>(new Set());
   const selectedWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.name === workflowName) ?? workflows[0] ?? null,
     [workflowName, workflows]
@@ -89,9 +91,23 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
     return Object.fromEntries(entries);
   }, [waitingRunIds, approvalRefreshToken]);
   const handleLiveEvent = useCallback(() => {
-    runsState.refresh();
-    setApprovalRefreshToken((value) => value + 1);
+    if (liveRefreshTimer.current !== null) {
+      return;
+    }
+    liveRefreshTimer.current = window.setTimeout(() => {
+      liveRefreshTimer.current = null;
+      runsState.refresh();
+      setApprovalRefreshToken((value) => value + 1);
+    }, 500);
   }, [runsState.refresh]);
+
+  useEffect(() => {
+    return () => {
+      if (liveRefreshTimer.current !== null) {
+        window.clearTimeout(liveRefreshTimer.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedRepoId && reposState.data && reposState.data.length > 0) {
@@ -108,9 +124,14 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
   useEffect(() => {
     let active = true;
     const candidates = filteredRuns.filter(
-      (run) => isTerminalRunStatus(run.status) && run.managed_branch && !diffSummaries[run.id]
+      (run) =>
+        isTerminalRunStatus(run.status) &&
+        run.managed_branch &&
+        !diffSummaries[run.id] &&
+        !diffRequestsInFlight.current.has(run.id)
     );
     for (const run of candidates) {
+      diffRequestsInFlight.current.add(run.id);
       getRunDiff(run.id)
         .then((diff) => {
           if (!active) {
@@ -122,7 +143,10 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
           if (!active) {
             return;
           }
-          setDiffSummaries((current) => ({ ...current, [run.id]: { additions: null, deletions: null } }));
+          setDiffSummaries((current) => ({ ...current, [run.id]: { status: "unavailable" } }));
+        })
+        .finally(() => {
+          diffRequestsInFlight.current.delete(run.id);
         });
     }
     return () => {
@@ -407,7 +431,7 @@ function RunList({
   onRerun
 }: {
   runs: RunRecord[];
-  diffSummaries: Record<string, DiffSummary>;
+  diffSummaries: Record<string, RunDiffSummary>;
   busyRunId: string | null;
   navigate: (path: string) => void;
   onCancel: (run: RunRecord) => void;
@@ -416,34 +440,29 @@ function RunList({
   return (
     <div className="run-list" role="list">
       {runs.map((run) => (
-        <div
-          key={run.id}
-          className="run-row"
-          role="link"
-          tabIndex={0}
-          onClick={() => navigate(`/runs/${run.id}`)}
-          onKeyDown={(event) => openOnKeyboard(event, () => navigate(`/runs/${run.id}`))}
-        >
-          <span className="run-row-status">
-            <StatusDot status={run.status} />
-            <span className="sr-only">{run.status}</span>
-          </span>
-          <span className="run-row-main">
-            <strong>{runWorkflowName(run)}</strong>
-            <span className="run-id-copy" onClick={stopPropagation}>
-              <span className="mono">{shortRunId(run.id)}</span>
-              <CopyButton value={run.id} label="Copy run id" />
+        <div key={run.id} className="run-row" role="listitem">
+          <button type="button" className="run-row-open" onClick={() => navigate(`/runs/${run.id}`)}>
+            <span className="run-row-status">
+              <StatusDot status={run.status} />
+              <span className="sr-only">{run.status}</span>
             </span>
-            <span className="subtle">{runMetaLine(run)}</span>
+            <span className="run-row-main">
+              <strong>{runWorkflowName(run)}</strong>
+              <span className="subtle">{runMetaLine(run)}</span>
+            </span>
+            <span className="run-row-pill">
+              <StatusBadge status={run.status} />
+            </span>
+            <span className="run-row-time" title={formatDate(run.updated_at)}>
+              {relativeTime(run.updated_at)}
+            </span>
+            <DiffSummaryView summary={diffSummaries[run.id]} />
+          </button>
+          <span className="run-id-copy">
+            <span className="mono">{shortRunId(run.id)}</span>
+            <CopyButton value={run.id} label="Copy run id" />
           </span>
-          <span className="run-row-pill">
-            <StatusBadge status={run.status} />
-          </span>
-          <span className="run-row-time" title={formatDate(run.updated_at)}>
-            {relativeTime(run.updated_at)}
-          </span>
-          <DiffSummaryView summary={diffSummaries[run.id]} />
-          <span className="run-row-actions" onClick={stopPropagation}>
+          <span className="run-row-actions">
             <button type="button" className="secondary" disabled={!canCancel(run.status) || busyRunId === run.id} onClick={() => onCancel(run)}>
               Cancel
             </button>
@@ -469,7 +488,7 @@ function RunBoard({
   runs: RunRecord[];
   showFailed: boolean;
   approvals: Record<string, ApprovalDecision[]>;
-  diffSummaries: Record<string, DiffSummary>;
+  diffSummaries: Record<string, RunDiffSummary>;
   busyRunId: string | null;
   navigate: (path: string) => void;
   onApprove: (run: RunRecord) => void;
@@ -530,38 +549,34 @@ function RunCard({
 }: {
   run: RunRecord;
   approval: ApprovalDecision | null;
-  diffSummary: DiffSummary | undefined;
+  diffSummary: RunDiffSummary | undefined;
   busy: boolean;
   navigate: (path: string) => void;
   onApprove: (run: RunRecord) => void;
 }) {
   return (
-    <div
-      className="run-card"
-      role="link"
-      tabIndex={0}
-      onClick={() => navigate(`/runs/${run.id}`)}
-      onKeyDown={(event) => openOnKeyboard(event, () => navigate(`/runs/${run.id}`))}
-    >
-      <span className="run-card-heading">
-        <strong>{runWorkflowName(run)}</strong>
-        <span className="mono">{shortRunId(run.id)}</span>
-      </span>
-      <span className="subtle">{runMetaLine(run)}</span>
-      <span className="run-card-footer">
-        <StatusBadge status={run.status} />
-        <span title={formatDate(run.updated_at)}>{relativeTime(run.updated_at)}</span>
-      </span>
-      <DiffSummaryView summary={diffSummary} />
+    <article className="run-card">
+      <button type="button" className="run-card-open" onClick={() => navigate(`/runs/${run.id}`)}>
+        <span className="run-card-heading">
+          <strong>{runWorkflowName(run)}</strong>
+          <span className="mono">{shortRunId(run.id)}</span>
+        </span>
+        <span className="subtle">{runMetaLine(run)}</span>
+        <span className="run-card-footer">
+          <StatusBadge status={run.status} />
+          <span title={formatDate(run.updated_at)}>{relativeTime(run.updated_at)}</span>
+        </span>
+        <DiffSummaryView summary={diffSummary} />
+      </button>
       {approval ? (
-        <span className="run-card-approval" onClick={stopPropagation}>
+        <span className="run-card-approval">
           <span>{approval.question}</span>
           <button type="button" disabled={busy} onClick={() => onApprove(run)}>
             Approve
           </button>
         </span>
       ) : null}
-    </div>
+    </article>
   );
 }
 
@@ -580,23 +595,34 @@ function EmptyRunState({ onLaunch }: { onLaunch: () => void }) {
 }
 
 interface DiffSummary {
-  additions: number | null;
-  deletions: number | null;
+  status: "ready";
+  additions: number;
+  deletions: number;
 }
+
+interface DiffUnavailable {
+  status: "unavailable";
+}
+
+type RunDiffSummary = DiffSummary | DiffUnavailable;
 
 function summarizeDiff(diff: RunDiff): DiffSummary {
   return diff.files.reduce(
     (summary, file) => ({
+      status: "ready",
       additions: (summary.additions ?? 0) + file.additions,
       deletions: (summary.deletions ?? 0) + file.deletions
     }),
-    { additions: 0, deletions: 0 } as DiffSummary
+    { status: "ready", additions: 0, deletions: 0 } as DiffSummary
   );
 }
 
-function DiffSummaryView({ summary }: { summary: DiffSummary | undefined }) {
-  if (!summary || summary.additions === null || summary.deletions === null) {
-    return <span className="diff-summary muted">+0 -0</span>;
+function DiffSummaryView({ summary }: { summary: RunDiffSummary | undefined }) {
+  if (!summary) {
+    return <span className="diff-summary muted">Diff pending</span>;
+  }
+  if (summary.status === "unavailable") {
+    return <span className="diff-summary muted">Diff unavailable</span>;
   }
   return (
     <span className="diff-summary" aria-label={`${summary.additions} additions, ${summary.deletions} deletions`}>
@@ -689,21 +715,6 @@ function relativeTime(value: string | null | undefined): string {
     }
   }
   return "now";
-}
-
-function stopPropagation(event: MouseEvent) {
-  event.stopPropagation();
-}
-
-function openOnKeyboard(event: KeyboardEvent, action: () => void) {
-  if (event.target !== event.currentTarget) {
-    return;
-  }
-  if (event.key !== "Enter" && event.key !== " ") {
-    return;
-  }
-  event.preventDefault();
-  action();
 }
 
 function canCancel(status: string): boolean {

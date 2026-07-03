@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { knownRunEventTypes, openRunEventSource, type RunEvent } from "../api";
 
 export interface UseRunEventsResult {
@@ -19,11 +19,13 @@ export function useRunEvents({
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const seenSequences = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     setEvents([]);
     setConnected(false);
     setError(null);
+    seenSequences.current = new Set();
 
     if (!runId || !enabled) {
       return;
@@ -47,6 +49,10 @@ export function useRunEvents({
         if (!event) {
           return;
         }
+        if (seenSequences.current.has(event.sequence)) {
+          return;
+        }
+        seenSequences.current.add(event.sequence);
         setEvents((current) => mergeEvents([...current, event]));
         onEvent?.(event);
       }) as EventListener;
