@@ -265,6 +265,40 @@ export interface SettingsVariable {
   updated_at: string | null;
 }
 
+export interface ModelCatalogRow {
+  provider: string;
+  model: string;
+  display_name: string;
+  context: number;
+  max_output: number | null;
+  capabilities: string[];
+  badges: {
+    default: boolean;
+    small: boolean;
+  };
+}
+
+export interface ModelTestSummary {
+  ok: number;
+  failed: number;
+  skipped: number;
+  tested_at: string;
+}
+
+export interface ModelTestItem {
+  provider: string;
+  model: string;
+  display_name: string;
+  ok: boolean;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface ModelTestResult {
+  summary: ModelTestSummary;
+  items: ModelTestItem[];
+}
+
 export interface SettingsOverview {
   models: {
     default_provider: string;
@@ -512,6 +546,20 @@ export async function getSystemCapacity(): Promise<SystemCapacity> {
 
 export async function getSettings(): Promise<SettingsOverview> {
   return requestJson<SettingsOverview>("/api/settings");
+}
+
+export async function getModelCatalog(): Promise<ModelCatalogRow[]> {
+  const response = await requestJson<ItemsResponse<ModelCatalogRow>>(
+    "/api/settings/models/catalog"
+  );
+  return response.items;
+}
+
+export async function testModels(): Promise<ModelTestResult> {
+  return requestJson<ModelTestResult>("/api/settings/models/test", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
 }
 
 export async function listSettingsSecrets(): Promise<SecretMetadata[]> {

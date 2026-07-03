@@ -9,12 +9,13 @@ import html
 import inspect
 import json
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -33,6 +34,13 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from attractor_llm.adapters.anthropic import AnthropicAdapter
+from attractor_llm.adapters.base import ProviderConfig
+from attractor_llm.adapters.gemini import GeminiAdapter
+from attractor_llm.adapters.openai import OpenAIAdapter
+from attractor_llm.catalog import ModelInfo, get_default_model, list_models
+from attractor_llm.client import Client
+from attractor_llm.types import Request as LLMRequest
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
@@ -67,6 +75,71 @@ from attractor_server.platform_sse import durable_run_event_stream, parse_sse_af
 
 
 @dataclass(frozen=True)
+class PlatformModelTestResult:
+    ok: bool
+    latency_ms: float | None
+    error: str | None
+
+
+class PlatformModelTester(Protocol):
+    async def test_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> PlatformModelTestResult: ...
+
+
+class LivePlatformModelTester:
+    async def test_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> PlatformModelTestResult:
+        adapter_factory = {
+            "anthropic": AnthropicAdapter,
+            "openai": OpenAIAdapter,
+            "gemini": GeminiAdapter,
+        }.get(provider)
+        if adapter_factory is None:
+            return PlatformModelTestResult(
+                ok=False,
+                latency_ms=None,
+                error=f"Unsupported provider: {provider}",
+            )
+
+        client = Client(default_provider=provider)
+        client.register_adapter(
+            provider,
+            adapter_factory(ProviderConfig(api_key=api_key, timeout=30.0)),
+        )
+        started_at = time.perf_counter()
+        try:
+            await client.complete(
+                LLMRequest.simple(
+                    model,
+                    "Reply with exactly: ok",
+                    provider=provider,
+                    max_tokens=16,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            return PlatformModelTestResult(
+                ok=False,
+                latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                error=str(exc),
+            )
+        return PlatformModelTestResult(
+            ok=True,
+            latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            error=None,
+        )
+
+
+@dataclass(frozen=True)
 class _PlatformServices:
     executor: DurableRunExecutor
     repository: PlatformRepository
@@ -74,6 +147,7 @@ class _PlatformServices:
     secret_vault: SecretVault
     default_provider: str | None
     default_model: str | None
+    model_tester: PlatformModelTester
     codergen_backend_refresh_lock: asyncio.Lock
 
 
@@ -305,6 +379,11 @@ _PROVIDER_CREDENTIALS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("anthropic", ("ANTHROPIC_API_KEY",)),
     ("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
 )
+_MODEL_CAPABILITIES: tuple[tuple[str, str], ...] = (
+    ("tools", "supports_tools"),
+    ("vision", "supports_vision"),
+    ("reasoning", "supports_reasoning"),
+)
 _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
 
@@ -348,6 +427,20 @@ async def _provider_api_keys_from_vault(services: _PlatformServices) -> dict[str
     )
 
 
+async def _configured_provider_api_keys(services: _PlatformServices) -> dict[str, str]:
+    vault_keys = await _provider_api_keys_from_vault(services)
+    configured: dict[str, str] = {}
+    for provider, env_names in _PROVIDER_CREDENTIALS:
+        env_key = next(
+            (os.environ[env_name] for env_name in env_names if os.environ.get(env_name)),
+            None,
+        )
+        key = env_key or vault_keys.get(provider)
+        if key:
+            configured[provider] = key
+    return configured
+
+
 async def _refresh_codergen_backend(services: _PlatformServices) -> None:
     async with services.codergen_backend_refresh_lock:
         provider_api_keys = await _provider_api_keys_from_vault(services)
@@ -358,6 +451,45 @@ async def _refresh_codergen_backend(services: _PlatformServices) -> None:
                 provider_api_keys=provider_api_keys,
             )
         )
+
+
+def _model_capabilities(model: ModelInfo) -> list[str]:
+    return [name for name, attribute in _MODEL_CAPABILITIES if getattr(model, attribute)]
+
+
+def _small_model_badge(model: ModelInfo) -> bool:
+    model_id = model.id.lower()
+    display_name = model.display_name.lower()
+    return any(
+        marker in model_id or marker in display_name
+        for marker in ("haiku", "mini", "nano", "lite")
+    )
+
+
+def _serialize_model_catalog_row(model: ModelInfo) -> dict[str, Any]:
+    default_model = get_default_model(model.provider)
+    return {
+        "provider": model.provider,
+        "model": model.id,
+        "display_name": model.display_name,
+        "context": model.context_window,
+        "max_output": model.max_output,
+        "capabilities": _model_capabilities(model),
+        "badges": {
+            "default": model.id == default_model.id,
+            "small": _small_model_badge(model),
+        },
+    }
+
+
+def _redact_model_test_error(error: str | None, secrets: list[str]) -> str | None:
+    if error is None:
+        return None
+    redacted = error
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
 
 
 def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
@@ -1877,6 +2009,73 @@ async def delete_settings_variable(request: Request) -> JSONResponse:
     return JSONResponse({"key": key, "deleted": True})
 
 
+async def get_model_catalog(request: Request) -> JSONResponse:
+    del request
+    return JSONResponse(
+        {"items": [_serialize_model_catalog_row(model) for model in list_models()]}
+    )
+
+
+async def test_models(request: Request) -> JSONResponse:
+    services = _services(request)
+    provider_api_keys = await _configured_provider_api_keys(services)
+    secrets = list(provider_api_keys.values())
+    tested_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    items: list[dict[str, Any]] = []
+    ok_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    for model in list_models():
+        provider_key = provider_api_keys.get(model.provider)
+        base_item = {
+            "provider": model.provider,
+            "model": model.id,
+            "display_name": model.display_name,
+        }
+        if provider_key is None:
+            skipped_count += 1
+            items.append(
+                {
+                    **base_item,
+                    "ok": False,
+                    "latency_ms": None,
+                    "error": "Missing provider API key",
+                }
+            )
+            continue
+
+        result = await services.model_tester.test_model(
+            provider=model.provider,
+            model=model.id,
+            api_key=provider_key,
+        )
+        if result.ok:
+            ok_count += 1
+        else:
+            failed_count += 1
+        items.append(
+            {
+                **base_item,
+                "ok": result.ok,
+                "latency_ms": result.latency_ms,
+                "error": _redact_model_test_error(result.error, secrets),
+            }
+        )
+
+    return JSONResponse(
+        {
+            "summary": {
+                "ok": ok_count,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "tested_at": tested_at,
+            },
+            "items": items,
+        }
+    )
+
+
 async def get_settings(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
@@ -2082,6 +2281,7 @@ def create_platform_app(
     default_provider: str | None = None,
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
+    model_tester: PlatformModelTester | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -2116,6 +2316,8 @@ def create_platform_app(
         Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
         Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
         Route("/api/settings", get_settings, methods=["GET"]),
+        Route("/api/settings/models/catalog", get_model_catalog, methods=["GET"]),
+        Route("/api/settings/models/test", test_models, methods=["POST"]),
         Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
         Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
         Route("/api/settings/secrets/{name}", delete_settings_secret, methods=["DELETE"]),
@@ -2144,6 +2346,7 @@ def create_platform_app(
         secret_vault=SecretVault(secret_key_path),
         default_provider=_platform_runtime_default_provider(default_provider),
         default_model=_platform_runtime_default_model(default_model),
+        model_tester=model_tester or LivePlatformModelTester(),
         codergen_backend_refresh_lock=asyncio.Lock(),
     )
     return app
@@ -2158,6 +2361,7 @@ def create_app(
     default_provider: str | None = None,
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
+    model_tester: PlatformModelTester | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
@@ -2167,4 +2371,5 @@ def create_app(
         default_provider=default_provider,
         default_model=default_model,
         spa_dist=spa_dist,
+        model_tester=model_tester,
     )
