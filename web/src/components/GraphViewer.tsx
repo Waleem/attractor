@@ -166,7 +166,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   }, []);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (!svgMarkup) {
+    if (!svgMarkup || !event.isPrimary || event.button !== 0) {
       return;
     }
     dragStateRef.current = {
@@ -194,7 +194,10 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
 
   const stopPanning = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const dragState = dragStateRef.current;
-    if (dragState && event.currentTarget.hasPointerCapture(dragState.pointerId)) {
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    if (event.currentTarget.hasPointerCapture(dragState.pointerId)) {
       event.currentTarget.releasePointerCapture(dragState.pointerId);
     }
     dragStateRef.current = null;
@@ -211,18 +214,24 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
         ) : null}
         {svgMarkup ? (
           <>
-            <div className="graph-toolbar" aria-label="Workflow graph controls">
+            <div className="graph-toolbar" role="toolbar" aria-label="Workflow graph controls">
               <button type="button" className="secondary" onClick={fitGraphToCanvas}>
                 Fit
               </button>
               <button
                 type="button"
                 className="secondary"
+                aria-label="Zoom out"
                 onClick={() => zoomGraph(1 / GRAPH_ZOOM_STEP)}
               >
                 -
               </button>
-              <button type="button" className="secondary" onClick={() => zoomGraph(GRAPH_ZOOM_STEP)}>
+              <button
+                type="button"
+                className="secondary"
+                aria-label="Zoom in"
+                onClick={() => zoomGraph(GRAPH_ZOOM_STEP)}
+              >
                 +
               </button>
             </div>
