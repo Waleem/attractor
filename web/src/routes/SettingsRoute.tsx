@@ -12,9 +12,10 @@ import {
   type ModelTestResult,
   type SettingsOverview,
   type SettingsPage,
+  type SettingsPageGroup,
   type SettingsPageRow
 } from "../api";
-import { useAsync } from "../components/useAsync";
+import { useAsync, type AsyncState } from "../components/useAsync";
 import {
   EmptyState,
   ErrorBanner,
@@ -62,22 +63,41 @@ const settingsNavigation = [
 
 export function SettingsRoute() {
   const settingsState = useAsync(getSettings, []);
+  const catalogState = useAsync(getModelCatalog, []);
+
+  return <SettingsRouteView settingsState={settingsState} catalogState={catalogState} />;
+}
+
+export function SettingsRouteView({
+  settingsState,
+  catalogState
+}: {
+  settingsState: AsyncState<SettingsOverview>;
+  catalogState: AsyncState<ModelCatalogRow[]>;
+}) {
   const [activePageId, setActivePageId] = useState("models");
   const settings = settingsState.data;
+  const pages = safeArray(settings?.pages);
   const pagesById = useMemo(() => {
     const map = new Map<string, SettingsPage>();
-    for (const page of settings?.pages ?? []) {
-      map.set(page.id, page);
+    for (const page of pages) {
+      if (page?.id) {
+        map.set(page.id, page);
+      }
     }
     return map;
-  }, [settings]);
-  const activePage = pagesById.get(activePageId) ?? settings?.pages[0] ?? null;
+  }, [pages]);
+  const activePage = pagesById.get(activePageId) ?? pages[0] ?? null;
+  const showUnavailableState = !settingsState.loading && !settings;
+  const showEmptyPagesState = !settingsState.loading && settings && !activePage;
 
   return (
     <>
       <PageHeader title="Settings" />
       <ErrorBanner message={settingsState.error} />
       {settingsState.loading ? <Loading /> : null}
+      {showUnavailableState ? <EmptyState>Settings data is not available</EmptyState> : null}
+      {showEmptyPagesState ? <EmptyState>No settings pages are available</EmptyState> : null}
       {settings && activePage ? (
         <div className="settings-layout">
           <SettingsSubnav
@@ -87,7 +107,7 @@ export function SettingsRoute() {
           />
           <SettingsPageTemplate page={activePage}>
             {activePage.id === "models" ? (
-              <ModelCatalogSection settings={settings} />
+              <ModelCatalogSection settings={settings} catalogState={catalogState} />
             ) : null}
             {activePage.id === "variables" ? (
               <VariablesEditor settings={settings} refresh={settingsState.refresh} />
@@ -140,6 +160,7 @@ function SettingsPageTemplate({
   page: SettingsPage;
   children?: ReactNode;
 }) {
+  const groups = safeArray<SettingsPageGroup>(page.groups);
   return (
     <main className="settings-page">
       <header className="settings-page-header">
@@ -148,10 +169,11 @@ function SettingsPageTemplate({
         <p>{page.description}</p>
       </header>
       <div className="settings-groups">
-        {page.groups.map((group) => (
+        {groups.length === 0 ? <EmptyState>No settings rows are available</EmptyState> : null}
+        {groups.map((group) => (
           <SectionCard title={group.title} key={`${page.id}:${group.title}`}>
             <dl className="settings-row-list">
-              {group.rows.map((row) => (
+              {safeArray<SettingsPageRow>(group.rows).map((row) => (
                 <SettingsRow
                   key={`${row.label}:${row.description}`}
                   label={row.label}
@@ -169,13 +191,19 @@ function SettingsPageTemplate({
   );
 }
 
-function ModelCatalogSection({ settings }: { settings: SettingsOverview }) {
-  const catalogState = useAsync(getModelCatalog, []);
+function ModelCatalogSection({
+  settings,
+  catalogState
+}: {
+  settings: SettingsOverview;
+  catalogState: AsyncState<ModelCatalogRow[]>;
+}) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const catalog = catalogState.data ?? [];
+  const catalog = safeArray<ModelCatalogRow>(catalogState.data);
+  const providerCredentials = settings.models?.provider_credentials ?? {};
   const filteredCatalog = useMemo(() => filterModelCatalog(catalog, query), [catalog, query]);
   const testResultsByModel = useMemo(() => {
     const results = new Map<string, ModelTestResult>();
@@ -226,7 +254,9 @@ function ModelCatalogSection({ settings }: { settings: SettingsOverview }) {
         </span>
       </div>
       {catalogState.loading ? <Loading label="Loading model catalog" /> : null}
-      {!catalogState.loading && filteredCatalog.length === 0 ? (
+      {!catalogState.loading && catalog.length === 0 ? (
+        <EmptyState>{catalogState.error ? "Model catalog is not available" : "No models are available"}</EmptyState>
+      ) : !catalogState.loading && filteredCatalog.length === 0 ? (
         <EmptyState>No models match this search</EmptyState>
       ) : (
         <div className="models-catalog-scroll">
@@ -250,7 +280,7 @@ function ModelCatalogSection({ settings }: { settings: SettingsOverview }) {
                   <td>
                     <StatusBadge
                       status={
-                        settings.models.provider_credentials[model.provider]?.configured
+                        providerCredentials[model.provider]?.configured
                           ? "configured"
                           : "unconfigured"
                       }
@@ -327,6 +357,8 @@ function VariablesEditor({
     }
   }
 
+  const variables = safeArray(settings.variables?.items);
+
   return (
     <SectionCard title="Edit Variables">
       <ErrorBanner message={error} />
@@ -341,7 +373,7 @@ function VariablesEditor({
           Save
         </button>
       </div>
-      {settings.variables.items.length === 0 ? (
+      {variables.length === 0 ? (
         <EmptyState>No variables configured</EmptyState>
       ) : (
         <table>
@@ -354,7 +386,7 @@ function VariablesEditor({
             </tr>
           </thead>
           <tbody>
-            {settings.variables.items.map((variable) => (
+            {variables.map((variable) => (
               <tr key={variable.key}>
                 <td className="mono">{variable.key}</td>
                 <td>{variable.value}</td>
@@ -388,9 +420,10 @@ function SecretsEditor({
   const [draftSecrets, setDraftSecrets] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const providerCredentials = settings.models?.provider_credentials ?? {};
   const credentials = useMemo(
-    () => Object.values(settings.models.provider_credentials).sort((a, b) => a.name.localeCompare(b.name)),
-    [settings.models.provider_credentials]
+    () => Object.values(providerCredentials).sort((a, b) => a.name.localeCompare(b.name)),
+    [providerCredentials]
   );
 
   async function saveSecret(name: string) {
@@ -567,7 +600,7 @@ function filterModelCatalog(catalog: ModelCatalogRow[], query: string): ModelCat
   }
   return catalog.filter((model) =>
     [model.provider, model.model, model.display_name].some((value) =>
-      value.toLowerCase().includes(normalized)
+      String(value ?? "").toLowerCase().includes(normalized)
     )
   );
 }
@@ -576,7 +609,10 @@ function modelKey(provider: string, model: string): string {
   return `${provider}:${model}`;
 }
 
-function formatTokens(value: number): string {
+function formatTokens(value: number | null | undefined): string {
+  if (typeof value !== "number") {
+    return "None";
+  }
   if (value >= 1_000_000) {
     return `${value / 1_000_000}M`;
   }
@@ -607,4 +643,8 @@ function formatModelTestSummary(result: ModelTestResponse): string {
     parts.push(`${result.summary.skipped} skipped`);
   }
   return parts.join(" · ");
+}
+
+function safeArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
 }

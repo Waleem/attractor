@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Layout } from "./components/Layout";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DashboardRoute } from "./routes/DashboardRoute";
 import { ReposRoute } from "./routes/ReposRoute";
 import { RepoDetailRoute } from "./routes/RepoDetailRoute";
@@ -32,7 +33,9 @@ export default function App() {
 
   return (
     <Layout path={path} navigate={navigate} basePath={basePath}>
-      <RouteSwitch path={path} navigate={navigate} />
+      <ErrorBoundary resetKey={path}>
+        <RouteSwitch path={path} navigate={navigate} />
+      </ErrorBoundary>
     </Layout>
   );
 }
