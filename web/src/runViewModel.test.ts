@@ -3,6 +3,7 @@ import {
   diffSummaryLabel,
   eventFromSseMessage,
   formatCompactRelativeTime,
+  mergeRunEvents,
   runLane,
   runListAction,
   runMetaLine,
@@ -178,4 +179,45 @@ assertEqual(
   event?.created_at,
   "2026-07-01T10:30:00Z",
   "SSE event created_at is preserved from payload instead of overwritten with receive time"
+);
+
+const metadataOnlyEvent = eventFromSseMessage(
+  "stage.completed",
+  {
+    data: JSON.stringify({ node_id: "build" }),
+    lastEventId: "43"
+  },
+  "2026-07-03T12:00:00Z"
+);
+assertEqual(
+  metadataOnlyEvent?.created_at,
+  null,
+  "SSE events without durable created_at do not invent receive-time timestamps"
+);
+assertEqual(
+  metadataOnlyEvent?.actor_label,
+  "",
+  "SSE events without durable actor metadata keep actor_label empty"
+);
+
+const mergedEvents = mergeRunEvents([
+  {
+    sequence: 43,
+    event_type: "stage.completed",
+    payload: { node_id: "build", output: "saved from durable store" },
+    actor_label: "durable-worker",
+    created_at: "2026-07-01T10:30:00Z"
+  },
+  metadataOnlyEvent!
+]);
+assertEqual(mergedEvents.length, 1, "duplicate sequence events are merged");
+assertEqual(
+  mergedEvents[0]?.created_at,
+  "2026-07-01T10:30:00Z",
+  "durable created_at wins when later SSE replay lacks created_at"
+);
+assertEqual(
+  mergedEvents[0]?.actor_label,
+  "durable-worker",
+  "durable actor_label wins when later SSE replay lacks actor_label"
 );

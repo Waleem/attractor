@@ -22,7 +22,7 @@ import {
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
-import { canCancelRunStatus, eventFromSseMessage, runWorkflowName } from "../runViewModel";
+import { canCancelRunStatus, eventFromSseMessage, mergeRunEvents, runWorkflowName } from "../runViewModel";
 import {
   CopyButton,
   CopyableTruncatedValue,
@@ -680,11 +680,7 @@ function eventFromSse(eventType: string, message: MessageEvent<string>): RunEven
 }
 
 function mergeEvents(events: RunEvent[]): RunEvent[] {
-  const bySequence = new Map<number, RunEvent>();
-  for (const event of events) {
-    bySequence.set(event.sequence, event);
-  }
-  return Array.from(bySequence.values()).sort((a, b) => a.sequence - b.sequence);
+  return mergeRunEvents(events);
 }
 
 function isTerminal(status: string): boolean {

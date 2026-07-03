@@ -55,6 +55,14 @@ export interface SseMessageLike {
   lastEventId: string;
 }
 
+export interface RunEventLike {
+  sequence: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  actor_label: string;
+  created_at: string | null;
+}
+
 export function shortRunId(runId: string | null | undefined): string {
   if (!runId) {
     return "None";
@@ -178,7 +186,7 @@ export function formatCompactRelativeTime(value: string | null | undefined, now 
 export function eventFromSseMessage(
   eventType: string,
   message: SseMessageLike,
-  receivedAt = new Date().toISOString()
+  _receivedAt?: string
 ) {
   let payload: Record<string, unknown> = {};
   try {
@@ -200,8 +208,17 @@ export function eventFromSseMessage(
     event_type: eventType,
     payload,
     actor_label: stringPayload(payload, "actor_label") ?? "",
-    created_at: stringPayload(payload, "created_at") ?? receivedAt
+    created_at: stringPayload(payload, "created_at")
   };
+}
+
+export function mergeRunEvents<T extends RunEventLike>(events: T[]): T[] {
+  const bySequence = new Map<number, T>();
+  for (const event of events) {
+    const existing = bySequence.get(event.sequence);
+    bySequence.set(event.sequence, existing ? mergeRunEvent(existing, event) : event);
+  }
+  return Array.from(bySequence.values()).sort((a, b) => a.sequence - b.sequence);
 }
 
 function requestedEnvironmentName(value: RunSpecLike["requested_environment"]): string {
@@ -226,6 +243,15 @@ function shortSha(value: string | null | undefined): string {
 
 function isHashLikeWorkflowId(value: string): boolean {
   return /^(?:wf_)?[a-f0-9]{32,64}$/i.test(value);
+}
+
+function mergeRunEvent<T extends RunEventLike>(existing: T, incoming: T): T {
+  return {
+    ...existing,
+    ...incoming,
+    actor_label: incoming.actor_label || existing.actor_label,
+    created_at: incoming.created_at ?? existing.created_at
+  };
 }
 
 function stringPayload(payload: Record<string, unknown>, key: string): string | null {
