@@ -677,6 +677,15 @@ button.tab.active {
   flex: 1 1 320px;
 }
 
+.models-catalog-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.models-catalog-scroll .models-catalog-table {
+  min-width: 880px;
+}
+
 .models-catalog-table th:nth-child(2),
 .models-catalog-table td:nth-child(2) {
   min-width: 220px;

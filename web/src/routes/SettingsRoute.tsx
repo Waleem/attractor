@@ -161,9 +161,11 @@ function ModelsSettings({
   async function runModelTests() {
     setTesting(true);
     setError(null);
+    setTestResult(null);
     try {
       setTestResult(await testModels());
     } catch (caught) {
+      setTestResult(null);
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setTesting(false);
@@ -195,6 +197,10 @@ function ModelsSettings({
         <div className="provider-card-grid">
           {credentials.map((credential) => {
             const hasVaultSecret = credential.updated_at !== null;
+            const saveLabel = `Save ${credential.name} secret`;
+            const clearLabel = hasVaultSecret
+              ? `Clear ${credential.name} vault secret`
+              : `${credential.name} has no vault secret to clear`;
             return (
               <article className="provider-card" key={credential.name}>
                 <div className="provider-card-heading">
@@ -225,7 +231,9 @@ function ModelsSettings({
                 <div className="button-row">
                   <button
                     type="button"
+                    aria-label={saveLabel}
                     disabled={saving === credential.name}
+                    title={saveLabel}
                     onClick={() => void saveSecret(credential.name)}
                   >
                     Save
@@ -233,12 +241,9 @@ function ModelsSettings({
                   <button
                     className="secondary"
                     type="button"
+                    aria-label={clearLabel}
                     disabled={saving === credential.name || !hasVaultSecret}
-                    title={
-                      hasVaultSecret
-                        ? "Clear saved vault credential"
-                        : "Environment credential cannot be cleared here"
-                    }
+                    title={clearLabel}
                     onClick={() => void clearSecret(credential.name)}
                   >
                     {hasVaultSecret ? "Clear vault" : "Env only"}
@@ -278,43 +283,45 @@ function ModelsSettings({
         {!catalogState.loading && filteredCatalog.length === 0 ? (
           <EmptyState>No models match this search</EmptyState>
         ) : (
-          <table className="models-catalog-table">
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Model</th>
-                <th>Name</th>
-                <th>Badges</th>
-                <th>Context</th>
-                <th>Speed / capabilities</th>
-                <th>Test</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredCatalog.map((model) => (
-                <tr key={modelKey(model.provider, model.model)}>
-                  <td>{model.provider}</td>
-                  <td className="mono">{model.model}</td>
-                  <td>{model.display_name}</td>
-                  <td>
-                    <ModelBadges model={model} />
-                  </td>
-                  <td>
-                    <span className="mono">{formatTokens(model.context_window)}</span>
-                    {model.max_output ? (
-                      <span className="subtle"> / {formatTokens(model.max_output)} out</span>
-                    ) : null}
-                  </td>
-                  <td>
-                    <CapabilityList model={model} />
-                  </td>
-                  <td>
-                    <ModelTestStatus result={testResultsByModel.get(modelKey(model.provider, model.model))} />
-                  </td>
+          <div className="models-catalog-scroll">
+            <table className="models-catalog-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>Name</th>
+                  <th>Badges</th>
+                  <th>Context</th>
+                  <th>Speed / capabilities</th>
+                  <th>Test</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filteredCatalog.map((model) => (
+                  <tr key={modelKey(model.provider, model.model)}>
+                    <td>{model.provider}</td>
+                    <td className="mono">{model.model}</td>
+                    <td>{model.display_name}</td>
+                    <td>
+                      <ModelBadges model={model} />
+                    </td>
+                    <td>
+                      <span className="mono">{formatTokens(model.context_window)}</span>
+                      {model.max_output ? (
+                        <span className="subtle"> / {formatTokens(model.max_output)} out</span>
+                      ) : null}
+                    </td>
+                    <td>
+                      <CapabilityList model={model} />
+                    </td>
+                    <td>
+                      <ModelTestStatus result={testResultsByModel.get(modelKey(model.provider, model.model))} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
     </div>
