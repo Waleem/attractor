@@ -1,25 +1,50 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import {
+  answerApproval,
   cancelRun,
+  getRunDiff,
   launchRun,
+  listApprovals,
   listRepos,
   listRuns,
   listWorkflows,
   runSpecToLaunchInput,
+  type ApprovalDecision,
+  type RunDiff,
   type RunRecord,
   type Workflow
 } from "../api";
-import { LinkButton } from "../components/Layout";
+import { useRunEvents } from "../hooks/useRunEvents";
+import { isTerminalRunStatus, runLane, runMetaLine, runWorkflowName, shortRunId, type RunLane } from "../runViewModel";
 import { useAsync } from "../components/useAsync";
-import { EmptyState, ErrorBanner, Field, Loading, PageHeader, Panel, StatusBadge, formatDate, shortSha } from "../components/ui";
+import { CopyButton, EmptyState, ErrorBanner, Field, Loading, PageHeader, Panel, StatusBadge, StatusDot, formatDate } from "../components/ui";
+
+type ViewMode = "list" | "board";
+type StatusFilter = "all" | "active" | "queued" | "running" | "waiting_for_approval" | "completed" | "failed";
+
+const statusFilters: Array<{ value: StatusFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "queued", label: "Queued" },
+  { value: "running", label: "Running" },
+  { value: "waiting_for_approval", label: "Awaiting you" },
+  { value: "completed", label: "Done" },
+  { value: "failed", label: "Failed" }
+];
+
+const boardLanes: Array<{ value: Exclude<RunLane, "failed">; label: string }> = [
+  { value: "queued", label: "Queued" },
+  { value: "running", label: "Running" },
+  { value: "awaiting", label: "Awaiting you" },
+  { value: "done", label: "Done" }
+];
 
 export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
-  const [statusFilter, setStatusFilter] = useState("");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [repoFilter, setRepoFilter] = useState("");
-  const runsState = useAsync(
-    () => listRuns({ status: statusFilter, repo_id: repoFilter }),
-    [statusFilter, repoFilter]
-  );
+  const [searchQuery, setSearchQuery] = useState("");
+  const runsState = useAsync(() => listRuns({ repo_id: repoFilter }), [repoFilter]);
   const reposState = useAsync(listRepos, []);
   const [selectedRepoId, setSelectedRepoId] = useState("");
   const selectedRepo = reposState.data?.find((repo) => repo.id === selectedRepoId) ?? null;
@@ -37,15 +62,35 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
-  const runs = (runsState.data ?? []).slice().sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+  const [approvalRefreshToken, setApprovalRefreshToken] = useState(0);
+  const [diffSummaries, setDiffSummaries] = useState<Record<string, DiffSummary>>({});
+  const [connectedCount, setConnectedCount] = useState(0);
   const selectedWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.name === workflowName) ?? workflows[0] ?? null,
     [workflowName, workflows]
   );
-
-  useEffect(() => {
-    const timer = window.setInterval(() => runsState.refresh(), 4000);
-    return () => window.clearInterval(timer);
+  const runs = useMemo(
+    () => (runsState.data ?? []).slice().sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))),
+    [runsState.data]
+  );
+  const filteredRuns = useMemo(
+    () => runs.filter((run) => matchesStatus(run, statusFilter) && matchesSearch(run, searchQuery)),
+    [runs, searchQuery, statusFilter]
+  );
+  const visibleActiveRuns = filteredRuns.filter((run) => !isTerminalRunStatus(run.status));
+  const waitingRunIds = runs
+    .filter((run) => run.status === "waiting_for_approval")
+    .map((run) => run.id)
+    .sort()
+    .join(",");
+  const approvalsState = useAsync<Record<string, ApprovalDecision[]>>(async () => {
+    const waitingRuns = runs.filter((run) => run.status === "waiting_for_approval");
+    const entries = await Promise.all(waitingRuns.map(async (run) => [run.id, await listApprovals(run.id)] as const));
+    return Object.fromEntries(entries);
+  }, [waitingRunIds, approvalRefreshToken]);
+  const handleLiveEvent = useCallback(() => {
+    runsState.refresh();
+    setApprovalRefreshToken((value) => value + 1);
   }, [runsState.refresh]);
 
   useEffect(() => {
@@ -59,6 +104,31 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
       setWorkflowName(workflows[0].name);
     }
   }, [workflowName, workflows]);
+
+  useEffect(() => {
+    let active = true;
+    const candidates = filteredRuns.filter(
+      (run) => isTerminalRunStatus(run.status) && run.managed_branch && !diffSummaries[run.id]
+    );
+    for (const run of candidates) {
+      getRunDiff(run.id)
+        .then((diff) => {
+          if (!active) {
+            return;
+          }
+          setDiffSummaries((current) => ({ ...current, [run.id]: summarizeDiff(diff) }));
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+          setDiffSummaries((current) => ({ ...current, [run.id]: { additions: null, deletions: null } }));
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [diffSummaries, filteredRuns]);
 
   async function submitLaunch(event: FormEvent) {
     event.preventDefault();
@@ -124,14 +194,44 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
     }
   }
 
+  async function approveRun(run: RunRecord) {
+    const pending = (approvalsState.data?.[run.id] ?? []).find((approval) => approval.status === "pending");
+    if (!pending) {
+      navigate(`/runs/${run.id}`);
+      return;
+    }
+    setBusyRunId(run.id);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      await answerApproval(run.id, pending.id, { answer: "approve", actor_label: actorLabel || "operator" });
+      setActionMessage(`Approved ${shortRunId(run.id)}`);
+      setApprovalRefreshToken((value) => value + 1);
+      runsState.refresh();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusyRunId(null);
+    }
+  }
+
   return (
     <>
-      <PageHeader title="Runs" />
-      <ErrorBanner message={runsState.error ?? reposState.error ?? workflowsState.error ?? actionError} />
+      <PageHeader
+        title="Runs"
+        eyebrow={`${filteredRuns.length} shown`}
+        actions={
+          <a className="button-link" href="#launch-run">
+            Launch
+          </a>
+        }
+      />
+      <ErrorBanner message={runsState.error ?? reposState.error ?? workflowsState.error ?? approvalsState.error ?? actionError} />
       {actionMessage ? <div className="notice">{actionMessage}</div> : null}
       <Panel title="Launch Run">
+        <div id="launch-run" />
         {reposState.loading ? <Loading label="Loading repos" /> : null}
-        <form className="launch-form" onSubmit={submitLaunch}>
+        <form className="launch-form run-launch-form" onSubmit={submitLaunch}>
           <Field label="Repo">
             <select value={selectedRepoId} onChange={(event) => setSelectedRepoId(event.target.value)} required>
               {reposState.data?.length ? null : <option value="">No repos</option>}
@@ -164,26 +264,27 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
           <Field label="Input value">
             <input value={inputValue} onChange={(event) => setInputValue(event.target.value)} disabled={!inputKey} />
           </Field>
-          <button type="submit" disabled={launching || !selectedRepo || !selectedWorkflow}>
+          <button type="submit" className="primary-action" disabled={launching || !selectedRepo || !selectedWorkflow}>
             {launching ? "Launching" : "Launch"}
           </button>
         </form>
         <ValidationDiagnostics workflow={selectedWorkflow} />
       </Panel>
-      <Panel
-        title="Run List"
-        actions={
-          <div className="filter-row">
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="">All statuses</option>
-              <option value="queued">Queued</option>
-              <option value="preparing">Preparing</option>
-              <option value="running">Running</option>
-              <option value="waiting_for_approval">Waiting approval</option>
-              <option value="completed">Completed</option>
-              <option value="failed">Failed</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
+      <Panel title="Runs" actions={<LiveIndicator connectedCount={connectedCount} activeCount={visibleActiveRuns.length} />}>
+        <LiveRunStreams runs={visibleActiveRuns} onEvent={handleLiveEvent} onConnectedCount={setConnectedCount} />
+        <div className="runs-toolbar">
+          <div className="segmented-control" role="group" aria-label="Run view">
+            <button type="button" className={viewMode === "list" ? "active" : "secondary"} onClick={() => setViewMode("list")}>
+              List
+            </button>
+            <button type="button" className={viewMode === "board" ? "active" : "secondary"} onClick={() => setViewMode("board")}>
+              Board
+            </button>
+          </div>
+          <Field label="Search">
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Run, workflow, actor, branch" />
+          </Field>
+          <Field label="Repo">
             <select value={repoFilter} onChange={(event) => setRepoFilter(event.target.value)}>
               <option value="">All repos</option>
               {(reposState.data ?? []).map((repo) => (
@@ -192,65 +293,316 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
                 </option>
               ))}
             </select>
-            <button type="button" className="secondary" onClick={() => runsState.refresh()}>
-              Refresh
+          </Field>
+        </div>
+        <div className="status-chip-row" role="group" aria-label="Status filter">
+          {statusFilters.map((filter) => (
+            <button
+              key={filter.value}
+              type="button"
+              className={`status-chip ${statusFilter === filter.value ? "active" : ""}`}
+              aria-pressed={statusFilter === filter.value}
+              onClick={() => setStatusFilter(filter.value)}
+            >
+              {filter.label}
             </button>
-          </div>
-        }
-      >
+          ))}
+        </div>
         {runsState.loading ? <Loading /> : null}
-        {runs.length === 0 && !runsState.loading ? (
-          <EmptyState>No runs match the current filters</EmptyState>
+        {filteredRuns.length === 0 && !runsState.loading ? (
+          <EmptyRunState onLaunch={() => document.getElementById("launch-run")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+        ) : viewMode === "list" ? (
+          <RunList
+            runs={filteredRuns}
+            diffSummaries={diffSummaries}
+            busyRunId={busyRunId}
+            navigate={navigate}
+            onCancel={cancel}
+            onRerun={rerun}
+          />
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Run</th>
-                <th>Status</th>
-                <th>Workflow</th>
-                <th>Source</th>
-                <th>Managed branch</th>
-                <th>Updated</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.id}>
-                  <td>
-                    <LinkButton to={`/runs/${run.id}`} navigate={navigate}>
-                      {run.id}
-                    </LinkButton>
-                  </td>
-                  <td>
-                    <StatusBadge status={run.status} />
-                  </td>
-                  <td className="mono">{run.workflow_id}</td>
-                  <td className="mono">{shortSha(run.source_commit)}</td>
-                  <td className="path-cell">{run.managed_branch ?? "None"}</td>
-                  <td>{formatDate(run.updated_at)}</td>
-                  <td>
-                    <div className="button-row">
-                      <button type="button" className="secondary" disabled={!canCancel(run.status) || busyRunId === run.id} onClick={() => cancel(run)}>
-                        Cancel
-                      </button>
-                      <button type="button" disabled={busyRunId === run.id} onClick={() => rerun(run)}>
-                        Re-run
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <RunBoard
+            runs={filteredRuns}
+            showFailed={statusFilter === "failed"}
+            approvals={approvalsState.data ?? {}}
+            diffSummaries={diffSummaries}
+            busyRunId={busyRunId}
+            navigate={navigate}
+            onApprove={approveRun}
+          />
         )}
       </Panel>
     </>
   );
 }
 
-function canCancel(status: string): boolean {
-  return !["completed", "failed", "cancelled", "writeback_applied", "writeback_failed"].includes(status);
+function LiveRunStreams({
+  runs,
+  onEvent,
+  onConnectedCount
+}: {
+  runs: RunRecord[];
+  onEvent: () => void;
+  onConnectedCount: (count: number) => void;
+}) {
+  const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set());
+  const handleConnected = useCallback((runId: string, connected: boolean) => {
+    setConnectedIds((current) => {
+      const next = new Set(current);
+      if (connected) {
+        next.add(runId);
+      } else {
+        next.delete(runId);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    onConnectedCount(connectedIds.size);
+  }, [connectedIds.size, onConnectedCount]);
+
+  return (
+    <>
+      {runs.map((run) => (
+        <RunStreamSubscription key={run.id} runId={run.id} onEvent={onEvent} onConnected={handleConnected} />
+      ))}
+    </>
+  );
+}
+
+function RunStreamSubscription({
+  runId,
+  onEvent,
+  onConnected
+}: {
+  runId: string;
+  onEvent: () => void;
+  onConnected: (runId: string, connected: boolean) => void;
+}) {
+  const handleEvent = useCallback(() => onEvent(), [onEvent]);
+  const stream = useRunEvents({ runId, onEvent: handleEvent });
+  useEffect(() => {
+    onConnected(runId, stream.connected);
+    return () => onConnected(runId, false);
+  }, [onConnected, runId, stream.connected]);
+  return null;
+}
+
+function LiveIndicator({ connectedCount, activeCount }: { connectedCount: number; activeCount: number }) {
+  return (
+    <div className="live-indicator" aria-live="polite">
+      <span className={`live-dot ${connectedCount > 0 || activeCount === 0 ? "connected" : ""}`} aria-hidden="true" />
+      <span>{activeCount === 0 ? "Live idle" : connectedCount > 0 ? `Live ${connectedCount}/${activeCount}` : "Connecting"}</span>
+    </div>
+  );
+}
+
+function RunList({
+  runs,
+  diffSummaries,
+  busyRunId,
+  navigate,
+  onCancel,
+  onRerun
+}: {
+  runs: RunRecord[];
+  diffSummaries: Record<string, DiffSummary>;
+  busyRunId: string | null;
+  navigate: (path: string) => void;
+  onCancel: (run: RunRecord) => void;
+  onRerun: (run: RunRecord) => void;
+}) {
+  return (
+    <div className="run-list" role="list">
+      {runs.map((run) => (
+        <div
+          key={run.id}
+          className="run-row"
+          role="link"
+          tabIndex={0}
+          onClick={() => navigate(`/runs/${run.id}`)}
+          onKeyDown={(event) => openOnKeyboard(event, () => navigate(`/runs/${run.id}`))}
+        >
+          <span className="run-row-status">
+            <StatusDot status={run.status} />
+            <span className="sr-only">{run.status}</span>
+          </span>
+          <span className="run-row-main">
+            <strong>{runWorkflowName(run)}</strong>
+            <span className="run-id-copy" onClick={stopPropagation}>
+              <span className="mono">{shortRunId(run.id)}</span>
+              <CopyButton value={run.id} label="Copy run id" />
+            </span>
+            <span className="subtle">{runMetaLine(run)}</span>
+          </span>
+          <span className="run-row-pill">
+            <StatusBadge status={run.status} />
+          </span>
+          <span className="run-row-time" title={formatDate(run.updated_at)}>
+            {relativeTime(run.updated_at)}
+          </span>
+          <DiffSummaryView summary={diffSummaries[run.id]} />
+          <span className="run-row-actions" onClick={stopPropagation}>
+            <button type="button" className="secondary" disabled={!canCancel(run.status) || busyRunId === run.id} onClick={() => onCancel(run)}>
+              Cancel
+            </button>
+            <button type="button" className="secondary" disabled={busyRunId === run.id} onClick={() => onRerun(run)}>
+              Re-run
+            </button>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RunBoard({
+  runs,
+  showFailed,
+  approvals,
+  diffSummaries,
+  busyRunId,
+  navigate,
+  onApprove
+}: {
+  runs: RunRecord[];
+  showFailed: boolean;
+  approvals: Record<string, ApprovalDecision[]>;
+  diffSummaries: Record<string, DiffSummary>;
+  busyRunId: string | null;
+  navigate: (path: string) => void;
+  onApprove: (run: RunRecord) => void;
+}) {
+  const failedRuns = showFailed ? runs.filter((run) => runLane(run) === "failed") : [];
+  return (
+    <>
+      <div className="run-board">
+        {boardLanes.map((lane) => {
+          const laneRuns = runs.filter((run) => runLane(run) === lane.value);
+          return (
+            <section key={lane.value} className="run-lane" aria-labelledby={`run-lane-${lane.value}`}>
+              <h3 id={`run-lane-${lane.value}`}>{lane.label}</h3>
+              <div className="run-card-stack">
+                {laneRuns.length === 0 ? <div className="lane-empty">No runs</div> : null}
+                {laneRuns.map((run) => (
+                  <RunCard
+                    key={run.id}
+                    run={run}
+                    approval={approvals[run.id]?.find((item) => item.status === "pending") ?? null}
+                    diffSummary={diffSummaries[run.id]}
+                    busy={busyRunId === run.id}
+                    navigate={navigate}
+                    onApprove={onApprove}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      {failedRuns.length > 0 ? (
+        <div className="failed-filter-results" aria-label="Failed filtered runs">
+          {failedRuns.map((run) => (
+            <RunCard
+              key={run.id}
+              run={run}
+              approval={null}
+              diffSummary={diffSummaries[run.id]}
+              busy={busyRunId === run.id}
+              navigate={navigate}
+              onApprove={onApprove}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function RunCard({
+  run,
+  approval,
+  diffSummary,
+  busy,
+  navigate,
+  onApprove
+}: {
+  run: RunRecord;
+  approval: ApprovalDecision | null;
+  diffSummary: DiffSummary | undefined;
+  busy: boolean;
+  navigate: (path: string) => void;
+  onApprove: (run: RunRecord) => void;
+}) {
+  return (
+    <div
+      className="run-card"
+      role="link"
+      tabIndex={0}
+      onClick={() => navigate(`/runs/${run.id}`)}
+      onKeyDown={(event) => openOnKeyboard(event, () => navigate(`/runs/${run.id}`))}
+    >
+      <span className="run-card-heading">
+        <strong>{runWorkflowName(run)}</strong>
+        <span className="mono">{shortRunId(run.id)}</span>
+      </span>
+      <span className="subtle">{runMetaLine(run)}</span>
+      <span className="run-card-footer">
+        <StatusBadge status={run.status} />
+        <span title={formatDate(run.updated_at)}>{relativeTime(run.updated_at)}</span>
+      </span>
+      <DiffSummaryView summary={diffSummary} />
+      {approval ? (
+        <span className="run-card-approval" onClick={stopPropagation}>
+          <span>{approval.question}</span>
+          <button type="button" disabled={busy} onClick={() => onApprove(run)}>
+            Approve
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function EmptyRunState({ onLaunch }: { onLaunch: () => void }) {
+  return (
+    <EmptyState>
+      <div className="empty-run-state">
+        <strong>No runs match this view.</strong>
+        <span>Launch a workflow or adjust the filters.</span>
+        <button type="button" onClick={onLaunch}>
+          Launch
+        </button>
+      </div>
+    </EmptyState>
+  );
+}
+
+interface DiffSummary {
+  additions: number | null;
+  deletions: number | null;
+}
+
+function summarizeDiff(diff: RunDiff): DiffSummary {
+  return diff.files.reduce(
+    (summary, file) => ({
+      additions: (summary.additions ?? 0) + file.additions,
+      deletions: (summary.deletions ?? 0) + file.deletions
+    }),
+    { additions: 0, deletions: 0 } as DiffSummary
+  );
+}
+
+function DiffSummaryView({ summary }: { summary: DiffSummary | undefined }) {
+  if (!summary || summary.additions === null || summary.deletions === null) {
+    return <span className="diff-summary muted">+0 -0</span>;
+  }
+  return (
+    <span className="diff-summary" aria-label={`${summary.additions} additions, ${summary.deletions} deletions`}>
+      <span className="diff-add">+{summary.additions}</span> <span className="diff-del">-{summary.deletions}</span>
+    </span>
+  );
 }
 
 function ValidationDiagnostics({ workflow }: { workflow: Workflow | null }) {
@@ -258,20 +610,102 @@ function ValidationDiagnostics({ workflow }: { workflow: Workflow | null }) {
   if (!workflow) {
     return <EmptyState>Select a workflow to see validation diagnostics</EmptyState>;
   }
-  if (workflow.diagnostics?.error) {
-    return <ErrorBanner message={workflow.diagnostics.error} />;
-  }
   if (diagnostics.length === 0) {
-    return <div className="notice">No validation diagnostics for {workflow.name}</div>;
+    return <div className="notice">Workflow validation is clean.</div>;
   }
   return (
     <div className="diagnostics-list">
-      {diagnostics.map((diagnostic, index) => (
-        <div key={`${diagnostic.rule ?? "diagnostic"}-${index}`} className="diagnostic-row">
-          <StatusBadge status={diagnostic.severity ?? "info"} />
-          <span>{diagnostic.message}</span>
+      {diagnostics.map((item, index) => (
+        <div key={`${item.rule ?? "diagnostic"}-${index}`} className="diagnostic-row">
+          <StatusBadge status={item.severity ?? "warn"} />
+          <div>
+            <strong>{item.rule ?? "Validation"}</strong>
+            <div>{item.message}</div>
+            {item.node_id ? <div className="subtle">Node: {item.node_id}</div> : null}
+          </div>
         </div>
       ))}
     </div>
   );
+}
+
+function matchesStatus(run: RunRecord, filter: StatusFilter): boolean {
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "active") {
+    return !isTerminalRunStatus(run.status);
+  }
+  if (filter === "running") {
+    return run.status === "running" || run.status === "preparing";
+  }
+  if (filter === "completed") {
+    return run.status === "completed" || run.status === "writeback_applied";
+  }
+  if (filter === "failed") {
+    return run.status === "failed" || run.status === "cancelled" || run.status === "writeback_failed";
+  }
+  return run.status === filter;
+}
+
+function matchesSearch(run: RunRecord, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return [
+    run.id,
+    runWorkflowName(run),
+    run.actor_label,
+    run.source_branch,
+    run.source_commit,
+    run.managed_branch,
+    run.status
+  ]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(normalized));
+}
+
+function relativeTime(value: string | null | undefined): string {
+  if (!value) {
+    return "No timestamp";
+  }
+  const date = new Date(value);
+  const delta = Date.now() - date.valueOf();
+  if (Number.isNaN(delta)) {
+    return value;
+  }
+  const abs = Math.abs(delta);
+  const suffix = delta >= 0 ? "ago" : "from now";
+  const units: Array<[number, string]> = [
+    [86_400_000, "d"],
+    [3_600_000, "h"],
+    [60_000, "m"],
+    [1_000, "s"]
+  ];
+  for (const [size, label] of units) {
+    if (abs >= size) {
+      return `${Math.round(abs / size)}${label} ${suffix}`;
+    }
+  }
+  return "now";
+}
+
+function stopPropagation(event: MouseEvent) {
+  event.stopPropagation();
+}
+
+function openOnKeyboard(event: KeyboardEvent, action: () => void) {
+  if (event.target !== event.currentTarget) {
+    return;
+  }
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  action();
+}
+
+function canCancel(status: string): boolean {
+  return !isTerminalRunStatus(status);
 }
