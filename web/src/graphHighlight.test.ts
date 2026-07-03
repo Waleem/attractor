@@ -5,6 +5,7 @@ import {
 } from "./graphHighlight.js";
 import {
   applyGraphHighlightsToRenderedSvg,
+  buildThemedGraphDot,
   graphLayoutKey,
   shouldRenderGraphLayout,
   type GraphViewerUpdateInput
@@ -359,6 +360,35 @@ assertDeepEqual(
   true,
   "renders Graphviz layout again when the DOT source changes"
 );
+
+const commentBraceDot = `// Compound Conditions and \${braced} Expansion
+digraph CommentBrace {
+  build -> deploy;
+}`;
+const themedCommentBraceDot = buildThemedGraphDot(commentBraceDot);
+const commentBraceBodyIndex = themedCommentBraceDot.indexOf("digraph CommentBrace {\n  graph [bgcolor");
+
+if (commentBraceBodyIndex === -1) {
+  throw new Error("inserts graph theme inside graph body after leading comment braces");
+}
+
+if (themedCommentBraceDot.indexOf("graph [bgcolor") < themedCommentBraceDot.indexOf("digraph CommentBrace {")) {
+  throw new Error("does not insert graph theme before the graph body");
+}
+
+const quotedAttributeBraceDot = `digraph QuotedAttributeBrace {
+  graph [label="{quoted body brace}"];
+  build -> deploy;
+}`;
+const themedQuotedAttributeBraceDot = buildThemedGraphDot(quotedAttributeBraceDot);
+
+if (!themedQuotedAttributeBraceDot.includes('graph [bgcolor="transparent"];\n  edge ')) {
+  throw new Error("inserts graph theme before quoted graph attributes containing braces");
+}
+
+if (!themedQuotedAttributeBraceDot.includes('graph [label="{quoted body brace}"];')) {
+  throw new Error("preserves quoted graph attributes containing braces");
+}
 
 const graphviz = await Graphviz.load();
 const themedGraphSvg = graphviz.layout(graphLayoutKey(graph) ?? "", "svg", "dot");

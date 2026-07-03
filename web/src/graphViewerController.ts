@@ -19,7 +19,7 @@ export function graphLayoutKey(graph: WorkflowGraph | null | undefined): string 
 }
 
 export function buildThemedGraphDot(dot: string): string {
-  const openingBraceIndex = dot.indexOf("{");
+  const openingBraceIndex = findGraphBodyOpeningBrace(dot);
   if (openingBraceIndex === -1) {
     return dot;
   }
@@ -31,6 +31,99 @@ export function buildThemedGraphDot(dot: string): string {
   ].join("\n");
 
   return `${dot.slice(0, openingBraceIndex + 1)}\n${themeStatements}\n${dot.slice(openingBraceIndex + 1)}`;
+}
+
+function findGraphBodyOpeningBrace(dot: string): number {
+  for (let index = 0; index < dot.length;) {
+    index = skipIgnoredDotRange(dot, index);
+    if (index >= dot.length) {
+      return -1;
+    }
+
+    const token = readDotIdentifier(dot, index);
+    if (token) {
+      if (token.value === "graph" || token.value === "digraph") {
+        return findOpeningBraceAfterGraphKeyword(dot, token.end);
+      }
+      index = token.end;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return -1;
+}
+
+function findOpeningBraceAfterGraphKeyword(dot: string, startIndex: number): number {
+  for (let index = startIndex; index < dot.length;) {
+    index = skipIgnoredDotRange(dot, index);
+    if (index >= dot.length) {
+      return -1;
+    }
+    if (dot[index] === "{") {
+      return index;
+    }
+    index += 1;
+  }
+
+  return -1;
+}
+
+function skipIgnoredDotRange(dot: string, startIndex: number): number {
+  const current = dot[startIndex];
+  const next = dot[startIndex + 1];
+  if (current === "/" && next === "/") {
+    return skipUntilLineEnd(dot, startIndex + 2);
+  }
+  if (current === "/" && next === "*") {
+    return skipBlockComment(dot, startIndex + 2);
+  }
+  if (current === "#") {
+    return skipUntilLineEnd(dot, startIndex + 1);
+  }
+  if (current === "\"") {
+    return skipQuotedString(dot, startIndex + 1);
+  }
+  return startIndex;
+}
+
+function skipUntilLineEnd(dot: string, startIndex: number): number {
+  const lineEndIndex = dot.indexOf("\n", startIndex);
+  return lineEndIndex === -1 ? dot.length : lineEndIndex + 1;
+}
+
+function skipBlockComment(dot: string, startIndex: number): number {
+  const commentEndIndex = dot.indexOf("*/", startIndex);
+  return commentEndIndex === -1 ? dot.length : commentEndIndex + 2;
+}
+
+function skipQuotedString(dot: string, startIndex: number): number {
+  for (let index = startIndex; index < dot.length; index += 1) {
+    if (dot[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (dot[index] === "\"") {
+      return index + 1;
+    }
+  }
+
+  return dot.length;
+}
+
+function readDotIdentifier(dot: string, startIndex: number): { value: string; end: number } | null {
+  const firstCharacter = dot[startIndex];
+  if (!/[A-Za-z_\u0080-\uFFFF]/.test(firstCharacter)) {
+    return null;
+  }
+
+  let end = startIndex + 1;
+  while (end < dot.length && /[A-Za-z0-9_\u0080-\uFFFF]/.test(dot[end])) {
+    end += 1;
+  }
+
+  return { value: dot.slice(startIndex, end).toLowerCase(), end };
 }
 
 export function shouldRenderGraphLayout(
