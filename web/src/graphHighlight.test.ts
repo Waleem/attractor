@@ -6,6 +6,7 @@ import {
 import {
   applyGraphHighlightsToRenderedSvg,
   buildThemedGraphDot,
+  calculateGraphFitTransform,
   graphLayoutKey,
   shouldRenderGraphLayout,
   type GraphViewerUpdateInput
@@ -382,8 +383,8 @@ const quotedAttributeBraceDot = `digraph QuotedAttributeBrace {
 }`;
 const themedQuotedAttributeBraceDot = buildThemedGraphDot(quotedAttributeBraceDot);
 
-if (!themedQuotedAttributeBraceDot.includes('graph [bgcolor="transparent"];\n  edge ')) {
-  throw new Error("inserts graph theme before quoted graph attributes containing braces");
+if (!themedQuotedAttributeBraceDot.includes('graph [bgcolor="transparent", rankdir="LR"];\n  edge ')) {
+  throw new Error("inserts graph theme and left-to-right layout before quoted graph attributes containing braces");
 }
 
 if (!themedQuotedAttributeBraceDot.includes('graph [label="{quoted body brace}"];')) {
@@ -402,6 +403,30 @@ if (!themedHtmlStringGraphIdDot.includes("<G{prod}> {\n  graph [bgcolor")) {
 if (!themedHtmlStringGraphIdDot.includes("digraph <G{prod}> {")) {
   throw new Error("preserves HTML-string graph IDs containing braces");
 }
+
+const themedGraphDot = buildThemedGraphDot(graph.dot);
+
+if (!themedGraphDot.includes('graph [bgcolor="transparent", rankdir="LR"];')) {
+  throw new Error("sets a transparent canvas and left-to-right graph layout");
+}
+
+if (!themedGraphDot.includes('edge [color="#8fa0b3", fontcolor="#8fa0b3"];')) {
+  throw new Error("keeps muted edge defaults");
+}
+
+const tallGraphFit = calculateGraphFitTransform({
+  containerWidth: 784,
+  containerHeight: 400,
+  contentWidth: 100,
+  contentHeight: 267,
+  padding: 24
+});
+
+assertDeepEqual(
+  tallGraphFit,
+  { scale: 1.318352, x: 326.082397, y: 24 },
+  "fits a tall intrinsic SVG into a bounded graph panel without stretching to full width"
+);
 
 const graphviz = await Graphviz.load();
 const themedGraphSvg = graphviz.layout(graphLayoutKey(graph) ?? "", "svg", "dot");

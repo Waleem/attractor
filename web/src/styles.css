@@ -1566,21 +1566,49 @@ td {
   gap: var(--space-1-5);
 }
 
-.graph-canvas {
+.graph-toolbar {
   display: flex;
-  justify-content: center;
-  overflow-x: auto;
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+}
+
+.graph-toolbar button {
+  min-height: 2rem;
+  padding: var(--space-0-5) var(--space-1);
+}
+
+.graph-canvas {
+  position: relative;
+  height: clamp(22rem, 42vh, 27.5rem);
+  max-height: 27.5rem;
+  min-height: 22rem;
+  overflow: hidden;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   padding: 0;
+  cursor: grab;
+  touch-action: none;
 }
 
-.graph-canvas svg {
+.graph-canvas.is-panning {
+  cursor: grabbing;
+}
+
+.graph-scene {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.graph-scene svg {
   display: block;
-  width: min(100%, 56rem);
-  min-width: min(100%, 28rem);
+  width: auto;
+  max-width: none;
   height: auto;
+  overflow: visible;
 }
 
 .graph-canvas svg > polygon {

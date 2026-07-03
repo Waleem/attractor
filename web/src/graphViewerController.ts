@@ -8,6 +8,23 @@ import {
 const GRAPH_EDGE_COLOR = "#8fa0b3";
 const GRAPH_LABEL_COLOR = "#eef2f7";
 const GRAPH_NODE_BORDER_COLOR = "#7f8fa3";
+const DEFAULT_GRAPH_FIT_PADDING = 24;
+const DEFAULT_GRAPH_MAX_FIT_SCALE = 1.5;
+
+export interface GraphFitInput {
+  containerWidth: number;
+  containerHeight: number;
+  contentWidth: number;
+  contentHeight: number;
+  padding?: number;
+  maxScale?: number;
+}
+
+export interface GraphTransform {
+  scale: number;
+  x: number;
+  y: number;
+}
 
 export interface GraphViewerUpdateInput {
   graph: WorkflowGraph | null | undefined;
@@ -25,7 +42,7 @@ export function buildThemedGraphDot(dot: string): string {
   }
 
   const themeStatements = [
-    '  graph [bgcolor="transparent"];',
+    '  graph [bgcolor="transparent", rankdir="LR"];',
     `  edge [color="${GRAPH_EDGE_COLOR}", fontcolor="${GRAPH_EDGE_COLOR}"];`,
     `  node [color="${GRAPH_NODE_BORDER_COLOR}", fontcolor="${GRAPH_LABEL_COLOR}"];`
   ].join("\n");
@@ -156,6 +173,40 @@ export function shouldRenderGraphLayout(
   next: GraphViewerUpdateInput
 ): boolean {
   return graphLayoutKey(previous.graph) !== graphLayoutKey(next.graph);
+}
+
+export function calculateGraphFitTransform(input: GraphFitInput): GraphTransform {
+  const padding = input.padding ?? DEFAULT_GRAPH_FIT_PADDING;
+  const maxScale = input.maxScale ?? DEFAULT_GRAPH_MAX_FIT_SCALE;
+  const availableWidth = Math.max(1, input.containerWidth - padding * 2);
+  const availableHeight = Math.max(1, input.containerHeight - padding * 2);
+
+  if (
+    input.containerWidth <= 0 ||
+    input.containerHeight <= 0 ||
+    input.contentWidth <= 0 ||
+    input.contentHeight <= 0
+  ) {
+    return { scale: 1, x: padding, y: padding };
+  }
+
+  const scale = Math.min(
+    availableWidth / input.contentWidth,
+    availableHeight / input.contentHeight,
+    maxScale
+  );
+  const x = Math.max(padding, (input.containerWidth - input.contentWidth * scale) / 2);
+  const y = Math.max(padding, (input.containerHeight - input.contentHeight * scale) / 2);
+
+  return {
+    scale: roundGraphTransformValue(scale),
+    x: roundGraphTransformValue(x),
+    y: roundGraphTransformValue(y)
+  };
+}
+
+function roundGraphTransformValue(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 export function applyGraphHighlightsToRenderedSvg(
