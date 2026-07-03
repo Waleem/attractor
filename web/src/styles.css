@@ -1283,6 +1283,7 @@ td {
 .models-catalog-scroll {
   width: 100%;
   overflow-x: auto;
+  padding-right: var(--space-3);
 }
 
 .models-catalog-scroll .models-catalog-table {
