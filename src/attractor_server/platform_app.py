@@ -163,6 +163,7 @@ class _PlatformServices:
     server_port: int | None
     web_url: str | None
     api_url: str | None
+    max_concurrent_runs: int | None
 
 
 def _services(request: Request) -> _PlatformServices:
@@ -2825,7 +2826,9 @@ async def get_settings(request: Request) -> JSONResponse:
 
     active_tasks = getattr(services.executor, "active_tasks", {})
     active_count = sum(1 for task in active_tasks.values() if not task.done())
-    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    max_concurrent = services.max_concurrent_runs
+    if max_concurrent is None:
+        max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
     repos = await _list_repos(services)
     pages = _build_settings_pages(
         request,
@@ -3010,6 +3013,7 @@ def create_platform_app(
     model_tester: PlatformModelTester | None = None,
     server_host: str | None = None,
     server_port: int | None = None,
+    max_concurrent_runs: int | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -3085,6 +3089,7 @@ def create_platform_app(
         server_port=server_port,
         web_url=f"http://{server_host}:{server_port}" if server_host and server_port else None,
         api_url=f"http://{server_host}:{server_port}/api" if server_host and server_port else None,
+        max_concurrent_runs=max_concurrent_runs,
     )
     return app
 

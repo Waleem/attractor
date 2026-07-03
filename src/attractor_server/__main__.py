@@ -159,6 +159,7 @@ def main() -> None:
             spa_dist=_resolve_platform_spa_dist(args.spa_dist),
             server_host=args.host,
             server_port=args.port,
+            max_concurrent_runs=args.max_concurrent,
         )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")
