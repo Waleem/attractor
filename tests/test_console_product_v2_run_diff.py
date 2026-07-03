@@ -10,13 +10,12 @@ import pytest
 from attractor_platform.git import GitResult, GitRunner
 from attractor_platform.storage.models import RunStatus
 from tests.test_phase3_console_api_contracts import (
-    _Harness,
     _git_commit,
+    _Harness,
     _register_repo,
-    platform_harness,
-    sample_repo,
 )
 
+pytest_plugins = ("tests.test_phase3_console_api_contracts",)
 pytestmark = pytest.mark.asyncio
 
 
