@@ -10,12 +10,24 @@ import {
   listWorkflows,
   runSpecToLaunchInput,
   type ApprovalDecision,
-  type RunDiff,
   type RunRecord,
   type Workflow
 } from "../api";
 import { useRunEvents } from "../hooks/useRunEvents";
-import { isTerminalRunStatus, runLane, runMetaLine, runWorkflowName, shortRunId, type RunLane } from "../runViewModel";
+import {
+  canCancelRunStatus,
+  diffSummaryLabel,
+  formatCompactRelativeTime,
+  isTerminalRunStatus,
+  runLane,
+  runListAction,
+  runMetaLine,
+  runWorkflowName,
+  shortRunId,
+  summarizeRunDiff,
+  type RunDiffSummary,
+  type RunLane
+} from "../runViewModel";
 import { useAsync } from "../components/useAsync";
 import { CopyButton, EmptyState, ErrorBanner, Field, Loading, PageHeader, Panel, StatusBadge, StatusDot, formatDate } from "../components/ui";
 
@@ -138,7 +150,7 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
           if (!mounted.current) {
             return;
           }
-          setDiffSummaries((current) => ({ ...current, [run.id]: summarizeDiff(diff) }));
+          setDiffSummaries((current) => ({ ...current, [run.id]: summarizeRunDiff(diff) }));
         })
         .catch(() => {
           if (!mounted.current) {
@@ -452,25 +464,53 @@ function RunList({
               <StatusBadge status={run.status} />
             </span>
             <span className="run-row-time" title={formatDate(run.updated_at)}>
-              {relativeTime(run.updated_at)}
+              {formatCompactRelativeTime(run.updated_at)}
             </span>
-            <DiffSummaryView summary={diffSummaries[run.id]} />
+            <DiffSummaryView summary={displayDiffSummary(run, diffSummaries[run.id])} />
           </button>
           <span className="run-id-copy">
             <span className="mono">{shortRunId(run.id)}</span>
             <CopyButton value={run.id} label="Copy run id" />
           </span>
-          <span className="run-row-actions">
-            <button type="button" className="secondary" disabled={!canCancel(run.status) || busyRunId === run.id} onClick={() => onCancel(run)}>
-              Cancel
-            </button>
-            <button type="button" className="secondary" disabled={busyRunId === run.id} onClick={() => onRerun(run)}>
-              Re-run
-            </button>
-          </span>
+          <RunRowAction run={run} busy={busyRunId === run.id} navigate={navigate} onCancel={onCancel} onRerun={onRerun} />
         </div>
       ))}
     </div>
+  );
+}
+
+function RunRowAction({
+  run,
+  busy,
+  navigate,
+  onCancel,
+  onRerun
+}: {
+  run: RunRecord;
+  busy: boolean;
+  navigate: (path: string) => void;
+  onCancel: (run: RunRecord) => void;
+  onRerun: (run: RunRecord) => void;
+}) {
+  const action = runListAction(run.status, Boolean(runSpecToLaunchInput(run.run_spec)));
+  return (
+    <span className="run-row-actions">
+      {action === "cancel" ? (
+        <button type="button" className="secondary" disabled={busy} onClick={() => onCancel(run)}>
+          Cancel
+        </button>
+      ) : null}
+      {action === "rerun" ? (
+        <button type="button" className="secondary" disabled={busy} onClick={() => onRerun(run)}>
+          Re-run
+        </button>
+      ) : null}
+      {action === "open" ? (
+        <button type="button" className="secondary" disabled={busy} onClick={() => navigate(`/runs/${run.id}`)}>
+          Open
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -562,9 +602,9 @@ function RunCard({
         <span className="subtle">{runMetaLine(run)}</span>
         <span className="run-card-footer">
           <StatusBadge status={run.status} />
-          <span title={formatDate(run.updated_at)}>{relativeTime(run.updated_at)}</span>
+          <span title={formatDate(run.updated_at)}>{formatCompactRelativeTime(run.updated_at)}</span>
         </span>
-        <DiffSummaryView summary={diffSummary} />
+        <DiffSummaryView summary={displayDiffSummary(run, diffSummary)} />
       </button>
       {approval ? (
         <span className="run-card-approval">
@@ -592,41 +632,34 @@ function EmptyRunState({ onLaunch }: { onLaunch: () => void }) {
   );
 }
 
-interface DiffSummary {
-  status: "ready";
-  additions: number;
-  deletions: number;
-}
-
-interface DiffUnavailable {
-  status: "unavailable";
-}
-
-type RunDiffSummary = DiffSummary | DiffUnavailable;
-
-function summarizeDiff(diff: RunDiff): DiffSummary {
-  return diff.files.reduce(
-    (summary, file) => ({
-      status: "ready",
-      additions: (summary.additions ?? 0) + file.additions,
-      deletions: (summary.deletions ?? 0) + file.deletions
-    }),
-    { status: "ready", additions: 0, deletions: 0 } as DiffSummary
-  );
-}
-
 function DiffSummaryView({ summary }: { summary: RunDiffSummary | undefined }) {
   if (!summary) {
-    return <span className="diff-summary muted">Diff pending</span>;
+    return <span className="diff-summary muted">Diff after run</span>;
   }
   if (summary.status === "unavailable") {
-    return <span className="diff-summary muted">Diff unavailable</span>;
+    return <span className="diff-summary muted">{diffSummaryLabel(summary)}</span>;
+  }
+  if (summary.status !== "ready" || summary.files === 0) {
+    return <span className="diff-summary muted">{diffSummaryLabel(summary)}</span>;
   }
   return (
-    <span className="diff-summary" aria-label={`${summary.additions} additions, ${summary.deletions} deletions`}>
+    <span className="diff-summary" aria-label={diffSummaryLabel(summary)}>
       <span className="diff-add">+{summary.additions}</span> <span className="diff-del">-{summary.deletions}</span>
     </span>
   );
+}
+
+function displayDiffSummary(run: RunRecord, summary: RunDiffSummary | undefined): RunDiffSummary {
+  if (summary) {
+    return summary;
+  }
+  if (!isTerminalRunStatus(run.status)) {
+    return { status: "deferred" };
+  }
+  if (!run.managed_branch) {
+    return { status: "none" };
+  }
+  return { status: "pending" };
 }
 
 function ValidationDiagnostics({ workflow }: { workflow: Workflow | null }) {
@@ -688,33 +721,4 @@ function matchesSearch(run: RunRecord, query: string): boolean {
   ]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(normalized));
-}
-
-function relativeTime(value: string | null | undefined): string {
-  if (!value) {
-    return "No timestamp";
-  }
-  const date = new Date(value);
-  const delta = Date.now() - date.valueOf();
-  if (Number.isNaN(delta)) {
-    return value;
-  }
-  const abs = Math.abs(delta);
-  const suffix = delta >= 0 ? "ago" : "from now";
-  const units: Array<[number, string]> = [
-    [86_400_000, "d"],
-    [3_600_000, "h"],
-    [60_000, "m"],
-    [1_000, "s"]
-  ];
-  for (const [size, label] of units) {
-    if (abs >= size) {
-      return `${Math.round(abs / size)}${label} ${suffix}`;
-    }
-  }
-  return "now";
-}
-
-function canCancel(status: string): boolean {
-  return !isTerminalRunStatus(status);
 }

@@ -129,15 +129,15 @@ export function StatusDot({ status }: { status: RunStatus | string }) {
 
 export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  const feedback =
-    state === "copied" ? "Copied to clipboard" : state === "failed" ? "Copy failed" : "";
+  const feedback = state === "copied" ? "Copied to clipboard" : state === "failed" ? "Copy failed" : "";
   const buttonLabel = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label;
+  const visibleLabel = state === "copied" ? "✓ Copied" : state === "failed" ? "Copy failed" : "Copy";
 
   useEffect(() => {
     if (state === "idle") {
       return;
     }
-    const timer = window.setTimeout(() => setState("idle"), 1800);
+    const timer = window.setTimeout(() => setState("idle"), 1500);
     return () => window.clearTimeout(timer);
   }, [state]);
 
@@ -154,12 +154,12 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
     <>
       <button
         type="button"
-        className="icon-button secondary"
+        className={`icon-button secondary copy-button copy-button-${state}`}
         title={buttonLabel}
         aria-label={buttonLabel}
         onClick={() => void copyValue()}
       >
-        Copy
+        {visibleLabel}
       </button>
       <span className="sr-only" aria-live="polite">
         {feedback}

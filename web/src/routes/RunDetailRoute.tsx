@@ -22,7 +22,7 @@ import {
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
-import { runWorkflowName } from "../runViewModel";
+import { canCancelRunStatus, eventFromSseMessage, runWorkflowName } from "../runViewModel";
 import {
   CopyButton,
   CopyableTruncatedValue,
@@ -127,6 +127,9 @@ export function RunDetailRoute({ runId }: { runId: string }) {
 
   return (
     <>
+      <a className="back-link" href="../runs">
+        ← Back to runs
+      </a>
       <PageHeader
         title={run ? runWorkflowName(run) : "Run detail"}
         eyebrow="Run Detail"
@@ -167,8 +170,7 @@ export function RunDetailRoute({ runId }: { runId: string }) {
             {run.error_message ? <div className="error-banner">{run.error_message}</div> : null}
           </Panel>
           <Panel title="Branch Diff">
-            <ErrorBanner message={diffState.error} />
-            <BranchDiff diff={diffState.data} loading={diffState.loading} />
+            <BranchDiffPanel diff={diffState.data} loading={diffState.loading} error={diffState.error} />
           </Panel>
           <GraphViewer workflowId={run.workflow_id} events={events} />
           <PendingApprovals
@@ -377,6 +379,26 @@ function BranchDiff({ diff, loading }: { diff: RunDiff | null; loading: boolean 
           </details>
         ))}
       </div>
+    </>
+  );
+}
+
+function BranchDiffPanel({
+  diff,
+  loading,
+  error
+}: {
+  diff: RunDiff | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (isWorkspaceCleanedDiffError(error)) {
+    return <EmptyState>diff unavailable (workspace cleaned up)</EmptyState>;
+  }
+  return (
+    <>
+      <ErrorBanner message={error} />
+      <BranchDiff diff={diff} loading={loading} />
     </>
   );
 }
@@ -654,26 +676,7 @@ function CheckpointTable({ checkpoints, loading }: { checkpoints: CheckpointReco
 }
 
 function eventFromSse(eventType: string, message: MessageEvent<string>): RunEvent | null {
-  let payload: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(message.data) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      payload = parsed as Record<string, unknown>;
-    }
-  } catch {
-    payload = { message: message.data };
-  }
-  const sequence = Number(message.lastEventId);
-  if (!Number.isFinite(sequence)) {
-    return null;
-  }
-  return {
-    sequence,
-    event_type: eventType,
-    payload,
-    actor_label: "",
-    created_at: new Date().toISOString()
-  };
+  return eventFromSseMessage(eventType, message);
 }
 
 function mergeEvents(events: RunEvent[]): RunEvent[] {
@@ -689,5 +692,12 @@ function isTerminal(status: string): boolean {
 }
 
 function canCancel(status: string): boolean {
-  return ["queued", "preparing", "running", "waiting_for_approval"].includes(status);
+  return canCancelRunStatus(status);
+}
+
+function isWorkspaceCleanedDiffError(message: string | null): boolean {
+  if (!message) {
+    return false;
+  }
+  return /(worktree|workspace).*(cleaned|gone|missing|not found|removed|unavailable)|no such file|does not exist/i.test(message);
 }

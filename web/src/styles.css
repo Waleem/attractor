@@ -18,7 +18,7 @@
   --space-3: 24px;
   --space-4: 32px;
   --radius-control: 6px;
-  --radius-card: 12px;
+  --radius-card: 8px;
   --border-width: 0.5px;
   --text-page: #17202a;
   --text-secondary: #526173;
@@ -148,6 +148,7 @@ button {
   line-height: var(--line-height);
   white-space: nowrap;
   font-weight: var(--font-weight-medium);
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 
 .link-button {
@@ -180,11 +181,19 @@ button.secondary {
   justify-content: center;
   gap: var(--space-0-5);
   font-weight: var(--font-weight-medium);
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+button:active:not(:disabled),
+.button-link:active,
+.button-like:active {
+  opacity: 0.86;
+  transform: scale(0.98);
 }
 
 input,
@@ -352,6 +361,7 @@ td {
   font-size: var(--font-size-14);
   font-weight: var(--font-weight-medium);
   list-style: none;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
 }
 
 .button-like::-webkit-details-marker {
@@ -497,8 +507,8 @@ td {
   max-width: 100%;
   align-items: center;
   gap: var(--space-0-5);
-  border: var(--border-width) solid transparent;
-  border-radius: 999px;
+  border: 0;
+  border-radius: var(--radius-control);
   padding: 2px var(--space-1);
   font-size: var(--font-size-12);
   font-weight: var(--font-weight-medium);
@@ -545,39 +555,48 @@ td {
 .status-neutral {
   color: var(--status-queued-fg);
   background: var(--status-queued-badge-bg);
-  border-color: var(--status-queued-border);
 }
 
 .status-running {
   color: var(--status-running-fg);
   background: var(--status-running-badge-bg);
-  border-color: var(--status-running-border);
 }
 
 .status-waiting,
 .status-warn {
   color: var(--status-waiting-fg);
   background: var(--status-waiting-badge-bg);
-  border-color: var(--status-waiting-border);
 }
 
 .status-completed,
 .status-good {
   color: var(--status-completed-fg);
   background: var(--status-completed-badge-bg);
-  border-color: var(--status-completed-border);
 }
 
 .status-failed,
 .status-bad {
   color: var(--status-failed-fg);
   background: var(--status-failed-badge-bg);
-  border-color: var(--status-failed-border);
 }
 
 .icon-button {
   min-width: 36px;
   padding-inline: var(--space-1);
+}
+
+.copy-button {
+  min-width: 72px;
+}
+
+.copy-button-copied {
+  color: var(--status-completed-fg);
+  background: var(--status-completed-badge-bg);
+}
+
+.copy-button-failed {
+  color: var(--status-failed-fg);
+  background: var(--status-failed-badge-bg);
 }
 
 .truncate {
@@ -762,7 +781,7 @@ td {
 
 .run-list {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-0-5);
 }
 
 .run-row {
@@ -770,23 +789,22 @@ td {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: var(--space-1-5);
+  gap: var(--space-1);
   align-items: center;
   border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-control);
   background: var(--bg-card);
   color: var(--text-page);
-  padding: var(--space-1);
+  padding: 6px var(--space-1);
   text-align: left;
-  cursor: pointer;
 }
 
 .run-row-open {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 18px minmax(220px, 1.5fr) auto minmax(82px, auto) minmax(112px, auto);
-  gap: var(--space-1-5);
+  grid-template-columns: 14px minmax(180px, 1.35fr) auto minmax(78px, auto) minmax(112px, auto);
+  gap: var(--space-1);
   align-items: center;
   border: 0;
   background: transparent;
@@ -799,6 +817,24 @@ td {
 .run-card:hover {
   border-color: var(--border-strong);
   background: var(--bg-card-muted);
+}
+
+.run-row-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.run-row:hover .run-row-actions,
+.run-row:focus-within .run-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.run-row-actions button {
+  min-height: 30px;
+  padding: 2px var(--space-1);
+  font-size: var(--font-size-13);
 }
 
 .run-row-open:focus-visible,
@@ -834,6 +870,18 @@ td {
   min-width: auto;
   padding: 0 var(--space-0-5);
   font-size: var(--font-size-12);
+}
+
+.back-link {
+  justify-self: start;
+  color: var(--primary);
+  font-size: var(--font-size-13);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+}
+
+.back-link:hover {
+  text-decoration: underline;
 }
 
 .run-row-time,
@@ -1440,15 +1488,20 @@ td {
 
 .graph-canvas {
   overflow-x: auto;
-  border: var(--border-card);
-  border-radius: var(--radius-card);
-  background: var(--bg-card);
-  padding: var(--space-1-5);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  padding: 0;
 }
 
 .graph-canvas svg {
   max-width: 100%;
   height: auto;
+}
+
+.graph-canvas svg > polygon {
+  fill: transparent;
+  stroke: transparent;
 }
 
 .graph-canvas .node polygon,
@@ -1457,6 +1510,26 @@ td {
 .graph-canvas .edge path,
 .graph-canvas .edge polygon {
   transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
+}
+
+.graph-canvas .node polygon,
+.graph-canvas .node ellipse,
+.graph-canvas .node path {
+  fill: var(--bg-card-muted);
+  stroke: var(--border-subtle);
+}
+
+.graph-canvas .node text {
+  fill: var(--text-page);
+}
+
+.graph-canvas .edge path {
+  stroke: var(--text-muted);
+}
+
+.graph-canvas .edge polygon {
+  fill: var(--text-muted);
+  stroke: var(--text-muted);
 }
 
 .graph-canvas .node.completed polygon,
@@ -1617,6 +1690,11 @@ td {
   .run-id-copy,
   .run-row-actions {
     grid-column: 1 / -1;
+  }
+
+  .run-row-actions {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .settings-subnav {

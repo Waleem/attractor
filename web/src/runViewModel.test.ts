@@ -1,4 +1,15 @@
-import { runLane, runMetaLine, runWorkflowName, shortRunId } from "./runViewModel.js";
+import {
+  canCancelRunStatus,
+  diffSummaryLabel,
+  eventFromSseMessage,
+  formatCompactRelativeTime,
+  runLane,
+  runListAction,
+  runMetaLine,
+  runWorkflowName,
+  shortRunId,
+  summarizeRunDiff
+} from "./runViewModel.js";
 
 function assertEqual(actual: unknown, expected: unknown, message: string) {
   if (actual !== expected) {
@@ -99,4 +110,72 @@ assertEqual(
   runMetaLine(run()),
   "operator / main / abcdef123456 / local",
   "meta line includes actor, branch, source commit, and environment"
+);
+
+assertEqual(canCancelRunStatus("queued"), true, "queued runs can be cancelled");
+assertEqual(canCancelRunStatus("running"), true, "running runs can be cancelled");
+assertEqual(canCancelRunStatus("waiting_for_approval"), true, "approval-waiting runs can be cancelled");
+assertEqual(canCancelRunStatus("completed"), false, "completed runs cannot be cancelled");
+assertEqual(canCancelRunStatus("failed"), false, "failed runs cannot be cancelled");
+
+assertEqual(runListAction("running", true), "cancel", "cancelable list rows show cancel as their contextual action");
+assertEqual(runListAction("completed", true), "rerun", "rerunnable terminal list rows show re-run");
+assertEqual(runListAction("failed", false), "open", "non-rerunnable terminal list rows show open");
+
+const summary = summarizeRunDiff({
+  run_id: "run_1",
+  base_commit: "base",
+  head_commit: "head",
+  truncated: false,
+  files: [
+    { path: "a.ts", status: "modified", additions: 7, deletions: 2 },
+    { path: "b.ts", status: "added", additions: 3, deletions: 0 }
+  ]
+});
+assertEqual(summary.status, "ready", "diff summary is ready for loaded diffs");
+assertEqual(summary.files, 2, "diff summary counts changed files");
+assertEqual(summary.additions, 10, "diff summary totals additions");
+assertEqual(summary.deletions, 2, "diff summary totals deletions");
+assertEqual(diffSummaryLabel(summary), "+10 -2 / 2 files", "diff label includes counts and file total");
+assertEqual(
+  diffSummaryLabel({ status: "pending" }),
+  "Diff loading",
+  "diff pending copy is clean and does not use stale placeholder language"
+);
+assertEqual(diffSummaryLabel({ status: "none" }), "No diff", "empty diff state is explicit");
+assertEqual(
+  diffSummaryLabel({ status: "unavailable" }),
+  "Diff unavailable",
+  "unavailable diff state is explicit"
+);
+
+assertEqual(
+  formatCompactRelativeTime("2026-07-01T12:00:00Z", Date.parse("2026-07-03T12:00:00Z")),
+  "2d ago",
+  "old timestamps stay old in compact relative time"
+);
+assertEqual(
+  formatCompactRelativeTime("2026-07-03T12:00:30Z", Date.parse("2026-07-03T12:00:00Z")),
+  "30s from now",
+  "future timestamps use from-now suffix"
+);
+
+const event = eventFromSseMessage(
+  "stage.completed",
+  {
+    data: JSON.stringify({
+      node_id: "build",
+      actor_label: "worker",
+      created_at: "2026-07-01T10:30:00Z"
+    }),
+    lastEventId: "42"
+  },
+  "2026-07-03T12:00:00Z"
+);
+assertEqual(event?.sequence, 42, "SSE event sequence comes from lastEventId");
+assertEqual(event?.actor_label, "worker", "SSE event actor is preserved from payload");
+assertEqual(
+  event?.created_at,
+  "2026-07-01T10:30:00Z",
+  "SSE event created_at is preserved from payload instead of overwritten with receive time"
 );
