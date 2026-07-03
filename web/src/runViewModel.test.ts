@@ -75,13 +75,15 @@ assertEqual(shortRunId("run_0123456789abcdef"), "01234567", "run_ prefix is remo
 assertEqual(shortRunId("abc123"), "abc123", "short ids are left intact");
 
 assertEqual(runLane(run({ status: "queued" })), "queued", "queued runs map to the queued lane");
-assertEqual(runLane(run({ status: "preparing" })), "running", "preparing runs map to running");
+assertEqual(runLane(run({ status: "preparing" })), "queued", "preparing runs map to queued");
 assertEqual(runLane(run({ status: "running" })), "running", "running runs map to running");
 assertEqual(runLane(run({ status: "waiting_for_approval" })), "awaiting", "approval waits map to awaiting");
-assertEqual(runLane(run({ status: "writeback_pending" })), "awaiting", "writeback waits map to awaiting");
 assertEqual(runLane(run({ status: "completed" })), "done", "completed runs map to done");
+assertEqual(runLane(run({ status: "cancelled" })), "done", "cancelled runs map to done");
+assertEqual(runLane(run({ status: "writeback_pending" })), "done", "writeback pending maps to done");
 assertEqual(runLane(run({ status: "writeback_applied" })), "done", "applied writeback maps to done");
 assertEqual(runLane(run({ status: "failed" })), "failed", "failed runs do not map to a board lane");
+assertEqual(runLane(run({ status: "writeback_failed" })), "failed", "writeback failed stays behind the failed filter");
 
 assertEqual(
   runMetaLine(run()),

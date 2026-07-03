@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "test:run-view-model": "tsc --module ES2022 --moduleResolution Bundler --target ES2022 --strict --outDir dist-test src/runViewModel.test.ts src/runViewModel.ts && node dist-test/runViewModel.test.js",
     "test:graph": "tsc -p tsconfig.test.json && tsc --module ES2022 --moduleResolution Bundler --target ES2022 --strict --outDir dist-test src/runViewModel.test.ts src/runViewModel.ts && node dist-test/graphHighlight.test.js && node dist-test/runViewModel.test.js",
     "test:app-base": "tsc -p tsconfig.test.json && node dist-test/appBase.test.js",
     "preview": "vite preview --host 127.0.0.1"

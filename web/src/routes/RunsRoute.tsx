@@ -643,7 +643,7 @@ function matchesStatus(run: RunRecord, filter: StatusFilter): boolean {
     return run.status === "completed" || run.status === "writeback_applied";
   }
   if (filter === "failed") {
-    return run.status === "failed" || run.status === "cancelled" || run.status === "writeback_failed";
+    return run.status === "failed" || run.status === "writeback_failed";
   }
   return run.status === filter;
 }

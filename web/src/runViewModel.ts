@@ -51,16 +51,16 @@ export function runLane(run: Pick<RunLike, "status">): RunLane {
 }
 
 export function laneForStatus(status: string): RunLane {
-  if (["queued"].includes(status)) {
+  if (["queued", "preparing"].includes(status)) {
     return "queued";
   }
-  if (["preparing", "running"].includes(status)) {
+  if (["running"].includes(status)) {
     return "running";
   }
-  if (["waiting_for_approval", "writeback_pending"].includes(status)) {
+  if (["waiting_for_approval"].includes(status)) {
     return "awaiting";
   }
-  if (["completed", "writeback_applied"].includes(status)) {
+  if (["completed", "cancelled", "writeback_pending", "writeback_applied"].includes(status)) {
     return "done";
   }
   return "failed";
