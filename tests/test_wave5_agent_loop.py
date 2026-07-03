@@ -209,7 +209,7 @@ class TestContextWindowOverflow:
         events: list[SessionEvent] = []
 
         client = Client()
-        config = SessionConfig(model="claude-sonnet-4-5")  # 200k context
+        config = SessionConfig(model="claude-haiku-4-5-20251001")  # 200k context
         session = Session(client=client, config=config)
         session.events.on(lambda e: events.append(e))
 
@@ -233,7 +233,7 @@ class TestContextWindowOverflow:
         events: list[SessionEvent] = []
 
         client = Client()
-        config = SessionConfig(model="claude-sonnet-4-5")
+        config = SessionConfig(model="claude-haiku-4-5-20251001")
         session = Session(client=client, config=config)
         session.events.on(lambda e: events.append(e))
 

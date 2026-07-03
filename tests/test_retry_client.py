@@ -200,7 +200,7 @@ class TestClient:
         client.register_adapter("anthropic", _MockAdapter("anthropic", "hello"))
 
         resp = await client.complete(
-            Request(model="claude-sonnet-4-5", provider="anthropic", messages=[Message.user("hi")])
+            Request(model="claude-sonnet-5", provider="anthropic", messages=[Message.user("hi")])
         )
         assert resp.text == "hello"
         assert resp.provider == "anthropic"
@@ -212,7 +212,7 @@ class TestClient:
         client.register_adapter("anthropic", _MockAdapter("anthropic", "from-catalog"))
 
         resp = await client.complete(
-            Request(model="claude-sonnet-4-5", messages=[Message.user("hi")])
+            Request(model="claude-sonnet-5", messages=[Message.user("hi")])
         )
         assert resp.text == "from-catalog"
 
@@ -277,8 +277,8 @@ class TestClient:
         client.register_adapter("anthropic", _MockAdapter("anthropic", "from-anthropic"))
         client.register_adapter("openai", _MockAdapter("openai", "from-openai"))
 
-        r1 = await client.complete(Request(model="claude-sonnet-4-5", messages=[Message.user("x")]))
+        r1 = await client.complete(Request(model="claude-sonnet-5", messages=[Message.user("x")]))
         assert r1.text == "from-anthropic"
 
-        r2 = await client.complete(Request(model="gpt-5.2", messages=[Message.user("x")]))
+        r2 = await client.complete(Request(model="gpt-5.5", messages=[Message.user("x")]))
         assert r2.text == "from-openai"

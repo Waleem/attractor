@@ -88,7 +88,7 @@ async def test_generate_object_auto_resolves_openai_provider() -> None:
     schema = {"type": "object", "properties": {"name": {"type": "string"}}}
     result = await generate_object(
         client,
-        "gpt-5.2",
+        "gpt-5.5",
         "Extract name",
         schema=schema,
         provider=None,  # Must auto-resolve to "openai" via catalog
@@ -120,7 +120,7 @@ async def test_generate_object_auto_resolves_anthropic_falls_back_to_prompt() ->
     schema = {"type": "object", "properties": {"value": {"type": "integer"}}}
     result = await generate_object(
         client,
-        "claude-sonnet-4-5",
+        "claude-sonnet-5",
         "Give me a value",
         schema=schema,
         provider=None,  # Should auto-resolve to "anthropic" → prompt injection
@@ -152,7 +152,7 @@ async def test_generate_object_explicit_provider_not_overridden() -> None:
     schema = {"type": "object"}
     await generate_object(
         client,
-        "gpt-5.2",
+        "gpt-5.5",
         "test",
         schema=schema,
         provider="anthropic",  # Explicit override -- must not be replaced

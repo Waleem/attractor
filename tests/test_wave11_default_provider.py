@@ -164,9 +164,9 @@ class TestDefaultProviderRouting:
         client.register_adapter("anthropic", anthropic_adapter)
         client.register_adapter("openai", openai_adapter)
 
-        # claude-sonnet-4-5 is in the catalog -> provider = "anthropic"
+        # claude-sonnet-5 is in the catalog -> provider = "anthropic"
         resp = await client.complete(
-            Request(model="claude-sonnet-4-5", messages=[Message.user("hi")])
+            Request(model="claude-sonnet-5", messages=[Message.user("hi")])
         )
         assert resp.provider == "anthropic"
         assert resp.text == "from-anthropic"
