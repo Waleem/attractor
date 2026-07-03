@@ -59,8 +59,42 @@ export function Stat({
 }
 
 export function StatusBadge({ status }: { status: RunStatus | string }) {
-  const tone = statusTone(status);
-  return <span className={`status status-${tone}`}>{status.replaceAll("_", " ")}</span>;
+  const semanticStatus = statusSemantic(status);
+  return (
+    <span className={`status status-${semanticStatus}`}>
+      <StatusDot status={status} />
+      <span className="status-icon" aria-hidden="true">
+        {statusIcon(semanticStatus)}
+      </span>
+      <span>{formatStatus(status)}</span>
+    </span>
+  );
+}
+
+export function StatusDot({ status }: { status: RunStatus | string }) {
+  return <span className={`status-dot status-dot-${statusSemantic(status)}`} aria-hidden="true" />;
+}
+
+export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+  return (
+    <button
+      type="button"
+      className="icon-button secondary"
+      title={label}
+      aria-label={label}
+      onClick={() => void navigator.clipboard.writeText(value)}
+    >
+      Copy
+    </button>
+  );
+}
+
+export function TruncatedValue({ value }: { value: string }) {
+  return (
+    <span className="truncate mono" title={value}>
+      {value}
+    </span>
+  );
 }
 
 export function EmptyState({ children = "No records" }: { children?: ReactNode }) {
@@ -137,4 +171,57 @@ export function statusTone(status: string): "good" | "warn" | "bad" | "neutral" 
     return "bad";
   }
   return "neutral";
+}
+
+function statusSemantic(status: string): "queued" | "running" | "waiting" | "completed" | "failed" | "neutral" {
+  if (["queued", "preparing"].includes(status)) {
+    return "queued";
+  }
+  if (["running"].includes(status)) {
+    return "running";
+  }
+  if (["waiting_for_approval", "writeback_pending"].includes(status)) {
+    return "waiting";
+  }
+  if (["completed", "writeback_applied", "valid", "ok", "configured"].includes(status)) {
+    return "completed";
+  }
+  if (["failed", "cancelled", "writeback_failed", "invalid", "error", "unconfigured"].includes(status)) {
+    return "failed";
+  }
+
+  const tone = statusTone(status);
+  if (tone === "good") {
+    return "completed";
+  }
+  if (tone === "warn") {
+    return "waiting";
+  }
+  if (tone === "bad") {
+    return "failed";
+  }
+  return "neutral";
+}
+
+function statusIcon(status: ReturnType<typeof statusSemantic>): string {
+  if (status === "queued") {
+    return "Queue";
+  }
+  if (status === "running") {
+    return "Run";
+  }
+  if (status === "waiting") {
+    return "Wait";
+  }
+  if (status === "completed") {
+    return "Done";
+  }
+  if (status === "failed") {
+    return "Fail";
+  }
+  return "Info";
+}
+
+function formatStatus(status: string): string {
+  return status.replaceAll("_", " ");
 }

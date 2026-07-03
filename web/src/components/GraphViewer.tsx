@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   getWorkflowGraph,
   type RunEvent,
@@ -26,85 +26,6 @@ type GraphvizModule = {
   };
 };
 let graphvizLoadPromise: Promise<GraphvizRenderer> | null = null;
-
-const GRAPH_SVG_STYLE = `
-svg {
-  max-width: 100%;
-  height: auto;
-}
-.node polygon,
-.node ellipse,
-.node path {
-  transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
-}
-.edge path,
-.edge polygon {
-  transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
-}
-.node.complete polygon,
-.node.complete ellipse,
-.node.complete path {
-  fill: #dcefe5;
-  stroke: #2f7d52;
-}
-.node.active polygon,
-.node.active ellipse,
-.node.active path {
-  fill: #d8e9fb;
-  stroke: #245a9f;
-  stroke-width: 2;
-}
-.node.checkpointed polygon,
-.node.checkpointed ellipse,
-.node.checkpointed path {
-  stroke-dasharray: 5 3;
-}
-.node.failed polygon,
-.node.failed ellipse,
-.node.failed path {
-  fill: #f7dada;
-  stroke: #b44343;
-  stroke-width: 2;
-}
-.edge.active path {
-  stroke: #245a9f;
-  stroke-width: 2.5;
-}
-.edge.active polygon {
-  fill: #245a9f;
-  stroke: #245a9f;
-}
-`;
-
-const shellStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.8rem"
-};
-
-const graphCanvasStyle: CSSProperties = {
-  overflowX: "auto",
-  border: "1px solid #d8dee6",
-  borderRadius: 6,
-  background: "#ffffff",
-  padding: "0.75rem"
-};
-
-const legendStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "0.55rem",
-  color: "#526173",
-  fontSize: "0.82rem"
-};
-
-const swatchBaseStyle: CSSProperties = {
-  width: 12,
-  height: 12,
-  borderRadius: 2,
-  display: "inline-block",
-  marginRight: 5,
-  verticalAlign: -1
-};
 
 export function GraphViewer({ workflowId, events }: { workflowId: string; events: RunEvent[] }) {
   const graphState = useAsync(() => getWorkflowGraph(workflowId), [workflowId]);
@@ -164,7 +85,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
 
   return (
     <Panel title="Workflow Graph">
-      <div style={shellStyle}>
+      <div className="graph-viewer">
         <ErrorBanner message={graphState.error ?? renderError} />
         {graphState.loading || rendering ? <Loading label="Rendering graph" /> : null}
         {!graphState.loading && graph && graph.nodes.length === 0 ? (
@@ -173,7 +94,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
         {svgMarkup ? (
           <div
             ref={graphCanvasRef}
-            style={graphCanvasStyle}
+            className="graph-canvas"
             aria-label={`${graph?.name ?? "workflow"} graph`}
             dangerouslySetInnerHTML={{ __html: svgMarkup }}
           />
@@ -186,27 +107,21 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
 
 function GraphLegend() {
   return (
-    <div style={legendStyle}>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#d8e9fb", border: "1px solid #245a9f" }} />
+    <div className="graph-legend">
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-active" aria-hidden="true" />
         active
       </span>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#dcefe5", border: "1px solid #2f7d52" }} />
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-complete" aria-hidden="true" />
         complete
       </span>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#f7dada", border: "1px solid #b44343" }} />
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-failed" aria-hidden="true" />
         failed
       </span>
-      <span>
-        <span
-          style={{
-            ...swatchBaseStyle,
-            background: "#ffffff",
-            border: "1px dashed #526173"
-          }}
-        />
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-checkpointed" aria-hidden="true" />
         checkpointed
       </span>
     </div>
@@ -253,10 +168,6 @@ function prepareGraphSvg(
   sanitizeSvg(document);
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `${graph.name} workflow graph`);
-
-  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-  style.textContent = GRAPH_SVG_STYLE;
-  svg.insertBefore(style, svg.firstChild);
 
   document.querySelectorAll<SVGGElement>("g.node").forEach((group) => {
     const nodeId = graphGroupTitle(group);
