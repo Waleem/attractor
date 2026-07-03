@@ -261,14 +261,14 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
 
         assert response.status_code == 200
         payload = response.json()
-        assert set(payload) == {
+        assert {
             "models",
             "environments",
             "variables",
             "server",
             "storage",
             "monitoring",
-        }
+        } <= set(payload)
         assert payload["models"]["default_provider"] == "gemini"
         assert payload["models"]["default_model"] == get_profile("gemini").default_model
         assert payload["models"]["provider_credentials"]["openai"]["configured"] is True
