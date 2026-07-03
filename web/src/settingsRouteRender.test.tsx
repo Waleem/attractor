@@ -22,7 +22,7 @@ async function renderSettingsRoute(handler: FetchHandler): Promise<{
   markup: string;
   fetchCalls: string[];
 }> {
-  const { document } = installMiniDom();
+  const { document } = installMiniDom("/settings");
   const fetchCalls: string[] = [];
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const path = String(input);
@@ -51,6 +51,47 @@ async function renderSettingsRoute(handler: FetchHandler): Promise<{
   return { markup, fetchCalls };
 }
 
+async function renderAppRoute(
+  pathname: string,
+  handler: FetchHandler,
+  expectedFetchCalls = 2
+): Promise<{
+  markup: string;
+  fetchCalls: string[];
+}> {
+  const { document } = installMiniDom(pathname);
+  const fetchCalls: string[] = [];
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const path = String(input);
+    fetchCalls.push(path);
+    const result = handler(path);
+    return Promise.resolve({
+      ok: result.ok ?? true,
+      status: result.status ?? (result.ok === false ? 500 : 200),
+      text: () => Promise.resolve(JSON.stringify(result.body))
+    } as Response);
+  }) as typeof fetch;
+
+  const [{ createRoot }, { default: App }] = await Promise.all([
+    import("react-dom/client"),
+    import("./App.js")
+  ]);
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  root.render(<App />);
+
+  if (expectedFetchCalls > 0) {
+    await waitFor(() => fetchCalls.length >= expectedFetchCalls);
+    await waitFor(() => !container.textContent.includes("Loading"));
+  } else {
+    await waitFor(() => container.textContent.length > 0);
+  }
+  const markup = container.innerHTML;
+  root.unmount();
+  return { markup, fetchCalls };
+}
+
 async function waitFor(assertion: () => boolean) {
   const startedAt = Date.now();
   while (!assertion()) {
@@ -61,11 +102,17 @@ async function waitFor(assertion: () => boolean) {
   }
 }
 
-function installMiniDom() {
+function installMiniDom(pathname = "/settings") {
   const document = new MiniDocument();
+  const location = { pathname };
   const window = {
     document,
-    location: { pathname: "/settings" },
+    location,
+    history: {
+      pushState(_state: unknown, _title: string, nextPath: string) {
+        location.pathname = nextPath;
+      }
+    },
     navigator: { userAgent: "node" },
     addEventListener() {},
     removeEventListener() {},
@@ -358,6 +405,24 @@ const settingsPayload: SettingsOverview = {
           ]
         }
       ]
+    },
+    {
+      id: "server",
+      title: "Server",
+      description: "Server runtime settings.",
+      groups: [
+        {
+          title: "Runtime",
+          rows: [
+            {
+              label: "Status",
+              description: "Server process status.",
+              value: "online",
+              editability: "read-only"
+            }
+          ]
+        }
+      ]
     }
   ]
 };
@@ -378,6 +443,42 @@ const catalogPayload: ModelCatalogRow[] = [
 ];
 
 async function main() {
+  const settingsHandler = (path: string) => {
+    if (path === "/api/settings") {
+      return { body: settingsPayload };
+    }
+    if (path === "/api/settings/models/catalog") {
+      return { body: { items: catalogPayload } };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  };
+
+  const modelsRouteResult = await renderAppRoute("/settings/models", settingsHandler);
+  assertIncludes(modelsRouteResult.markup, "GPT CLI Task 4", "/settings/models renders the settings models page");
+  assertEqual(
+    modelsRouteResult.fetchCalls.includes("/api/settings"),
+    true,
+    "/settings/models calls getSettings"
+  );
+
+  const serverRouteResult = await renderAppRoute("/settings/server", settingsHandler);
+  assertIncludes(serverRouteResult.markup, "Server runtime settings.", "/settings/server renders the server page");
+  assertIncludes(serverRouteResult.markup, "Server process status.", "/settings/server renders server settings rows");
+
+  const invalidRouteResult = await renderAppRoute(
+    "/settings/not-a-page",
+    (path) => {
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    0
+  );
+  assertIncludes(
+    invalidRouteResult.markup,
+    "No route for /settings/not-a-page",
+    "invalid settings subpages render the app not-found route"
+  );
+  assertEqual(invalidRouteResult.fetchCalls.length, 0, "invalid settings subpages do not load settings data");
+
   const happyResult = await renderSettingsRoute((path) => {
     if (path === "/api/settings") {
       return { body: settingsPayload };

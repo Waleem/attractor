@@ -9,7 +9,7 @@ import { RunsRoute } from "./routes/RunsRoute";
 import { RunDetailRoute } from "./routes/RunDetailRoute";
 import { ApprovalsRoute } from "./routes/ApprovalsRoute";
 import { SystemRoute } from "./routes/SystemRoute";
-import { SettingsRoute } from "./routes/SettingsRoute";
+import { isSettingsPageId, SettingsRoute } from "./routes/SettingsRoute";
 import { PageHeader, Panel } from "./components/ui";
 import { getAppBasePath, stripBasePath, toAppHref } from "./appBase";
 
@@ -75,7 +75,14 @@ function RouteSwitch({
     return <SystemRoute />;
   }
   if (path === "/settings") {
-    return <SettingsRoute />;
+    return <SettingsRoute navigate={navigate} />;
+  }
+  const settingsMatch = path.match(/^\/settings\/([^/]+)$/);
+  if (settingsMatch) {
+    const pageId = decodeURIComponent(settingsMatch[1]);
+    if (isSettingsPageId(pageId)) {
+      return <SettingsRoute pageId={pageId} navigate={navigate} />;
+    }
   }
   return (
     <>

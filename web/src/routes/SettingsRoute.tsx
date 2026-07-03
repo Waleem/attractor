@@ -61,21 +61,51 @@ const settingsNavigation = [
   }
 ];
 
-export function SettingsRoute() {
+export const settingsPageIds = new Set(settingsNavigation.flatMap((group) => group.pages.map((page) => page.id)));
+
+export function isSettingsPageId(pageId: string): boolean {
+  return settingsPageIds.has(pageId);
+}
+
+export function SettingsRoute({
+  pageId,
+  navigate
+}: {
+  pageId?: string;
+  navigate?: (path: string) => void;
+}) {
+  const [localPageId, setLocalPageId] = useState("models");
   const settingsState = useAsync(getSettings, []);
   const catalogState = useAsync(getModelCatalog, []);
+  const activePageId = pageId ?? localPageId;
+  const changePage = navigate
+    ? (nextPageId: string) => navigate(`/settings/${nextPageId}`)
+    : setLocalPageId;
 
-  return <SettingsRouteView settingsState={settingsState} catalogState={catalogState} />;
+  return (
+    <SettingsRouteView
+      settingsState={settingsState}
+      catalogState={catalogState}
+      activePageId={activePageId}
+      explicitPageId={pageId !== undefined}
+      onPageChange={changePage}
+    />
+  );
 }
 
 export function SettingsRouteView({
   settingsState,
-  catalogState
+  catalogState,
+  activePageId,
+  explicitPageId = false,
+  onPageChange
 }: {
   settingsState: AsyncState<SettingsOverview>;
   catalogState: AsyncState<ModelCatalogRow[]>;
+  activePageId?: string;
+  explicitPageId?: boolean;
+  onPageChange?: (pageId: string) => void;
 }) {
-  const [activePageId, setActivePageId] = useState("models");
   const settings = settingsState.data;
   const pages = safeArray(settings?.pages);
   const pagesById = useMemo(() => {
@@ -87,7 +117,8 @@ export function SettingsRouteView({
     }
     return map;
   }, [pages]);
-  const activePage = pagesById.get(activePageId) ?? pages[0] ?? null;
+  const requestedPageId = activePageId ?? "models";
+  const activePage = pagesById.get(requestedPageId) ?? (explicitPageId ? null : pages[0] ?? null);
   const showUnavailableState = !settingsState.loading && !settings;
   const showEmptyPagesState = !settingsState.loading && settings && !activePage;
 
@@ -103,7 +134,7 @@ export function SettingsRouteView({
           <SettingsSubnav
             activePageId={activePage.id}
             availablePages={pagesById}
-            onChange={setActivePageId}
+            onChange={onPageChange ?? (() => undefined)}
           />
           <SettingsPageTemplate page={activePage}>
             {activePage.id === "models" ? (
