@@ -606,7 +606,7 @@ async function main() {
   await waitFor(() => modelTestResult.container.textContent.includes("Testing"));
   assertIncludes(
     modelTestResult.container.textContent,
-    "Testing... 0/1",
+    "Testing… 0/1",
     "model testing shows deterministic in-progress count while the test request is pending"
   );
   assertIncludes(

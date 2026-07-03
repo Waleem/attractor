@@ -236,7 +236,7 @@ function ModelCatalogSection({
   const catalog = safeArray<ModelCatalogRow>(catalogState.data);
   const providerCredentials = settings.models?.provider_credentials ?? {};
   const filteredCatalog = useMemo(() => filterModelCatalog(catalog, query), [catalog, query]);
-  const testingProgressLabel = `Testing... ${testResult?.items.length ?? 0}/${catalog.length}`;
+  const testingProgressLabel = `Testing… ${testResult?.items.length ?? 0}/${catalog.length}`;
   const testResultsByModel = useMemo(() => {
     const results = new Map<string, ModelTestResult>();
     for (const item of testResult?.items ?? []) {
