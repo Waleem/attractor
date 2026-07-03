@@ -379,11 +379,6 @@ _PROVIDER_CREDENTIALS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("anthropic", ("ANTHROPIC_API_KEY",)),
     ("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
 )
-_MODEL_CAPABILITIES: tuple[tuple[str, str], ...] = (
-    ("tools", "supports_tools"),
-    ("vision", "supports_vision"),
-    ("reasoning", "supports_reasoning"),
-)
 _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
 
@@ -453,10 +448,6 @@ async def _refresh_codergen_backend(services: _PlatformServices) -> None:
         )
 
 
-def _model_capabilities(model: ModelInfo) -> list[str]:
-    return [name for name, attribute in _MODEL_CAPABILITIES if getattr(model, attribute)]
-
-
 def _small_model_badge(model: ModelInfo) -> bool:
     model_id = model.id.lower()
     display_name = model.display_name.lower()
@@ -472,13 +463,13 @@ def _serialize_model_catalog_row(model: ModelInfo) -> dict[str, Any]:
         "provider": model.provider,
         "model": model.id,
         "display_name": model.display_name,
-        "context": model.context_window,
+        "context_window": model.context_window,
         "max_output": model.max_output,
-        "capabilities": _model_capabilities(model),
-        "badges": {
-            "default": model.id == default_model.id,
-            "small": _small_model_badge(model),
-        },
+        "supports_tools": model.supports_tools,
+        "supports_vision": model.supports_vision,
+        "supports_reasoning": model.supports_reasoning,
+        "is_default": model.id == default_model.id,
+        "is_small": _small_model_badge(model),
     }
 
 

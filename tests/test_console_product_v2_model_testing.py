@@ -104,14 +104,21 @@ async def test_model_catalog_returns_operator_metadata(tmp_path: Path) -> None:
             "provider": "openai",
             "model": "gpt-5.5",
             "display_name": "GPT-5.5",
-            "context": 1_000_000,
+            "context_window": 1_000_000,
             "max_output": 128_000,
-            "capabilities": ["tools", "vision", "reasoning"],
-            "badges": {"default": True, "small": False},
+            "supports_tools": True,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "is_default": True,
+            "is_small": False,
         }
-        assert by_id["gpt-5.4-mini"]["badges"] == {"default": False, "small": True}
-        assert by_id["claude-sonnet-5"]["badges"] == {"default": True, "small": False}
+        assert by_id["gpt-5.4-mini"]["is_default"] is False
+        assert by_id["gpt-5.4-mini"]["is_small"] is True
+        assert by_id["claude-sonnet-5"]["is_default"] is True
+        assert by_id["claude-sonnet-5"]["is_small"] is False
         assert by_id["gemini-3.5-flash"]["provider"] == "gemini"
+        assert "capabilities" not in by_id["gpt-5.5"]
+        assert "badges" not in by_id["gpt-5.5"]
     finally:
         await client.aclose()
         await engine.dispose()

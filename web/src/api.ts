@@ -269,13 +269,13 @@ export interface ModelCatalogRow {
   provider: string;
   model: string;
   display_name: string;
-  context: number;
+  context_window: number;
   max_output: number | null;
-  capabilities: string[];
-  badges: {
-    default: boolean;
-    small: boolean;
-  };
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  is_default: boolean;
+  is_small: boolean;
 }
 
 export interface ModelTestSummary {
@@ -285,7 +285,7 @@ export interface ModelTestSummary {
   tested_at: string;
 }
 
-export interface ModelTestItem {
+export interface ModelTestResult {
   provider: string;
   model: string;
   display_name: string;
@@ -294,9 +294,9 @@ export interface ModelTestItem {
   error: string | null;
 }
 
-export interface ModelTestResult {
+export interface ModelTestResponse {
   summary: ModelTestSummary;
-  items: ModelTestItem[];
+  items: ModelTestResult[];
 }
 
 export interface SettingsOverview {
@@ -555,8 +555,8 @@ export async function getModelCatalog(): Promise<ModelCatalogRow[]> {
   return response.items;
 }
 
-export async function testModels(): Promise<ModelTestResult> {
-  return requestJson<ModelTestResult>("/api/settings/models/test", {
+export async function testModels(): Promise<ModelTestResponse> {
+  return requestJson<ModelTestResponse>("/api/settings/models/test", {
     method: "POST",
     body: JSON.stringify({})
   });
