@@ -538,6 +538,19 @@ async def platform_harness(tmp_path: Path) -> AsyncIterator[_Harness]:
             abort_signal: Any | None = None,
         ) -> HandlerResult:
             del node, context, graph, abort_signal
+            # The event writer checkpoints the prior human gate in the background;
+            # keep this test-only worktree mutation out of that checkpoint window.
+            for _ in range(100):
+                if any(
+                    checkpoint.node_id == "review"
+                    for checkpoints in repository.checkpoints.values()
+                    for checkpoint in checkpoints
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("review checkpoint was not persisted before write stage")
+
             worktree_path = Path(await get_environment().working_directory())
             (worktree_path / "accepted.txt").write_text("approved by e2e\n", encoding="utf-8")
             if logs_root is not None:
