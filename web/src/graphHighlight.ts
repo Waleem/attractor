@@ -1,15 +1,16 @@
 import type { RunEvent, WorkflowGraph, WorkflowGraphEdge } from "./api";
 
-export type GraphNodeClass = "active" | "complete" | "failed" | "checkpointed";
-export type GraphEdgeClass = "active";
+export type GraphNodeClass = "running" | "waiting" | "completed" | "failed" | "checkpointed";
+export type GraphEdgeClass = "running";
 
 export const GRAPH_NODE_HIGHLIGHT_CLASSES: readonly GraphNodeClass[] = [
-  "active",
-  "complete",
+  "running",
+  "waiting",
+  "completed",
   "failed",
   "checkpointed"
 ];
-export const GRAPH_EDGE_HIGHLIGHT_CLASSES: readonly GraphEdgeClass[] = ["active"];
+export const GRAPH_EDGE_HIGHLIGHT_CLASSES: readonly GraphEdgeClass[] = ["running"];
 
 export interface GraphHighlightState {
   nodeClasses: Map<string, GraphNodeClass[]>;
@@ -31,8 +32,9 @@ export function buildGraphHighlightState(
   const edgeClasses = new Map<string, GraphEdgeClass[]>();
   const completed = new Set<string>();
   const failed = new Set<string>();
+  const waiting = new Set<string>();
   const checkpointed = new Set<string>();
-  let activeNode: string | null = null;
+  let runningNode: string | null = null;
   let latestCompletedNode: string | null = null;
 
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
@@ -41,30 +43,43 @@ export function buildGraphHighlightState(
       continue;
     }
     if (event.event_type === "stage.started") {
-      activeNode = nodeId;
+      runningNode = nodeId;
+      waiting.delete(nodeId);
     } else if (event.event_type === "stage.completed") {
       completed.add(nodeId);
       latestCompletedNode = nodeId;
-      if (activeNode === nodeId) {
-        activeNode = null;
+      waiting.delete(nodeId);
+      if (runningNode === nodeId) {
+        runningNode = null;
       }
     } else if (event.event_type === "stage.failed") {
       failed.add(nodeId);
-      if (activeNode === nodeId) {
-        activeNode = null;
+      waiting.delete(nodeId);
+      if (runningNode === nodeId) {
+        runningNode = null;
       }
     } else if (event.event_type === "checkpoint.saved") {
       checkpointed.add(nodeId);
+    } else if (event.event_type === "approval.requested") {
+      waiting.add(nodeId);
+      if (runningNode === nodeId) {
+        runningNode = null;
+      }
+    } else if (event.event_type === "approval.decided") {
+      waiting.delete(nodeId);
     }
   }
 
   for (const node of graph.nodes) {
     const classes: GraphNodeClass[] = [];
     if (completed.has(node.id)) {
-      classes.push("complete");
+      classes.push("completed");
     }
-    if (activeNode === node.id) {
-      classes.push("active");
+    if (runningNode === node.id) {
+      classes.push("running");
+    }
+    if (waiting.has(node.id)) {
+      classes.push("waiting");
     }
     if (checkpointed.has(node.id)) {
       classes.push("checkpointed");
@@ -77,12 +92,12 @@ export function buildGraphHighlightState(
     }
   }
 
-  if (latestCompletedNode && activeNode) {
+  if (latestCompletedNode && runningNode) {
     const activeEdge = graph.edges.find(
-      (edge) => edge.source === latestCompletedNode && edge.target === activeNode
+      (edge) => edge.source === latestCompletedNode && edge.target === runningNode
     );
     if (activeEdge) {
-      edgeClasses.set(graphEdgeId(activeEdge), ["active"]);
+      edgeClasses.set(graphEdgeId(activeEdge), ["running"]);
     }
   }
 

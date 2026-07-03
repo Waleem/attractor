@@ -4,10 +4,12 @@ import type { RunStatus } from "../api";
 export function PageHeader({
   title,
   eyebrow,
+  subline,
   actions
 }: {
   title: string;
   eyebrow?: string;
+  subline?: ReactNode;
   actions?: ReactNode;
 }) {
   return (
@@ -15,6 +17,7 @@ export function PageHeader({
       <div>
         {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
         <h1>{title}</h1>
+        {subline ? <div className="page-subline">{subline}</div> : null}
       </div>
       {actions ? <div className="page-actions">{actions}</div> : null}
     </header>
@@ -69,6 +72,8 @@ export function StatusBadge({ status }: { status: RunStatus | string }) {
   );
 }
 
+export const StatusPill = StatusBadge;
+
 export function StatusDot({ status }: { status: RunStatus | string }) {
   return <span className={`status-dot status-dot-${statusSemantic(status)}`} aria-hidden="true" />;
 }
@@ -119,6 +124,37 @@ export function TruncatedValue({ value }: { value: string }) {
     <span className="truncate mono" title={value}>
       {value}
     </span>
+  );
+}
+
+export function CopyableTruncatedValue({ value }: { value: string }) {
+  return (
+    <span className="copyable-value">
+      <TruncatedValue value={value} />
+      <CopyButton value={value} />
+    </span>
+  );
+}
+
+export function RelativeTime({ value }: { value: string | null | undefined }) {
+  return <time dateTime={value ?? undefined}>{formatRelativeTime(value)}</time>;
+}
+
+export function DiffViewer({
+  patch,
+  truncated
+}: {
+  patch: string | null | undefined;
+  truncated?: boolean;
+}) {
+  if (!patch) {
+    return <EmptyState>No patch content available</EmptyState>;
+  }
+  return (
+    <>
+      <pre className="diff-code">{patch}</pre>
+      {truncated ? <div className="subtle">Patch truncated at 60,000 characters.</div> : null}
+    </>
   );
 }
 
@@ -176,6 +212,57 @@ export function formatDate(value: string | null | undefined): string {
     return value;
   }
   return date.toLocaleString();
+}
+
+export function formatRelativeTime(value: string | null | undefined): string {
+  if (!value) {
+    return "None";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) {
+    return value;
+  }
+  const deltaSeconds = Math.round((date.valueOf() - Date.now()) / 1000);
+  const absoluteSeconds = Math.abs(deltaSeconds);
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["year", 31_536_000],
+    ["month", 2_592_000],
+    ["week", 604_800],
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+    ["second", 1],
+  ];
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, secondsPerUnit] of units) {
+    if (absoluteSeconds >= secondsPerUnit || unit === "second") {
+      return formatter.format(Math.round(deltaSeconds / secondsPerUnit), unit);
+    }
+  }
+  return formatter.format(deltaSeconds, "second");
+}
+
+export function formatDuration(start: string | null | undefined, end: string | null | undefined): string {
+  if (!start) {
+    return "Not started";
+  }
+  const startDate = new Date(start);
+  const endDate = end ? new Date(end) : new Date();
+  if (Number.isNaN(startDate.valueOf()) || Number.isNaN(endDate.valueOf())) {
+    return "Unknown";
+  }
+  const seconds = Math.max(0, Math.round((endDate.valueOf() - startDate.valueOf()) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
 }
 
 export function shortSha(value: string | null | undefined): string {

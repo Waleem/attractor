@@ -233,6 +233,8 @@ export interface RunDiffFile {
   status: string;
   additions: number;
   deletions: number;
+  patch?: string;
+  patch_truncated?: boolean;
 }
 
 export interface RunDiff {
@@ -475,8 +477,16 @@ export async function cancelRun(runId: string): Promise<{ id: string; status: st
   );
 }
 
-export async function getRunDiff(runId: string): Promise<RunDiff> {
-  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff`);
+export async function getRunDiff(
+  runId: string,
+  options: { includePatch?: boolean } = {}
+): Promise<RunDiff> {
+  const params = new URLSearchParams();
+  if (options.includePatch) {
+    params.set("include_patch", "true");
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff${suffix}`);
 }
 
 export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
@@ -503,6 +513,12 @@ export async function listArtifacts(runId: string): Promise<ArtifactRecord[]> {
     `/api/runs/${encodeURIComponent(runId)}/artifacts`
   );
   return response.items;
+}
+
+export function artifactUrl(runId: string, artifactId: string): string {
+  return apiUrl(
+    `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`
+  );
 }
 
 export async function listCheckpoints(runId: string): Promise<CheckpointRecord[]> {

@@ -27,6 +27,7 @@
   --bg-page: #f5f7fa;
   --bg-card: #ffffff;
   --bg-card-muted: #f8fafc;
+  --bg-code: #f1f5f9;
   --bg-sidebar: #1f2b38;
   --bg-sidebar-active: #324254;
   --text-sidebar: #edf3f8;
@@ -64,6 +65,7 @@
   --status-completed-bg: color-mix(in srgb, var(--status-completed) 14%, var(--bg-card));
   --status-failed-bg: color-mix(in srgb, var(--status-failed) 14%, var(--bg-card));
   --border-card: var(--border-width) solid var(--border-subtle);
+  --shadow-popover: 0 12px 30px color-mix(in srgb, #0f172a 18%, transparent);
   font-family: var(--font-sans);
   font-size: var(--font-size-14);
   line-height: var(--line-height);
@@ -83,6 +85,7 @@
     --bg-page: #101418;
     --bg-card: #171d23;
     --bg-card-muted: #1f2730;
+    --bg-code: #101820;
     --bg-sidebar: #121820;
     --bg-sidebar-active: #273341;
     --text-sidebar: #edf3f8;
@@ -308,6 +311,71 @@ td {
 
 .page-header h1 {
   font-size: var(--font-size-22);
+}
+
+.page-subline {
+  margin-top: var(--space-0-5);
+  color: var(--text-secondary);
+  font-size: var(--font-size-13);
+}
+
+.run-header-subline,
+.run-action-cluster,
+.copyable-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.run-action-cluster {
+  justify-content: flex-end;
+}
+
+.copyable-value {
+  max-width: 100%;
+  flex-wrap: nowrap;
+}
+
+.action-popover {
+  position: relative;
+}
+
+.button-like {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-1-5);
+  cursor: pointer;
+  font-size: var(--font-size-14);
+  font-weight: var(--font-weight-medium);
+  list-style: none;
+}
+
+.button-like::-webkit-details-marker {
+  display: none;
+}
+
+.button-like.primary {
+  background: var(--primary);
+  color: var(--text-inverse);
+}
+
+.action-popover-form {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  width: min(420px, 90vw);
+  margin-top: var(--space-1);
+  display: grid;
+  gap: var(--space-1);
+  border: var(--border-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-1-5);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
 }
 
 .panel h2 {
@@ -1105,6 +1173,127 @@ button.tab.active {
   white-space: normal;
 }
 
+.diff-file-list,
+.event-timeline {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.diff-file-row {
+  border: var(--border-card);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+}
+
+.diff-file-row summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-1);
+  align-items: center;
+  padding: var(--space-1);
+  cursor: pointer;
+}
+
+.diff-counts {
+  display: inline-flex;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+}
+
+.diff-code {
+  margin: 0;
+  max-height: 520px;
+  overflow: auto;
+  border-top: var(--border-card);
+  padding: var(--space-1-5);
+  background: var(--bg-code);
+  color: var(--text-page);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.event-timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--space-1);
+  border-bottom: var(--border-card);
+  padding-bottom: var(--space-1);
+}
+
+.event-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.event-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  font-size: var(--font-size-12);
+  font-weight: var(--font-weight-medium);
+}
+
+.event-icon-running {
+  color: var(--status-running-fg);
+  background: var(--status-running-badge-bg);
+}
+
+.event-icon-waiting {
+  color: var(--status-waiting-fg);
+  background: var(--status-waiting-badge-bg);
+}
+
+.event-icon-completed {
+  color: var(--status-completed-fg);
+  background: var(--status-completed-badge-bg);
+}
+
+.event-icon-failed {
+  color: var(--status-failed-fg);
+  background: var(--status-failed-badge-bg);
+}
+
+.event-icon-neutral {
+  color: var(--status-queued-fg);
+  background: var(--status-queued-badge-bg);
+}
+
+.event-body {
+  display: grid;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.event-title-row,
+.event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.event-meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-12);
+}
+
+.raw-expander summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--font-size-12);
+}
+
 .graph-viewer {
   display: grid;
   gap: var(--space-1-5);
@@ -1131,18 +1320,27 @@ button.tab.active {
   transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
 }
 
-.graph-canvas .node.complete polygon,
-.graph-canvas .node.complete ellipse,
-.graph-canvas .node.complete path {
+.graph-canvas .node.completed polygon,
+.graph-canvas .node.completed ellipse,
+.graph-canvas .node.completed path {
   fill: var(--status-completed-bg);
   stroke: var(--status-completed);
 }
 
-.graph-canvas .node.active polygon,
-.graph-canvas .node.active ellipse,
-.graph-canvas .node.active path {
+.graph-canvas .node.running polygon,
+.graph-canvas .node.running ellipse,
+.graph-canvas .node.running path {
   fill: var(--status-running-bg);
   stroke: var(--status-running);
+  stroke-width: 2;
+  animation: graph-running-pulse 1.6s ease-in-out infinite;
+}
+
+.graph-canvas .node.waiting polygon,
+.graph-canvas .node.waiting ellipse,
+.graph-canvas .node.waiting path {
+  fill: var(--status-waiting-bg);
+  stroke: var(--status-waiting);
   stroke-width: 2;
 }
 
@@ -1160,14 +1358,25 @@ button.tab.active {
   stroke-width: 2;
 }
 
-.graph-canvas .edge.active path {
+.graph-canvas .edge.running path {
   stroke: var(--status-running);
   stroke-width: 2.5;
 }
 
-.graph-canvas .edge.active polygon {
+.graph-canvas .edge.running polygon {
   fill: var(--status-running);
   stroke: var(--status-running);
+}
+
+@keyframes graph-running-pulse {
+  0%,
+  100% {
+    stroke-width: 2;
+  }
+
+  50% {
+    stroke-width: 3;
+  }
 }
 
 .graph-legend {
@@ -1191,12 +1400,17 @@ button.tab.active {
   display: inline-block;
 }
 
-.graph-swatch-active {
+.graph-swatch-running {
   background: var(--status-running-bg);
   border: var(--border-width) solid var(--status-running);
 }
 
-.graph-swatch-complete {
+.graph-swatch-waiting {
+  background: var(--status-waiting-bg);
+  border: var(--border-width) solid var(--status-waiting);
+}
+
+.graph-swatch-completed {
   background: var(--status-completed-bg);
   border: var(--border-width) solid var(--status-completed);
 }

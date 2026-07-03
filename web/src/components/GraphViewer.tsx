@@ -109,12 +109,16 @@ function GraphLegend() {
   return (
     <div className="graph-legend">
       <span className="graph-legend-item">
-        <span className="graph-swatch graph-swatch-active" aria-hidden="true" />
-        active
+        <span className="graph-swatch graph-swatch-running" aria-hidden="true" />
+        running
       </span>
       <span className="graph-legend-item">
-        <span className="graph-swatch graph-swatch-complete" aria-hidden="true" />
-        complete
+        <span className="graph-swatch graph-swatch-waiting" aria-hidden="true" />
+        waiting
+      </span>
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-completed" aria-hidden="true" />
+        completed
       </span>
       <span className="graph-legend-item">
         <span className="graph-swatch graph-swatch-failed" aria-hidden="true" />

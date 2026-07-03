@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -72,6 +73,9 @@ from attractor_platform.storage.models import (
 )
 from attractor_platform.storage.repositories import PlatformRepository
 from attractor_server.platform_sse import durable_run_event_stream, parse_sse_after_sequence
+
+
+_DIFF_PATCH_LIMIT = 60_000
 
 
 @dataclass(frozen=True)
@@ -1428,6 +1432,12 @@ async def get_run_diff(request: Request) -> JSONResponse:
         return _json_error(f"Diff path {diff_cwd} is not available", 409)
 
     git = _executor_git_runner(services.executor)
+    include_patch = request.query_params.get("include_patch", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     try:
         head_commit = git.run(diff_cwd, "rev-parse", "HEAD").stdout
         if isinstance(managed_branch, str) and managed_branch:
@@ -1477,7 +1487,27 @@ async def get_run_diff(request: Request) -> JSONResponse:
         except RuntimeError as exc:
             return _json_error(f"Diff could not be computed for {path}: {exc}", 409)
         statuses = _parse_diff_name_status(status_output)
-        files.extend(_parse_diff_numstat(numstat_output, statuses))
+        parsed_files = _parse_diff_numstat(numstat_output, statuses)
+        if include_patch:
+            try:
+                patch_output = git.run(
+                    diff_cwd,
+                    "diff",
+                    "--find-renames",
+                    "--unified=80",
+                    base_commit,
+                    head_commit,
+                    "--",
+                    path,
+                ).stdout
+            except RuntimeError as exc:
+                return _json_error(f"Diff patch could not be computed for {path}: {exc}", 409)
+            patch_truncated = len(patch_output) > _DIFF_PATCH_LIMIT
+            bounded_patch = patch_output[:_DIFF_PATCH_LIMIT]
+            for file_row in parsed_files:
+                file_row["patch"] = bounded_patch
+                file_row["patch_truncated"] = patch_truncated
+        files.extend(parsed_files)
     return JSONResponse(
         {
             "run_id": run_id,
@@ -1541,6 +1571,48 @@ async def list_artifacts(request: Request) -> JSONResponse:
 
     artifacts = await _list_artifacts_for_run(services, run_id)
     return JSONResponse({"items": [_serialize_artifact(artifact) for artifact in artifacts]})
+
+
+def _artifact_uri_path(uri: str) -> Path | None:
+    parsed = urlparse(uri)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path)).expanduser()
+    if parsed.scheme:
+        return None
+    return Path(uri).expanduser()
+
+
+async def get_artifact(request: Request) -> FileResponse | JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    artifact_id = request.path_params["artifact_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    artifacts = await _list_artifacts_for_run(services, run_id)
+    artifact = next(
+        (item for item in artifacts if str(getattr(item, "id", "")) == artifact_id),
+        None,
+    )
+    if artifact is None:
+        return _json_error(f"Artifact {artifact_id} not found for run {run_id}", 404)
+
+    artifact_path = _artifact_uri_path(str(artifact.uri))
+    if artifact_path is None:
+        return _json_error(f"Artifact {artifact_id} is not a local file", 404)
+    try:
+        resolved_path = artifact_path.resolve()
+    except OSError as exc:
+        return _json_error(f"Artifact path could not be resolved: {exc}", 404)
+    if not resolved_path.is_file():
+        return _json_error(f"Artifact file for {artifact_id} is not available", 404)
+
+    return FileResponse(
+        resolved_path,
+        media_type=getattr(artifact, "media_type", None) or None,
+        filename=getattr(artifact, "name", None) or resolved_path.name,
+    )
 
 
 async def list_checkpoints(request: Request) -> JSONResponse:
@@ -2303,6 +2375,7 @@ def create_platform_app(
             methods=["POST"],
         ),
         Route("/api/runs/{run_id}/artifacts", list_artifacts, methods=["GET"]),
+        Route("/api/runs/{run_id}/artifacts/{artifact_id}", get_artifact, methods=["GET"]),
         Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
         Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
         Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),

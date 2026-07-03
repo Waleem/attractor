@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   answerApproval,
+  artifactUrl,
   cancelRun,
   getRun,
   getRunDiff,
@@ -21,7 +22,24 @@ import {
 } from "../api";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
-import { EmptyState, ErrorBanner, Field, KeyValue, Loading, PageHeader, Panel, StatusBadge, formatDate, shortSha } from "../components/ui";
+import {
+  CopyButton,
+  CopyableTruncatedValue,
+  DiffViewer,
+  EmptyState,
+  ErrorBanner,
+  Field,
+  KeyValue,
+  Loading,
+  PageHeader,
+  Panel,
+  RelativeTime,
+  StatusBadge,
+  formatDate,
+  formatDuration,
+  formatRelativeTime,
+  shortSha
+} from "../components/ui";
 
 interface RunRelated {
   events: RunEvent[];
@@ -44,7 +62,7 @@ export function RunDetailRoute({ runId }: { runId: string }) {
     },
     [runId]
   );
-  const diffState = useAsync(() => getRunDiff(runId), [runId]);
+  const diffState = useAsync(() => getRunDiff(runId, { includePatch: true }), [runId]);
   const [liveEvents, setLiveEvents] = useState<RunEvent[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -108,7 +126,27 @@ export function RunDetailRoute({ runId }: { runId: string }) {
 
   return (
     <>
-      <PageHeader title={run?.id ?? "Run"} eyebrow="Run Detail" />
+      <PageHeader
+        title={run ? runWorkflowName(run) : "Run"}
+        eyebrow="Run Detail"
+        subline={run ? <RunHeaderSubline run={run} /> : null}
+        actions={
+          run ? (
+            <RunActions
+              run={run}
+              busy={actionBusy}
+              onBusy={setActionBusy}
+              onMessage={setActionMessage}
+              onError={setActionError}
+              onChanged={() => {
+                runState.refresh();
+                relatedState.refresh();
+                diffState.refresh();
+              }}
+            />
+          ) : null
+        }
+      />
       <ErrorBanner message={runState.error ?? relatedState.error ?? actionError} />
       {actionMessage ? <div className="notice">{actionMessage}</div> : null}
       {runState.loading ? <Loading /> : null}
@@ -117,28 +155,16 @@ export function RunDetailRoute({ runId }: { runId: string }) {
           <Panel title="Run Status">
             <dl className="kv-grid">
               <KeyValue label="Durable status" value={<StatusBadge status={run.status} />} />
-              <KeyValue label="Source branch" value={run.source_branch ?? "Not exposed"} />
-              <KeyValue label="Source commit" value={<span className="mono">{shortSha(run.source_commit) || "Not exposed"}</span>} />
-              <KeyValue label="Managed branch" value={<span className="path-cell">{run.managed_branch ?? "None"}</span>} />
-              <KeyValue label="Worktree" value={<span className="path-cell">{run.worktree_path ?? "None"}</span>} />
+              <KeyValue label="Source branch" value={run.source_branch ? <CopyableTruncatedValue value={run.source_branch} /> : "Not exposed"} />
+              <KeyValue label="Source commit" value={run.source_commit ? <CopyableTruncatedValue value={run.source_commit} /> : "Not exposed"} />
+              <KeyValue label="Managed branch" value={run.managed_branch ? <CopyableTruncatedValue value={run.managed_branch} /> : "None"} />
+              <KeyValue label="Worktree" value={run.worktree_path ? <CopyableTruncatedValue value={run.worktree_path} /> : "None"} />
               <KeyValue label="Actor" value={run.actor_label || "None"} />
               <KeyValue label="Started" value={formatDate(run.started_at)} />
               <KeyValue label="Completed" value={formatDate(run.completed_at)} />
             </dl>
             {run.error_message ? <div className="error-banner">{run.error_message}</div> : null}
           </Panel>
-          <RunActions
-            run={run}
-            busy={actionBusy}
-            onBusy={setActionBusy}
-            onMessage={setActionMessage}
-            onError={setActionError}
-            onChanged={() => {
-              runState.refresh();
-              relatedState.refresh();
-              diffState.refresh();
-            }}
-          />
           <Panel title="Branch Diff">
             <ErrorBanner message={diffState.error} />
             <BranchDiff diff={diffState.data} loading={diffState.loading} />
@@ -153,20 +179,11 @@ export function RunDetailRoute({ runId }: { runId: string }) {
               relatedState.refresh();
             }}
           />
-          <WriteBackAction
-            runId={runId}
-            status={run.status}
-            managedBranch={run.managed_branch}
-            onChanged={() => {
-              runState.refresh();
-              relatedState.refresh();
-            }}
-          />
           <Panel title="Event Timeline">
-            <EventTable events={events} loading={relatedState.loading} />
+            <EventTimeline events={events} loading={relatedState.loading} />
           </Panel>
           <Panel title="Artifacts">
-            <ArtifactTable artifacts={related?.artifacts ?? []} loading={relatedState.loading} />
+            <ArtifactTable runId={runId} artifacts={related?.artifacts ?? []} loading={relatedState.loading} />
           </Panel>
           <Panel title="Checkpoints">
             <CheckpointTable checkpoints={related?.checkpoints ?? []} loading={relatedState.loading} />
@@ -175,6 +192,51 @@ export function RunDetailRoute({ runId }: { runId: string }) {
       ) : null}
     </>
   );
+}
+
+function RunHeaderSubline({
+  run
+}: {
+  run: {
+    id: string;
+    source_branch?: string;
+    managed_branch: string | null;
+    created_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  };
+}) {
+  return (
+    <div className="run-header-subline">
+      <span className="copyable-value">
+        <span className="mono">{shortSha(run.id)}</span>
+        <CopyButton value={run.id} label="Copy run id" />
+      </span>
+      <span>
+        {run.source_branch || "source"} -&gt; {run.managed_branch || "managed branch pending"}
+      </span>
+      <RelativeTime value={run.created_at} />
+      <span>{formatDuration(run.started_at ?? run.created_at, run.completed_at)}</span>
+    </div>
+  );
+}
+
+function runWorkflowName(run: {
+  id: string;
+  workflow_id: string;
+  run_spec: Parameters<typeof runSpecToLaunchInput>[0];
+}): string {
+  const spec = run.run_spec;
+  const workflowName =
+    typeof spec?.workflow_name === "string"
+      ? spec.workflow_name
+      : typeof spec?.workflow === "string"
+        ? spec.workflow
+        : "";
+  if (workflowName && !/^[a-f0-9]{32}$/i.test(workflowName)) {
+    return workflowName;
+  }
+  return run.workflow_id || "Run";
 }
 
 function RunActions({
@@ -188,6 +250,7 @@ function RunActions({
   run: {
     id: string;
     status: string;
+    managed_branch: string | null;
     run_spec: Parameters<typeof runSpecToLaunchInput>[0];
   };
   busy: boolean;
@@ -196,6 +259,12 @@ function RunActions({
   onError: (value: string | null) => void;
   onChanged: () => void;
 }) {
+  const [targetBranch, setTargetBranch] = useState(`attractor/accepted/${run.id}`);
+  const [actorLabel, setActorLabel] = useState("operator");
+  const [overwrite, setOverwrite] = useState(false);
+  const [allowProtected, setAllowProtected] = useState(false);
+  const canPromote = run.status === "completed" && Boolean(run.managed_branch);
+
   async function cancelCurrentRun() {
     onBusy(true);
     onMessage(null);
@@ -231,18 +300,62 @@ function RunActions({
     }
   }
 
+  async function promoteCurrentRun(event: FormEvent) {
+    event.preventDefault();
+    onBusy(true);
+    onMessage(null);
+    onError(null);
+    try {
+      const result = await promoteWriteBack(run.id, {
+        target_branch: targetBranch,
+        actor_label: actorLabel,
+        overwrite,
+        allow_protected: allowProtected
+      });
+      onMessage(`${result.status}: ${result.commit_sha ?? result.error_message ?? result.target_branch}`);
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      onBusy(false);
+    }
+  }
+
   return (
-    <Panel title="Run Actions">
-      <div className="button-row">
-        <button type="button" className="secondary" disabled={!canCancel(run.status) || busy} onClick={cancelCurrentRun}>
+    <div className="run-action-cluster">
+      {canPromote ? (
+        <details className="action-popover">
+          <summary className="button-like primary">Promote branch</summary>
+          <form className="action-popover-form" onSubmit={promoteCurrentRun}>
+            <Field label="Target branch">
+              <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} required />
+            </Field>
+            <Field label="Actor">
+              <input value={actorLabel} onChange={(event) => setActorLabel(event.target.value)} required />
+            </Field>
+            <label className="check-field">
+              <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
+              <span>Overwrite</span>
+            </label>
+            <label className="check-field">
+              <input type="checkbox" checked={allowProtected} onChange={(event) => setAllowProtected(event.target.checked)} />
+              <span>Allow protected</span>
+            </label>
+            <button type="submit" disabled={busy}>
+              Promote
+            </button>
+          </form>
+        </details>
+      ) : null}
+      <button type="button" className="secondary" disabled={busy || !runSpecToLaunchInput(run.run_spec)} onClick={rerunCurrentRun}>
+        Re-run
+      </button>
+      {canCancel(run.status) ? (
+        <button type="button" className="secondary" disabled={busy} onClick={cancelCurrentRun}>
           Cancel
         </button>
-        <button type="button" disabled={busy} onClick={rerunCurrentRun}>
-          Re-run
-        </button>
-      </div>
-      {!canCancel(run.status) ? <div className="subtle">Cancel is available only while a run is active.</div> : null}
-    </Panel>
+      ) : null}
+    </div>
   );
 }
 
@@ -264,26 +377,21 @@ function BranchDiff({ diff, loading }: { diff: RunDiff | null; loading: boolean 
         <KeyValue label="Files" value={diff.files.length} />
         <KeyValue label="Truncated" value={diff.truncated ? "Yes" : "No"} />
       </dl>
-      <table>
-        <thead>
-          <tr>
-            <th>File</th>
-            <th>Status</th>
-            <th>+</th>
-            <th>-</th>
-          </tr>
-        </thead>
-        <tbody>
-          {diff.files.map((file) => (
-            <tr key={file.path}>
-              <td className="path-cell">{file.path}</td>
-              <td>{file.status}</td>
-              <td className="mono">{file.additions}</td>
-              <td className="mono">{file.deletions}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="diff-file-list">
+        {diff.files.map((file) => (
+          <details className="diff-file-row" key={file.path}>
+            <summary>
+              <span className="path-cell">{file.path}</span>
+              <span className="status status-neutral">{file.status}</span>
+              <span className="diff-counts">
+                <span className="diff-add">+{file.additions}</span>
+                <span className="diff-del">-{file.deletions}</span>
+              </span>
+            </summary>
+            <DiffViewer patch={file.patch} truncated={file.patch_truncated} />
+          </details>
+        ))}
+      </div>
     </>
   );
 }
@@ -366,75 +474,7 @@ function ApprovalControl({
   );
 }
 
-function WriteBackAction({
-  runId,
-  status,
-  managedBranch,
-  onChanged
-}: {
-  runId: string;
-  status: string;
-  managedBranch: string | null;
-  onChanged: () => void;
-}) {
-  const [targetBranch, setTargetBranch] = useState(`attractor/accepted/${runId}`);
-  const [actorLabel, setActorLabel] = useState("operator");
-  const [overwrite, setOverwrite] = useState(false);
-  const [allowProtected, setAllowProtected] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const canWriteBack = status === "completed" && Boolean(managedBranch);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setMessage(null);
-    try {
-      const result = await promoteWriteBack(runId, {
-        target_branch: targetBranch,
-        actor_label: actorLabel,
-        overwrite,
-        allow_protected: allowProtected
-      });
-      setMessage(`${result.status}: ${result.commit_sha ?? result.error_message ?? result.target_branch}`);
-      onChanged();
-    } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!canWriteBack) {
-    return null;
-  }
-  return (
-    <Panel title="Write-Back">
-      <form className="form-grid writeback-form" onSubmit={submit}>
-        <Field label="Target branch">
-          <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} required />
-        </Field>
-        <Field label="Actor">
-          <input value={actorLabel} onChange={(event) => setActorLabel(event.target.value)} required />
-        </Field>
-        <label className="check-field">
-          <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
-          <span>Overwrite</span>
-        </label>
-        <label className="check-field">
-          <input type="checkbox" checked={allowProtected} onChange={(event) => setAllowProtected(event.target.checked)} />
-          <span>Allow protected</span>
-        </label>
-        <button type="submit" disabled={busy}>
-          Promote
-        </button>
-      </form>
-      {message ? <div className="notice">{message}</div> : null}
-    </Panel>
-  );
-}
-
-function EventTable({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+function EventTimeline({ events, loading }: { events: RunEvent[]; loading: boolean }) {
   if (loading) {
     return <Loading />;
   }
@@ -442,34 +482,121 @@ function EventTable({ events, loading }: { events: RunEvent[]; loading: boolean 
     return <EmptyState>No events</EmptyState>;
   }
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Seq</th>
-          <th>Event</th>
-          <th>Actor</th>
-          <th>Created</th>
-          <th>Payload</th>
-        </tr>
-      </thead>
-      <tbody>
-        {events.map((event) => (
-          <tr key={`${event.sequence}-${event.event_type}`}>
-            <td className="mono">{event.sequence}</td>
-            <td>{event.event_type}</td>
-            <td>{event.actor_label || "None"}</td>
-            <td>{formatDate(event.created_at)}</td>
-            <td>
-              <code className="payload">{JSON.stringify(event.payload)}</code>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <ol className="event-timeline">
+      {events.map((event) => (
+        <li className="event-row" key={`${event.sequence}-${event.event_type}`}>
+          <span className={`event-icon event-icon-${eventTone(event.event_type)}`} aria-hidden="true">
+            {eventIcon(event.event_type)}
+          </span>
+          <div className="event-body">
+            <div className="event-title-row">
+              <strong>{eventLabel(event.event_type)}</strong>
+              <span className="subtle">{formatRelativeTime(event.created_at)}</span>
+            </div>
+            <div>{eventSummary(event)}</div>
+            <div className="event-meta">
+              <span className="mono">#{event.sequence}</span>
+              {event.actor_label ? <span>{event.actor_label}</span> : null}
+              <span>{formatDate(event.created_at)}</span>
+            </div>
+            <details className="raw-expander">
+              <summary>View raw</summary>
+              <pre className="payload">{JSON.stringify(event.payload, null, 2)}</pre>
+            </details>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
-function ArtifactTable({ artifacts, loading }: { artifacts: ArtifactRecord[]; loading: boolean }) {
+function eventLabel(type: string): string {
+  return type
+    .split(".")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function eventIcon(type: string): string {
+  if (type.includes("failed")) {
+    return "!";
+  }
+  if (type.includes("approval")) {
+    return "?";
+  }
+  if (type.includes("checkpoint")) {
+    return "C";
+  }
+  if (type.includes("completed") || type.includes("applied")) {
+    return "OK";
+  }
+  return "i";
+}
+
+function eventTone(type: string): "running" | "waiting" | "completed" | "failed" | "neutral" {
+  if (type.includes("failed") || type.includes("cancelled")) {
+    return "failed";
+  }
+  if (type.includes("approval") || type.includes("retrying")) {
+    return "waiting";
+  }
+  if (type.includes("completed") || type.includes("saved") || type.includes("applied")) {
+    return "completed";
+  }
+  if (type.includes("started") || type.includes("queued") || type.includes("preparing")) {
+    return "running";
+  }
+  return "neutral";
+}
+
+function eventSummary(event: RunEvent): string {
+  const node = stringPayload(event.payload, "node_id") ?? stringPayload(event.payload, "name");
+  const commit = shortSha(stringPayload(event.payload, "commit_sha"));
+  const output = stringPayload(event.payload, "output") ?? stringPayload(event.payload, "message");
+  switch (event.event_type) {
+    case "run.queued":
+      return `Queued ${stringPayload(event.payload, "workflow_name") ?? "workflow run"}`;
+    case "run.started":
+      return "Run started";
+    case "run.completed":
+      return "Run completed";
+    case "run.failed":
+      return output || "Run failed";
+    case "stage.started":
+      return node ? `${node} started` : "Stage started";
+    case "stage.completed":
+      return node ? `${node} completed` : "Stage completed";
+    case "stage.failed":
+      return node ? `${node} failed` : "Stage failed";
+    case "approval.requested":
+      return node ? `Approval requested at ${node}` : "Approval requested";
+    case "approval.decided":
+      return `Approval ${stringPayload(event.payload, "answer") ?? "decided"}`;
+    case "checkpoint.saved":
+      return node ? `Checkpoint saved for ${node} at ${commit}` : `Checkpoint saved ${commit}`;
+    case "writeback.applied":
+      return `Write-back applied to ${stringPayload(event.payload, "target_branch") ?? "target branch"}`;
+    case "pipeline.event":
+      return output || "Agent output received";
+    default:
+      return output || eventLabel(event.event_type);
+  }
+}
+
+function stringPayload(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function ArtifactTable({
+  runId,
+  artifacts,
+  loading
+}: {
+  runId: string;
+  artifacts: ArtifactRecord[];
+  loading: boolean;
+}) {
   if (loading) {
     return <Loading />;
   }
@@ -490,11 +617,17 @@ function ArtifactTable({ artifacts, loading }: { artifacts: ArtifactRecord[]; lo
       <tbody>
         {artifacts.map((artifact) => (
           <tr key={artifact.id ?? artifact.uri}>
-            <td>{artifact.name}</td>
+            <td>
+              {artifact.id ? (
+                <a href={artifactUrl(runId, artifact.id)}>{artifact.name}</a>
+              ) : (
+                artifact.name
+              )}
+            </td>
             <td>{artifact.kind}</td>
             <td>{artifact.media_type}</td>
             <td>{artifact.size_bytes}</td>
-            <td className="path-cell">{artifact.uri}</td>
+            <td>{artifact.uri ? <CopyableTruncatedValue value={artifact.uri} /> : "None"}</td>
           </tr>
         ))}
       </tbody>
@@ -526,7 +659,7 @@ function CheckpointTable({ checkpoints, loading }: { checkpoints: CheckpointReco
             <td>{checkpoint.stage_index}</td>
             <td>{checkpoint.node_id}</td>
             <td className="mono">{shortSha(checkpoint.commit_sha)}</td>
-            <td className="path-cell">{checkpoint.ref_name}</td>
+            <td>{checkpoint.ref_name ? <CopyableTruncatedValue value={checkpoint.ref_name} /> : "None"}</td>
             <td>{formatDate(checkpoint.created_at)}</td>
           </tr>
         ))}
@@ -571,5 +704,5 @@ function isTerminal(status: string): boolean {
 }
 
 function canCancel(status: string): boolean {
-  return !isTerminal(status);
+  return ["queued", "preparing", "running", "waiting_for_approval"].includes(status);
 }

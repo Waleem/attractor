@@ -97,10 +97,10 @@ class SvgRootFixture {
 function graphvizSvgFixture() {
   const svg = `
     <svg>
-      <g class="node active checkpointed"><title>build</title></g>
-      <g class="node complete"><title>deploy</title></g>
-      <g class="edge active"><title>approve-&gt;deploy</title></g>
-      <g class="edge active"><title>deploy-&gt;notify</title></g>
+      <g class="node running checkpointed"><title>build</title></g>
+      <g class="node completed"><title>deploy</title></g>
+      <g class="edge running"><title>approve-&gt;deploy</title></g>
+      <g class="edge running"><title>deploy-&gt;notify</title></g>
     </svg>
   `;
   const groups = Array.from(
@@ -230,13 +230,28 @@ const events: RunEvent[] = [
 ];
 
 const highlightState = buildGraphHighlightState(graph, events);
+const waitingHighlightState = buildGraphHighlightState(graph, [
+  {
+    sequence: 1,
+    event_type: "approval.requested",
+    payload: { node_id: "approve" },
+    actor_label: "executor",
+    created_at: null
+  }
+]);
+
+assertDeepEqual(
+  mapEntries(waitingHighlightState.nodeClasses),
+  [["approve", ["waiting"]]],
+  "marks approval request nodes as waiting"
+);
 
 assertDeepEqual(
   mapEntries(highlightState.nodeClasses),
   [
-    ["approve", ["complete"]],
-    ["build", ["complete", "checkpointed"]],
-    ["deploy", ["active"]],
+    ["approve", ["completed"]],
+    ["build", ["completed", "checkpointed"]],
+    ["deploy", ["running"]],
     ["notify", ["failed"]]
   ],
   "normalizes node_id and stage name payloads into node highlight classes"
@@ -244,37 +259,37 @@ assertDeepEqual(
 
 assertDeepEqual(
   mapEntries(highlightState.edgeClasses),
-  [["approve->deploy", ["active"]]],
-  "marks the edge from the latest completed node to the active node"
+  [["approve->deploy", ["running"]]],
+  "marks the edge from the latest completed node to the running node"
 );
 
-const buildNode = target("node", "build", ["node", "active", "checkpointed"]);
-const deployNode = target("node", "deploy", ["node", "complete"]);
-const activeEdge = target("edge", "approve->deploy", ["edge"]);
-const staleEdge = target("edge", "deploy->notify", ["edge", "active"]);
+const buildNode = target("node", "build", ["node", "running", "checkpointed"]);
+const deployNode = target("node", "deploy", ["node", "completed"]);
+const runningEdge = target("edge", "approve->deploy", ["edge"]);
+const staleEdge = target("edge", "deploy->notify", ["edge", "running"]);
 const untitledNode = target("node", null, ["node", "failed"]);
 
 applyGraphHighlightClassesToTargets(
-  [buildNode, deployNode, activeEdge, staleEdge, untitledNode],
+  [buildNode, deployNode, runningEdge, staleEdge, untitledNode],
   highlightState
 );
 
 assertDeepEqual(
   Array.from(buildNode.classNames).sort(),
-  ["checkpointed", "complete", "node"],
+  ["checkpointed", "completed", "node"],
   "updates node targets by removing stale highlight classes and adding current classes"
 );
 
 assertDeepEqual(
   Array.from(deployNode.classNames).sort(),
-  ["active", "node"],
-  "applies current active class to node targets"
+  ["node", "running"],
+  "applies current running class to node targets"
 );
 
 assertDeepEqual(
-  Array.from(activeEdge.classNames).sort(),
-  ["active", "edge"],
-  "applies current active class to edge targets"
+  Array.from(runningEdge.classNames).sort(),
+  ["edge", "running"],
+  "applies current running class to edge targets"
 );
 
 assertDeepEqual(
@@ -295,19 +310,19 @@ applyGraphHighlightsToRenderedSvg(svgRoot as unknown as ParentNode, highlightSta
 
 assertDeepEqual(
   groupClasses(svgRoot, "build"),
-  ["checkpointed", "complete", "node"],
+  ["checkpointed", "completed", "node"],
   "updates Graphviz node groups using title text as the node id"
 );
 
 assertDeepEqual(
   groupClasses(svgRoot, "deploy"),
-  ["active", "node"],
+  ["node", "running"],
   "replaces stale Graphviz node highlight classes"
 );
 
 assertDeepEqual(
   groupClasses(svgRoot, "approve->deploy"),
-  ["active", "edge"],
+  ["edge", "running"],
   "applies current highlights to Graphviz edge groups using source->target titles"
 );
 
