@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   answerApproval,
   cancelRun,
@@ -49,12 +49,23 @@ export function RunDetailRoute({ runId }: { runId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const refreshTimer = useRef<number | null>(null);
   const run = runState.data;
   const related = relatedState.data;
   const events = useMemo(
     () => mergeEvents([...(related?.events ?? []), ...liveEvents]),
     [related?.events, liveEvents]
   );
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current !== null) {
+      return;
+    }
+    refreshTimer.current = window.setTimeout(() => {
+      refreshTimer.current = null;
+      runState.refresh();
+      relatedState.refresh();
+    }, 500);
+  }, [runState.refresh, relatedState.refresh]);
 
   useEffect(() => {
     setLiveEvents([]);
@@ -66,8 +77,7 @@ export function RunDetailRoute({ runId }: { runId: string }) {
         const event = eventFromSse(eventType, message);
         if (event) {
           setLiveEvents((current) => mergeEvents([...current, event]));
-          runState.refresh();
-          relatedState.refresh();
+          scheduleRefresh();
         }
       }) as EventListener;
       source.addEventListener(eventType, handler);
@@ -86,7 +96,15 @@ export function RunDetailRoute({ runId }: { runId: string }) {
       }
       source.close();
     };
-  }, [runId, run?.status, runState.refresh, relatedState.refresh]);
+  }, [runId, run?.status, scheduleRefresh]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimer.current !== null) {
+        window.clearTimeout(refreshTimer.current);
+      }
+    };
+  }, []);
 
   return (
     <>

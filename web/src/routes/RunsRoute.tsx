@@ -67,6 +67,7 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
   const [connectedCount, setConnectedCount] = useState(0);
   const liveRefreshTimer = useRef<number | null>(null);
   const diffRequestsInFlight = useRef<Set<string>>(new Set());
+  const mounted = useRef(true);
   const selectedWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.name === workflowName) ?? workflows[0] ?? null,
     [workflowName, workflows]
@@ -103,6 +104,7 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
 
   useEffect(() => {
     return () => {
+      mounted.current = false;
       if (liveRefreshTimer.current !== null) {
         window.clearTimeout(liveRefreshTimer.current);
       }
@@ -122,7 +124,6 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
   }, [workflowName, workflows]);
 
   useEffect(() => {
-    let active = true;
     const candidates = filteredRuns.filter(
       (run) =>
         isTerminalRunStatus(run.status) &&
@@ -134,13 +135,13 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
       diffRequestsInFlight.current.add(run.id);
       getRunDiff(run.id)
         .then((diff) => {
-          if (!active) {
+          if (!mounted.current) {
             return;
           }
           setDiffSummaries((current) => ({ ...current, [run.id]: summarizeDiff(diff) }));
         })
         .catch(() => {
-          if (!active) {
+          if (!mounted.current) {
             return;
           }
           setDiffSummaries((current) => ({ ...current, [run.id]: { status: "unavailable" } }));
@@ -149,9 +150,6 @@ export function RunsRoute({ navigate }: { navigate: (path: string) => void }) {
           diffRequestsInFlight.current.delete(run.id);
         });
     }
-    return () => {
-      active = false;
-    };
   }, [diffSummaries, filteredRuns]);
 
   async function submitLaunch(event: FormEvent) {
