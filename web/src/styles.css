@@ -1256,6 +1256,12 @@ td {
   animation: models-test-spin 700ms linear infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .models-test-spinner {
+    animation: none;
+  }
+}
+
 @keyframes models-test-spin {
   to {
     transform: rotate(360deg);
