@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -76,6 +77,8 @@ from attractor_server.platform_sse import durable_run_event_stream, parse_sse_af
 
 
 _DIFF_PATCH_LIMIT = 60_000
+_DIFF_PATCH_FILE_LIMIT = 50
+_DIFF_PATCH_TOTAL_LIMIT = 600_000
 
 
 @dataclass(frozen=True)
@@ -1447,7 +1450,12 @@ async def get_run_diff(request: Request) -> JSONResponse:
                     f"Run {run_id} worktree HEAD does not match managed branch",
                     409,
                 )
-        limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+        requested_limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+        limit = (
+            min(requested_limit, _DIFF_PATCH_FILE_LIMIT)
+            if include_patch
+            else requested_limit
+        )
         diff_paths_output = git.run(
             diff_cwd,
             "diff",
@@ -1462,6 +1470,7 @@ async def get_run_diff(request: Request) -> JSONResponse:
 
     paths, truncated = _parse_diff_paths(diff_paths_output, limit)
     files: list[dict[str, Any]] = []
+    remaining_patch_bytes = _DIFF_PATCH_TOTAL_LIMIT
     for path in paths:
         try:
             status_output = git.run(
@@ -1489,21 +1498,27 @@ async def get_run_diff(request: Request) -> JSONResponse:
         statuses = _parse_diff_name_status(status_output)
         parsed_files = _parse_diff_numstat(numstat_output, statuses)
         if include_patch:
-            try:
-                patch_output = git.run(
-                    diff_cwd,
-                    "diff",
-                    "--find-renames",
-                    "--unified=80",
-                    base_commit,
-                    head_commit,
-                    "--",
-                    path,
-                ).stdout
-            except RuntimeError as exc:
-                return _json_error(f"Diff patch could not be computed for {path}: {exc}", 409)
-            patch_truncated = len(patch_output) > _DIFF_PATCH_LIMIT
-            bounded_patch = patch_output[:_DIFF_PATCH_LIMIT]
+            if remaining_patch_bytes <= 0:
+                bounded_patch = ""
+                patch_truncated = True
+            else:
+                try:
+                    patch_output = git.run(
+                        diff_cwd,
+                        "diff",
+                        "--find-renames",
+                        "--unified=80",
+                        base_commit,
+                        head_commit,
+                        "--",
+                        path,
+                    ).stdout
+                except RuntimeError as exc:
+                    return _json_error(f"Diff patch could not be computed for {path}: {exc}", 409)
+                patch_limit = min(_DIFF_PATCH_LIMIT, remaining_patch_bytes)
+                bounded_patch = patch_output[:patch_limit]
+                patch_truncated = len(patch_output) > patch_limit
+                remaining_patch_bytes -= len(bounded_patch)
             for file_row in parsed_files:
                 file_row["patch"] = bounded_patch
                 file_row["patch_truncated"] = patch_truncated
@@ -1573,13 +1588,15 @@ async def list_artifacts(request: Request) -> JSONResponse:
     return JSONResponse({"items": [_serialize_artifact(artifact) for artifact in artifacts]})
 
 
-def _artifact_uri_path(uri: str) -> Path | None:
+def _artifact_uri_path(uri: str, artifact_root: Path) -> Path:
     parsed = urlparse(uri)
-    if parsed.scheme == "file":
-        return Path(unquote(parsed.path)).expanduser()
-    if parsed.scheme:
-        return None
-    return Path(uri).expanduser()
+    if parsed.scheme != "file":
+        raise ValueError("artifact URI must be a file URI")
+    if parsed.netloc not in {"", "localhost"}:
+        raise ValueError("artifact URI must refer to a local file")
+    resolved_path = Path(url2pathname(unquote(parsed.path))).resolve()
+    resolved_path.relative_to(artifact_root)
+    return resolved_path
 
 
 async def get_artifact(request: Request) -> FileResponse | JSONResponse:
@@ -1598,13 +1615,14 @@ async def get_artifact(request: Request) -> FileResponse | JSONResponse:
     if artifact is None:
         return _json_error(f"Artifact {artifact_id} not found for run {run_id}", 404)
 
-    artifact_path = _artifact_uri_path(str(artifact.uri))
-    if artifact_path is None:
-        return _json_error(f"Artifact {artifact_id} is not a local file", 404)
+    artifact_root = getattr(services.executor, "_artifact_root", None)
+    if artifact_root is None:
+        return _json_error("Artifact root is not configured", 404)
     try:
-        resolved_path = artifact_path.resolve()
-    except OSError as exc:
-        return _json_error(f"Artifact path could not be resolved: {exc}", 404)
+        resolved_root = Path(artifact_root).expanduser().resolve()
+        resolved_path = _artifact_uri_path(str(artifact.uri), resolved_root)
+    except (OSError, ValueError) as exc:
+        return _json_error(f"Artifact {artifact_id} is not available from artifact storage: {exc}", 403)
     if not resolved_path.is_file():
         return _json_error(f"Artifact file for {artifact_id} is not available", 404)
 
