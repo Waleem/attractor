@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   deleteSettingsSecret,
   deleteSettingsVariable,
@@ -10,111 +10,171 @@ import {
   type ModelCatalogRow,
   type ModelTestResponse,
   type ModelTestResult,
-  type SettingsOverview
+  type SettingsOverview,
+  type SettingsPage,
+  type SettingsPageRow
 } from "../api";
 import { useAsync } from "../components/useAsync";
 import {
   EmptyState,
   ErrorBanner,
   Field,
-  KeyValue,
   Loading,
   PageHeader,
-  Panel,
+  SectionCard,
+  SettingsRow,
   StatusBadge,
   formatDate
 } from "../components/ui";
 
-type SettingsTab = "models" | "environments" | "variables" | "server" | "storage" | "monitoring";
-
-const tabs: Array<{ id: SettingsTab; label: string }> = [
-  { id: "models", label: "Models" },
-  { id: "environments", label: "Environments" },
-  { id: "variables", label: "Variables" },
-  { id: "server", label: "Server" },
-  { id: "storage", label: "Storage" },
-  { id: "monitoring", label: "Monitoring" }
+const settingsNavigation = [
+  {
+    label: "General",
+    pages: [
+      { id: "models", label: "Models" },
+      { id: "integrations", label: "Integrations" },
+      { id: "sandboxes", label: "Sandboxes" }
+    ]
+  },
+  {
+    label: "Workflows",
+    pages: [
+      { id: "environments", label: "Environments" },
+      { id: "variables", label: "Variables" },
+      { id: "secrets", label: "Secrets" },
+      { id: "run-defaults", label: "Run defaults" }
+    ]
+  },
+  {
+    label: "Administration",
+    pages: [
+      { id: "server", label: "Server" },
+      { id: "security", label: "Security" },
+      { id: "storage", label: "Storage" },
+      { id: "monitoring", label: "Monitoring" }
+    ]
+  },
+  {
+    label: "Events",
+    pages: [{ id: "live-events", label: "Live events" }]
+  }
 ];
 
 export function SettingsRoute() {
   const settingsState = useAsync(getSettings, []);
-  const [activeTab, setActiveTab] = useState<SettingsTab>("models");
+  const [activePageId, setActivePageId] = useState("models");
   const settings = settingsState.data;
+  const pagesById = useMemo(() => {
+    const map = new Map<string, SettingsPage>();
+    for (const page of settings?.pages ?? []) {
+      map.set(page.id, page);
+    }
+    return map;
+  }, [settings]);
+  const activePage = pagesById.get(activePageId) ?? settings?.pages[0] ?? null;
 
   return (
     <>
       <PageHeader title="Settings" />
       <ErrorBanner message={settingsState.error} />
       {settingsState.loading ? <Loading /> : null}
-      <nav className="tabs" aria-label="Settings sections">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={activeTab === tab.id ? "tab active" : "tab secondary"}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-      {settings ? (
-        <SettingsTabPanel
-          activeTab={activeTab}
-          settings={settings}
-          refresh={settingsState.refresh}
-        />
+      {settings && activePage ? (
+        <div className="settings-layout">
+          <SettingsSubnav
+            activePageId={activePage.id}
+            availablePages={pagesById}
+            onChange={setActivePageId}
+          />
+          <SettingsPageTemplate page={activePage}>
+            {activePage.id === "models" ? (
+              <ModelCatalogSection settings={settings} />
+            ) : null}
+            {activePage.id === "variables" ? (
+              <VariablesEditor settings={settings} refresh={settingsState.refresh} />
+            ) : null}
+            {activePage.id === "secrets" ? (
+              <SecretsEditor settings={settings} refresh={settingsState.refresh} />
+            ) : null}
+          </SettingsPageTemplate>
+        </div>
       ) : null}
     </>
   );
 }
 
-function SettingsTabPanel({
-  activeTab,
-  settings,
-  refresh
+function SettingsSubnav({
+  activePageId,
+  availablePages,
+  onChange
 }: {
-  activeTab: SettingsTab;
-  settings: SettingsOverview;
-  refresh: () => void;
+  activePageId: string;
+  availablePages: Map<string, SettingsPage>;
+  onChange: (pageId: string) => void;
 }) {
-  if (activeTab === "models") {
-    return <ModelsSettings settings={settings} refresh={refresh} />;
-  }
-  if (activeTab === "environments") {
-    return <EnvironmentsSettings settings={settings} />;
-  }
-  if (activeTab === "variables") {
-    return <VariablesSettings settings={settings} refresh={refresh} />;
-  }
-  if (activeTab === "server") {
-    return <ServerSettings settings={settings} />;
-  }
-  if (activeTab === "storage") {
-    return <StorageSettings settings={settings} />;
-  }
-  return <MonitoringSettings settings={settings} />;
+  return (
+    <aside className="settings-subnav" aria-label="Settings sections">
+      {settingsNavigation.map((group) => (
+        <section key={group.label}>
+          <h2>{group.label}</h2>
+          {group.pages.map((page) => (
+            <button
+              key={page.id}
+              type="button"
+              className={activePageId === page.id ? "active" : ""}
+              disabled={!availablePages.has(page.id)}
+              onClick={() => onChange(page.id)}
+            >
+              {page.label}
+            </button>
+          ))}
+        </section>
+      ))}
+    </aside>
+  );
 }
 
-function ModelsSettings({
-  settings,
-  refresh
+function SettingsPageTemplate({
+  page,
+  children
 }: {
-  settings: SettingsOverview;
-  refresh: () => void;
+  page: SettingsPage;
+  children?: ReactNode;
 }) {
+  return (
+    <main className="settings-page">
+      <header className="settings-page-header">
+        <p className="eyebrow">Settings</p>
+        <h2>{page.title}</h2>
+        <p>{page.description}</p>
+      </header>
+      <div className="settings-groups">
+        {page.groups.map((group) => (
+          <SectionCard title={group.title} key={`${page.id}:${group.title}`}>
+            <dl className="settings-row-list">
+              {group.rows.map((row) => (
+                <SettingsRow
+                  key={`${row.label}:${row.description}`}
+                  label={row.label}
+                  description={row.description}
+                  value={formatSettingsValue(row)}
+                  editability={row.editability}
+                />
+              ))}
+            </dl>
+          </SectionCard>
+        ))}
+      </div>
+      {children ? <div className="settings-page-actions">{children}</div> : null}
+    </main>
+  );
+}
+
+function ModelCatalogSection({ settings }: { settings: SettingsOverview }) {
   const catalogState = useAsync(getModelCatalog, []);
-  const [draftSecrets, setDraftSecrets] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const credentials = useMemo(
-    () => Object.values(settings.models.provider_credentials).sort((a, b) => a.name.localeCompare(b.name)),
-    [settings.models.provider_credentials]
-  );
-  const configuredCount = credentials.filter((credential) => credential.configured).length;
   const catalog = catalogState.data ?? [];
   const filteredCatalog = useMemo(() => filterModelCatalog(catalog, query), [catalog, query]);
   const testResultsByModel = useMemo(() => {
@@ -124,6 +184,214 @@ function ModelsSettings({
     }
     return results;
   }, [testResult]);
+
+  async function runModelTests() {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      setTestResult(await testModels());
+    } catch (caught) {
+      setTestResult(null);
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <SectionCard
+      title="Catalog"
+      actions={
+        <div className="models-test-actions">
+          {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
+          <button type="button" disabled={testing || catalogState.loading} onClick={() => void runModelTests()}>
+            {testing ? "Testing" : "Test models"}
+          </button>
+        </div>
+      }
+    >
+      <ErrorBanner message={error || catalogState.error} />
+      <div className="models-catalog-toolbar">
+        <Field label="Search">
+          <input
+            type="search"
+            placeholder="Provider, model, or display name"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </Field>
+        <span className="subtle">
+          {filteredCatalog.length} of {catalog.length || 0} models
+        </span>
+      </div>
+      {catalogState.loading ? <Loading label="Loading model catalog" /> : null}
+      {!catalogState.loading && filteredCatalog.length === 0 ? (
+        <EmptyState>No models match this search</EmptyState>
+      ) : (
+        <div className="models-catalog-scroll">
+          <table className="models-catalog-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Configured</th>
+                <th>Model</th>
+                <th>Name</th>
+                <th>Badges</th>
+                <th>Context</th>
+                <th>Speed / capabilities</th>
+                <th>Test</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCatalog.map((model) => (
+                <tr key={modelKey(model.provider, model.model)}>
+                  <td>{model.provider}</td>
+                  <td>
+                    <StatusBadge
+                      status={
+                        settings.models.provider_credentials[model.provider]?.configured
+                          ? "configured"
+                          : "unconfigured"
+                      }
+                    />
+                  </td>
+                  <td className="mono">{model.model}</td>
+                  <td>{model.display_name}</td>
+                  <td>
+                    <ModelBadges model={model} />
+                  </td>
+                  <td>
+                    <span className="mono">{formatTokens(model.context_window)}</span>
+                    {model.max_output ? (
+                      <span className="subtle"> / {formatTokens(model.max_output)} out</span>
+                    ) : null}
+                  </td>
+                  <td>
+                    <CapabilityList model={model} />
+                  </td>
+                  <td>
+                    <ModelTestStatus result={testResultsByModel.get(modelKey(model.provider, model.model))} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function VariablesEditor({
+  settings,
+  refresh
+}: {
+  settings: SettingsOverview;
+  refresh: () => void;
+}) {
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveVariable() {
+    if (!key) {
+      setError("Enter a variable key before saving");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await putSettingsVariable(key, value);
+      setKey("");
+      setValue("");
+      refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeVariable(variableKey: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteSettingsVariable(variableKey);
+      refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SectionCard title="Edit Variables">
+      <ErrorBanner message={error} />
+      <div className="form-grid settings-variable-form">
+        <Field label="Key">
+          <input value={key} onChange={(event) => setKey(event.target.value)} />
+        </Field>
+        <Field label="Value">
+          <input value={value} onChange={(event) => setValue(event.target.value)} />
+        </Field>
+        <button type="button" disabled={saving} onClick={() => void saveVariable()}>
+          Save
+        </button>
+      </div>
+      {settings.variables.items.length === 0 ? (
+        <EmptyState>No variables configured</EmptyState>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Value</th>
+              <th>Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {settings.variables.items.map((variable) => (
+              <tr key={variable.key}>
+                <td className="mono">{variable.key}</td>
+                <td>{variable.value}</td>
+                <td>{formatDate(variable.updated_at)}</td>
+                <td>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void removeVariable(variable.key)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </SectionCard>
+  );
+}
+
+function SecretsEditor({
+  settings,
+  refresh
+}: {
+  settings: SettingsOverview;
+  refresh: () => void;
+}) {
+  const [draftSecrets, setDraftSecrets] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const credentials = useMemo(
+    () => Object.values(settings.models.provider_credentials).sort((a, b) => a.name.localeCompare(b.name)),
+    [settings.models.provider_credentials]
+  );
 
   async function saveSecret(name: string) {
     const value = draftSecrets[name] ?? "";
@@ -158,183 +426,75 @@ function ModelsSettings({
     }
   }
 
-  async function runModelTests() {
-    setTesting(true);
-    setError(null);
-    setTestResult(null);
-    try {
-      setTestResult(await testModels());
-    } catch (caught) {
-      setTestResult(null);
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setTesting(false);
-    }
-  }
-
   return (
-    <div className="models-settings">
-      <section className="models-hero">
-        <div className="models-hero-copy">
-          <p className="eyebrow">Models</p>
-          <h2>Provider readiness and model catalog</h2>
-          <p>
-            Configure provider credentials, inspect default and small model coverage, and run
-            lightweight connectivity checks from one place.
-          </p>
-        </div>
-        <dl className="models-hero-stats">
-          <KeyValue label="Default provider" value={settings.models.default_provider} />
-          <KeyValue label="Default model" value={<span className="mono">{settings.models.default_model}</span>} />
-          <KeyValue label="Providers configured" value={`${configuredCount}/${credentials.length}`} />
-          <KeyValue label="Catalog models" value={catalog.length || "Loading"} />
-        </dl>
-      </section>
-
-      <ErrorBanner message={error || catalogState.error} />
-
-      <Panel title="Provider Credentials">
-        <div className="provider-card-grid">
-          {credentials.map((credential) => {
-            const hasVaultSecret = credential.updated_at !== null;
-            const saveLabel = `Save ${credential.name} secret`;
-            const clearLabel = hasVaultSecret
-              ? `Clear ${credential.name} vault secret`
-              : `${credential.name} has no vault secret to clear`;
-            return (
-              <article className="provider-card" key={credential.name}>
-                <div className="provider-card-heading">
-                  <div>
-                    <h3>{credential.name}</h3>
-                    <p>{credential.source === "none" ? credential.env_var : credential.source}</p>
-                  </div>
-                  <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
+    <SectionCard title="Edit Secrets">
+      <ErrorBanner message={error} />
+      <div className="provider-card-grid">
+        {credentials.map((credential) => {
+          const hasVaultSecret = credential.updated_at !== null;
+          const saveLabel = `Save ${credential.name} secret`;
+          const clearLabel = hasVaultSecret
+            ? `Clear ${credential.name} vault secret`
+            : `${credential.name} has no vault secret to clear`;
+          return (
+            <article className="provider-card" key={credential.name}>
+              <div className="provider-card-heading">
+                <div>
+                  <h3>{credential.name}</h3>
+                  <p>{credential.source === "none" ? credential.env_var : credential.source}</p>
                 </div>
-                <dl className="provider-card-meta">
-                  <KeyValue label="Source" value={formatCredentialSource(credential.source)} />
-                  <KeyValue label="Vault updated" value={formatDate(credential.updated_at)} />
-                </dl>
-                <Field label="Secret">
-                  <input
-                    aria-label={`${credential.name} secret`}
-                    type="password"
-                    value={draftSecrets[credential.name] ?? ""}
-                    placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
-                    onChange={(event) =>
-                      setDraftSecrets((current) => ({
-                        ...current,
-                        [credential.name]: event.target.value
-                      }))
-                    }
-                  />
-                </Field>
-                <div className="button-row">
-                  <button
-                    type="button"
-                    aria-label={saveLabel}
-                    disabled={saving === credential.name}
-                    title={saveLabel}
-                    onClick={() => void saveSecret(credential.name)}
-                  >
-                    Save
-                  </button>
-                  <button
-                    className="secondary"
-                    type="button"
-                    aria-label={clearLabel}
-                    disabled={saving === credential.name || !hasVaultSecret}
-                    title={clearLabel}
-                    onClick={() => void clearSecret(credential.name)}
-                  >
-                    {hasVaultSecret ? "Clear vault" : "Env only"}
-                  </button>
+                <StatusBadge status={credential.configured ? "configured" : "unconfigured"} />
+              </div>
+              <dl className="provider-card-meta">
+                <div className="key-value">
+                  <dt>Source</dt>
+                  <dd>{formatCredentialSource(credential.source)}</dd>
                 </div>
-              </article>
-            );
-          })}
-        </div>
-      </Panel>
-
-      <Panel
-        title="Catalog"
-        actions={
-          <div className="models-test-actions">
-            {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
-            <button type="button" disabled={testing || catalogState.loading} onClick={() => void runModelTests()}>
-              {testing ? "Testing" : "Test models"}
-            </button>
-          </div>
-        }
-      >
-        <div className="models-catalog-toolbar">
-          <Field label="Search">
-            <input
-              type="search"
-              placeholder="Provider, model, or display name"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </Field>
-          <span className="subtle">
-            {filteredCatalog.length} of {catalog.length || 0} models
-          </span>
-        </div>
-        {catalogState.loading ? <Loading label="Loading model catalog" /> : null}
-        {!catalogState.loading && filteredCatalog.length === 0 ? (
-          <EmptyState>No models match this search</EmptyState>
-        ) : (
-          <div className="models-catalog-scroll">
-            <table className="models-catalog-table">
-              <thead>
-                <tr>
-                  <th>Provider</th>
-                  <th>Configured</th>
-                  <th>Model</th>
-                  <th>Name</th>
-                  <th>Badges</th>
-                  <th>Context</th>
-                  <th>Speed / capabilities</th>
-                  <th>Test</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredCatalog.map((model) => (
-                  <tr key={modelKey(model.provider, model.model)}>
-                    <td>{model.provider}</td>
-                    <td>
-                      <StatusBadge
-                        status={
-                          settings.models.provider_credentials[model.provider]?.configured
-                            ? "configured"
-                            : "unconfigured"
-                        }
-                      />
-                    </td>
-                    <td className="mono">{model.model}</td>
-                    <td>{model.display_name}</td>
-                    <td>
-                      <ModelBadges model={model} />
-                    </td>
-                    <td>
-                      <span className="mono">{formatTokens(model.context_window)}</span>
-                      {model.max_output ? (
-                        <span className="subtle"> / {formatTokens(model.max_output)} out</span>
-                      ) : null}
-                    </td>
-                    <td>
-                      <CapabilityList model={model} />
-                    </td>
-                    <td>
-                      <ModelTestStatus result={testResultsByModel.get(modelKey(model.provider, model.model))} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-    </div>
+                <div className="key-value">
+                  <dt>Vault updated</dt>
+                  <dd>{formatDate(credential.updated_at)}</dd>
+                </div>
+              </dl>
+              <Field label="Secret">
+                <input
+                  aria-label={`${credential.name} secret`}
+                  type="password"
+                  value={draftSecrets[credential.name] ?? ""}
+                  placeholder={hasVaultSecret ? "Replace vault secret" : "Set vault secret"}
+                  onChange={(event) =>
+                    setDraftSecrets((current) => ({
+                      ...current,
+                      [credential.name]: event.target.value
+                    }))
+                  }
+                />
+              </Field>
+              <div className="button-row">
+                <button
+                  type="button"
+                  aria-label={saveLabel}
+                  disabled={saving === credential.name}
+                  title={saveLabel}
+                  onClick={() => void saveSecret(credential.name)}
+                >
+                  Save
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  aria-label={clearLabel}
+                  disabled={saving === credential.name || !hasVaultSecret}
+                  title={clearLabel}
+                  onClick={() => void clearSecret(credential.name)}
+                >
+                  {hasVaultSecret ? "Clear vault" : "Env only"}
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -390,6 +550,16 @@ function ModelTestStatus({ result }: { result: ModelTestResult | undefined }) {
   );
 }
 
+function formatSettingsValue(row: SettingsPageRow): string {
+  if (row.value === null || row.value === "") {
+    return "None";
+  }
+  if (typeof row.value === "boolean") {
+    return row.value ? "Enabled" : "Disabled";
+  }
+  return String(row.value);
+}
+
 function filterModelCatalog(catalog: ModelCatalogRow[], query: string): ModelCatalogRow[] {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {
@@ -437,159 +607,4 @@ function formatModelTestSummary(result: ModelTestResponse): string {
     parts.push(`${result.summary.skipped} skipped`);
   }
   return parts.join(" · ");
-}
-
-function VariablesSettings({
-  settings,
-  refresh
-}: {
-  settings: SettingsOverview;
-  refresh: () => void;
-}) {
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function saveVariable() {
-    if (!key) {
-      setError("Enter a variable key before saving");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      await putSettingsVariable(key, value);
-      setKey("");
-      setValue("");
-      refresh();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function removeVariable(variableKey: string) {
-    setSaving(true);
-    setError(null);
-    try {
-      await deleteSettingsVariable(variableKey);
-      refresh();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Panel title="Variables">
-      <ErrorBanner message={error} />
-      <div className="form-grid settings-variable-form">
-        <Field label="Key">
-          <input value={key} onChange={(event) => setKey(event.target.value)} />
-        </Field>
-        <Field label="Value">
-          <input value={value} onChange={(event) => setValue(event.target.value)} />
-        </Field>
-        <button type="button" disabled={saving} onClick={() => void saveVariable()}>
-          Save
-        </button>
-      </div>
-      {settings.variables.items.length === 0 ? (
-        <EmptyState>No variables configured</EmptyState>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Key</th>
-              <th>Value</th>
-              <th>Updated</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {settings.variables.items.map((variable) => (
-              <tr key={variable.key}>
-                <td className="mono">{variable.key}</td>
-                <td>{variable.value}</td>
-                <td>{formatDate(variable.updated_at)}</td>
-                <td>
-                  <button
-                    className="secondary"
-                    type="button"
-                    disabled={saving}
-                    onClick={() => void removeVariable(variable.key)}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Panel>
-  );
-}
-
-function EnvironmentsSettings({ settings }: { settings: SettingsOverview }) {
-  return (
-    <Panel title="Environments">
-      <dl className="kv-grid">
-        <KeyValue label="Default" value={settings.environments.default} />
-      </dl>
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Mode</th>
-            <th>Description</th>
-          </tr>
-        </thead>
-        <tbody>
-          {settings.environments.items.map((environment) => (
-            <tr key={environment.name}>
-              <td>{environment.name}</td>
-              <td>{environment.mode}</td>
-              <td>{environment.description}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </Panel>
-  );
-}
-
-function ServerSettings({ settings }: { settings: SettingsOverview }) {
-  return (
-    <Panel title="Server">
-      <dl className="kv-grid">
-        <KeyValue label="Status" value={<StatusBadge status={settings.server.status} />} />
-        <KeyValue label="Max concurrent runs" value={settings.server.max_concurrent_runs ?? "Unknown"} />
-      </dl>
-    </Panel>
-  );
-}
-
-function StorageSettings({ settings }: { settings: SettingsOverview }) {
-  return (
-    <Panel title="Storage">
-      <dl className="kv-grid">
-        <KeyValue label="Status" value={<StatusBadge status={settings.storage.status} />} />
-      </dl>
-    </Panel>
-  );
-}
-
-function MonitoringSettings({ settings }: { settings: SettingsOverview }) {
-  return (
-    <Panel title="Monitoring">
-      <dl className="kv-grid">
-        <KeyValue label="Active runs" value={settings.monitoring.active_runs} />
-        <KeyValue label="Event stream" value={settings.monitoring.event_stream} />
-      </dl>
-    </Panel>
-  );
 }

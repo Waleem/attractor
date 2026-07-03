@@ -157,6 +157,8 @@ def main() -> None:
             default_provider=runtime_default_provider,
             default_model=runtime_default_model,
             spa_dist=_resolve_platform_spa_dist(args.spa_dist),
+            server_host=args.host,
+            server_port=args.port,
         )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")

@@ -301,6 +301,27 @@ export interface ModelTestResponse {
   items: ModelTestResult[];
 }
 
+export type SettingsEditability = "editable" | "restart-required" | "read-only" | "reserved";
+
+export interface SettingsPageRow {
+  label: string;
+  description: string;
+  value: string | number | boolean | null;
+  editability: SettingsEditability;
+}
+
+export interface SettingsPageGroup {
+  title: string;
+  rows: SettingsPageRow[];
+}
+
+export interface SettingsPage {
+  id: string;
+  title: string;
+  description: string;
+  groups: SettingsPageGroup[];
+}
+
 export interface SettingsOverview {
   models: {
     default_provider: string;
@@ -334,6 +355,7 @@ export interface SettingsOverview {
     active_runs: number;
     event_stream: string;
   };
+  pages: SettingsPage[];
 }
 
 interface ItemsResponse<T> {

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { RunStatus } from "../api";
+import type { RunStatus, SettingsEditability } from "../api";
 
 export function PageHeader({
   title,
@@ -42,6 +42,55 @@ export function Panel({
       {children}
     </section>
   );
+}
+
+export function SectionCard({
+  title,
+  children,
+  actions
+}: {
+  title: string;
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section className="section-card">
+      <div className="section-card-heading">
+        <h3>{title}</h3>
+        {actions ? <div className="section-card-actions">{actions}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+export function SettingsRow({
+  label,
+  description,
+  value,
+  editability
+}: {
+  label: string;
+  description: string;
+  value: ReactNode;
+  editability: SettingsEditability;
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-copy">
+        <dt>{label}</dt>
+        <dd>{description}</dd>
+      </div>
+      <div className="settings-row-value">
+        <span>{value}</span>
+        <EditabilityTag editability={editability} />
+      </div>
+    </div>
+  );
+}
+
+function EditabilityTag({ editability }: { editability: SettingsEditability }) {
+  return <span className={`editability-tag editability-${editability}`}>{formatEditability(editability)}</span>;
 }
 
 export function Stat({
@@ -212,6 +261,16 @@ export function formatDate(value: string | null | undefined): string {
     return value;
   }
   return date.toLocaleString();
+}
+
+function formatEditability(value: SettingsEditability): string {
+  if (value === "restart-required") {
+    return "restart required";
+  }
+  if (value === "read-only") {
+    return "read only";
+  }
+  return value;
 }
 
 export function formatRelativeTime(value: string | null | undefined): string {
