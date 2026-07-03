@@ -1507,6 +1507,8 @@ td {
 }
 
 .graph-canvas {
+  display: flex;
+  justify-content: center;
   overflow-x: auto;
   border: 0;
   border-radius: var(--radius-control);
@@ -1515,7 +1517,9 @@ td {
 }
 
 .graph-canvas svg {
-  max-width: 100%;
+  display: block;
+  width: min(100%, 56rem);
+  min-width: min(100%, 28rem);
   height: auto;
 }
 
@@ -1541,6 +1545,10 @@ td {
 
 .graph-canvas .node text {
   fill: var(--text-page);
+}
+
+.graph-canvas .edge text {
+  fill: var(--text-muted);
 }
 
 .graph-canvas .edge path {

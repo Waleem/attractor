@@ -5,13 +5,32 @@ import {
   type GraphHighlightState
 } from "./graphHighlight.js";
 
+const GRAPH_EDGE_COLOR = "#8fa0b3";
+const GRAPH_LABEL_COLOR = "#eef2f7";
+const GRAPH_NODE_BORDER_COLOR = "#7f8fa3";
+
 export interface GraphViewerUpdateInput {
   graph: WorkflowGraph | null | undefined;
   events: RunEvent[];
 }
 
 export function graphLayoutKey(graph: WorkflowGraph | null | undefined): string | null {
-  return graph?.dot ?? null;
+  return graph?.dot ? buildThemedGraphDot(graph.dot) : null;
+}
+
+export function buildThemedGraphDot(dot: string): string {
+  const openingBraceIndex = dot.indexOf("{");
+  if (openingBraceIndex === -1) {
+    return dot;
+  }
+
+  const themeStatements = [
+    '  graph [bgcolor="transparent"];',
+    `  edge [color="${GRAPH_EDGE_COLOR}", fontcolor="${GRAPH_EDGE_COLOR}"];`,
+    `  node [color="${GRAPH_NODE_BORDER_COLOR}", fontcolor="${GRAPH_LABEL_COLOR}"];`
+  ].join("\n");
+
+  return `${dot.slice(0, openingBraceIndex + 1)}\n${themeStatements}\n${dot.slice(openingBraceIndex + 1)}`;
 }
 
 export function shouldRenderGraphLayout(

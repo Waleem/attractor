@@ -5,10 +5,12 @@ import {
 } from "./graphHighlight.js";
 import {
   applyGraphHighlightsToRenderedSvg,
+  graphLayoutKey,
   shouldRenderGraphLayout,
   type GraphViewerUpdateInput
 } from "./graphViewerController.js";
 import type { RunEvent, WorkflowGraph } from "./api";
+import { Graphviz } from "@hpcc-js/wasm";
 
 function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
   const actualJson = JSON.stringify(actual);
@@ -126,7 +128,7 @@ const graph: WorkflowGraph = {
   workflow_id: "workflow-1",
   repo_id: "repo-1",
   name: "release",
-  dot: "digraph Release {}",
+  dot: "digraph Release { build -> approve; approve -> deploy; deploy -> notify; }",
   nodes: [
     {
       id: "build",
@@ -357,3 +359,18 @@ assertDeepEqual(
   true,
   "renders Graphviz layout again when the DOT source changes"
 );
+
+const graphviz = await Graphviz.load();
+const themedGraphSvg = graphviz.layout(graphLayoutKey(graph) ?? "", "svg", "dot");
+
+if (themedGraphSvg.includes('fill="white"')) {
+  throw new Error("renders Graphviz SVG without a white canvas polygon");
+}
+
+if (!themedGraphSvg.includes('stroke="#8fa0b3"')) {
+  throw new Error("renders default graph edges with a muted light stroke");
+}
+
+if (!themedGraphSvg.includes('fill="#8fa0b3" stroke="#8fa0b3"')) {
+  throw new Error("renders default graph arrowheads with muted light fill and stroke");
+}
