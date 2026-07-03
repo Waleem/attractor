@@ -27,6 +27,14 @@ from attractor_pipeline.engine.runner import HandlerResult, Outcome
 from attractor_pipeline.graph import Node
 
 
+def _resolve_backend_default_model(default_provider: str | None) -> str:
+    provider = default_provider or "anthropic"
+    try:
+        return get_default_model(provider).id
+    except KeyError:
+        return get_default_model("anthropic").id
+
+
 class AgentLoopBackend:
     """Bridges the Coding Agent Loop to the pipeline's CodergenBackend interface.
 
@@ -53,8 +61,8 @@ class AgentLoopBackend:
         include_tools: bool = True,
     ) -> None:
         self._client = client
-        self._default_model = default_model or get_default_model("anthropic").id
         self._default_provider = default_provider
+        self._default_model = default_model or _resolve_backend_default_model(default_provider)
         self._system_prompt = system_prompt
         self._include_tools = include_tools
 
@@ -146,8 +154,8 @@ class DirectLLMBackend:
         default_provider: str | None = None,
     ) -> None:
         self._client = client
-        self._default_model = default_model or get_default_model("anthropic").id
         self._default_provider = default_provider
+        self._default_model = default_model or _resolve_backend_default_model(default_provider)
 
     async def run(
         self,

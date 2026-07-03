@@ -53,7 +53,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_reasoning=True,
         input_cost_per_million=5.0,
         output_cost_per_million=25.0,
-        aliases=("opus", "claude-opus", "opus-4-8", "claude-opus-4-6"),
+        aliases=("opus", "claude-opus", "opus-4-8"),
         knowledge_cutoff="2026-01",
     ),
     ModelInfo(
@@ -67,7 +67,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_reasoning=True,
         input_cost_per_million=3.0,
         output_cost_per_million=15.0,
-        aliases=("sonnet", "claude-sonnet", "sonnet-5", "claude-sonnet-4-5"),
+        aliases=("sonnet", "claude-sonnet", "sonnet-5"),
         knowledge_cutoff="2026-01",
     ),
     ModelInfo(
@@ -95,7 +95,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_reasoning=True,
         input_cost_per_million=5.0,
         output_cost_per_million=30.0,
-        aliases=("gpt-5", "5.5", "gpt-5.2"),
+        aliases=("gpt-5", "5.5"),
         knowledge_cutoff="2025-12",
     ),
     ModelInfo(
@@ -123,7 +123,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_reasoning=True,
         input_cost_per_million=0.75,
         output_cost_per_million=4.5,
-        aliases=("gpt-mini", "5.4-mini", "gpt-5.2-mini", "gpt-4.1-mini"),
+        aliases=("gpt-mini", "5.4-mini"),
         knowledge_cutoff="2025-08",
     ),
     ModelInfo(
@@ -147,7 +147,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_tools=True,
         supports_vision=True,
         supports_reasoning=True,
-        aliases=("gpt-codex", "5.4-codex", "gpt-5.2-codex"),
+        aliases=("gpt-codex", "5.4-codex"),
         knowledge_cutoff="2025-08",
     ),
     ModelInfo(
@@ -163,8 +163,6 @@ MODEL_CATALOG: list[ModelInfo] = [
             "gemini-flash",
             "3.5-flash",
             "flash",
-            "gemini-3-flash-preview",
-            "gemini-2.5-flash",
         ),
         knowledge_cutoff="2025-01",
     ),
@@ -177,7 +175,7 @@ MODEL_CATALOG: list[ModelInfo] = [
         supports_tools=True,
         supports_vision=True,
         supports_reasoning=True,
-        aliases=("gemini-pro", "3.1-pro", "gemini-3-pro-preview", "gemini-2.5-pro"),
+        aliases=("gemini-pro", "3.1-pro"),
         knowledge_cutoff="2025-01",
     ),
     ModelInfo(

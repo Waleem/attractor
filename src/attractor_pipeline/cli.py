@@ -20,6 +20,13 @@ from attractor_llm.catalog import get_default_model
 from attractor_pipeline.validation import Severity, validate
 
 
+def _provider_default_model(provider: str | None) -> str:
+    try:
+        return get_default_model(provider or "anthropic").id
+    except KeyError:
+        return get_default_model("anthropic").id
+
+
 def _console_event_printer(event: Any) -> None:
     """Print pipeline events to stdout for --verbose mode."""
     description = getattr(event, "description", str(event))
@@ -273,8 +280,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     print()
 
     # Resolve provider and model
-    model = args.model or get_default_model("anthropic").id
     provider = args.provider
+    model = args.model or _provider_default_model(provider)
 
     # Auto-detect provider from model name
     if provider is None:

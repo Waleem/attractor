@@ -23,7 +23,7 @@ from attractor_platform.storage.db import (
 )
 from attractor_platform.storage.models import SettingSecretModel
 
-_PROVIDER_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+_PROVIDER_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY")
 
 
 def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,6 +37,7 @@ def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
         ("ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-5"),
         ("OPENAI_API_KEY", "openai", "gpt-5.5"),
         ("GOOGLE_API_KEY", "gemini", "gemini-3.5-flash"),
+        ("GEMINI_API_KEY", "gemini", "gemini-3.5-flash"),
     ],
 )
 def test_build_platform_codergen_backend_detects_provider_env_keys(

@@ -60,6 +60,13 @@ def _resolve_platform_spa_dist(explicit_spa_dist: str | None) -> Path | None:
     return _existing_spa_dist(dev_dist)
 
 
+def _provider_default_model(provider: str | None) -> str:
+    try:
+        return get_default_model(provider or "anthropic").id
+    except KeyError:
+        return get_default_model("anthropic").id
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Attractor HTTP Server")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
@@ -182,6 +189,7 @@ def main() -> None:
         or os.environ.get("ANTHROPIC_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
         or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
     ):
         try:
             from attractor_llm.client import Client
@@ -224,7 +232,8 @@ def main() -> None:
                     provider = "openai"
                     model = model or get_default_model("openai").id
 
-            if os.environ.get("GOOGLE_API_KEY"):
+            gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            if gemini_key:
                 from attractor_llm.adapters.base import ProviderConfig
                 from attractor_llm.adapters.gemini import GeminiAdapter
 
@@ -232,7 +241,7 @@ def main() -> None:
                     "gemini",
                     GeminiAdapter(
                         ProviderConfig(
-                            api_key=os.environ["GOOGLE_API_KEY"],
+                            api_key=gemini_key,
                             timeout=120.0,
                         )
                     ),
@@ -243,7 +252,7 @@ def main() -> None:
 
             backend = DirectLLMBackend(
                 client,
-                default_model=model or get_default_model("anthropic").id,
+                default_model=model or _provider_default_model(provider),
                 default_provider=provider,
             )
             register_default_handlers(registry, codergen_backend=backend)

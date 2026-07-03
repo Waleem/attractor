@@ -15,10 +15,10 @@ from attractor_pipeline.backends import AgentLoopBackend
 
 _ProviderAdapterFactory = Callable[[ProviderConfig], ProviderAdapter]
 
-_PROVIDER_ENV_ORDER: tuple[tuple[str, str, _ProviderAdapterFactory], ...] = (
-    ("anthropic", "ANTHROPIC_API_KEY", AnthropicAdapter),
-    ("openai", "OPENAI_API_KEY", OpenAIAdapter),
-    ("gemini", "GOOGLE_API_KEY", GeminiAdapter),
+_PROVIDER_ENV_ORDER: tuple[tuple[str, tuple[str, ...], _ProviderAdapterFactory], ...] = (
+    ("anthropic", ("ANTHROPIC_API_KEY",), AnthropicAdapter),
+    ("openai", ("OPENAI_API_KEY",), OpenAIAdapter),
+    ("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), GeminiAdapter),
 )
 
 
@@ -34,8 +34,8 @@ def resolve_platform_llm_defaults(
     first_vault_provider: str | None = None
     provider_api_keys = provider_api_keys or {}
 
-    for provider, env_name, _adapter_factory in _PROVIDER_ENV_ORDER:
-        if os.environ.get(env_name):
+    for provider, env_names, _adapter_factory in _PROVIDER_ENV_ORDER:
+        if any(os.environ.get(env_name) for env_name in env_names):
             registered_providers.add(provider)
             first_env_provider = first_env_provider or provider
             continue
@@ -69,8 +69,11 @@ def build_platform_codergen_backend(
     client = Client()
     provider_api_keys = provider_api_keys or {}
 
-    for provider, env_name, adapter_factory in _PROVIDER_ENV_ORDER:
-        api_key = os.environ.get(env_name) or provider_api_keys.get(provider)
+    for provider, env_names, adapter_factory in _PROVIDER_ENV_ORDER:
+        api_key = next(
+            (os.environ[env_name] for env_name in env_names if os.environ.get(env_name)),
+            None,
+        ) or provider_api_keys.get(provider)
         if not api_key:
             continue
         client.register_adapter(
