@@ -35,6 +35,19 @@ def _resolve_backend_default_model(default_provider: str | None) -> str:
         return get_default_model("anthropic").id
 
 
+def _resolve_run_model(
+    *,
+    node_model: str,
+    node_provider: str,
+    default_model: str,
+) -> str:
+    if node_model:
+        return node_model
+    if node_provider:
+        return get_profile(node_provider).default_model
+    return default_model
+
+
 class AgentLoopBackend:
     """Bridges the Coding Agent Loop to the pipeline's CodergenBackend interface.
 
@@ -84,8 +97,11 @@ class AgentLoopBackend:
         # Load provider profile for provider-specific defaults
         profile = get_profile(provider or "")
 
-        # Resolve model: node attr > backend default > profile default
-        model = node.llm_model or self._default_model or profile.default_model
+        model = _resolve_run_model(
+            node_model=node.llm_model,
+            node_provider=node.llm_provider,
+            default_model=self._default_model or profile.default_model,
+        )
 
         # Build session config from node attributes
         config = SessionConfig(
@@ -165,8 +181,12 @@ class DirectLLMBackend:
         abort_signal: AbortSignal | None = None,
     ) -> str | HandlerResult:
         """Execute a single LLM call (no tools, no agent loop)."""
-        model = node.llm_model or self._default_model
         provider = node.llm_provider or self._default_provider
+        model = _resolve_run_model(
+            node_model=node.llm_model,
+            node_provider=node.llm_provider,
+            default_model=self._default_model,
+        )
 
         request = Request(
             model=model,

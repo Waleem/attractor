@@ -300,10 +300,10 @@ def _parse_non_negative_int(value: str | None, default: int) -> int:
     return max(parsed, 0)
 
 
-_PROVIDER_CREDENTIALS: tuple[tuple[str, str], ...] = (
-    ("openai", "OPENAI_API_KEY"),
-    ("anthropic", "ANTHROPIC_API_KEY"),
-    ("gemini", "GOOGLE_API_KEY"),
+_PROVIDER_CREDENTIALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("openai", ("OPENAI_API_KEY",)),
+    ("anthropic", ("ANTHROPIC_API_KEY",)),
+    ("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
 )
 _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
@@ -344,7 +344,7 @@ async def _provider_api_keys_from_vault(services: _PlatformServices) -> dict[str
     return await load_provider_secret_values(
         session_factory=services.session_factory,
         secret_vault=services.secret_vault,
-        provider_names=(credential_name for credential_name, _ in _PROVIDER_CREDENTIALS),
+        provider_names=(credential_name for credential_name, _env_names in _PROVIDER_CREDENTIALS),
     )
 
 
@@ -1890,12 +1890,16 @@ async def get_settings(request: Request) -> JSONResponse:
     provider_api_keys = await _provider_api_keys_from_vault(services)
     provider, model = _default_provider_and_model(services, provider_api_keys)
     provider_credentials: dict[str, dict[str, Any]] = {}
-    for credential_name, env_name in _PROVIDER_CREDENTIALS:
+    for credential_name, env_names in _PROVIDER_CREDENTIALS:
         secret = secrets_by_name.get(credential_name)
-        configured_from_env = bool(os.environ.get(env_name))
+        configured_env_name = next(
+            (env_name for env_name in env_names if os.environ.get(env_name)),
+            None,
+        )
+        configured_from_env = configured_env_name is not None
         provider_credentials[credential_name] = {
             "name": credential_name,
-            "env_var": env_name,
+            "env_var": configured_env_name or env_names[0],
             "configured": secret is not None or configured_from_env,
             "updated_at": _serialize_settings_timestamp(secret.updated_at)
             if secret is not None

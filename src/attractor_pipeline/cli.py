@@ -19,12 +19,36 @@ from typing import Any
 from attractor_llm.catalog import get_default_model
 from attractor_pipeline.validation import Severity, validate
 
+_PROVIDER_API_KEY_ENV_NAMES: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+}
+
 
 def _provider_default_model(provider: str | None) -> str:
     try:
         return get_default_model(provider or "anthropic").id
     except KeyError:
         return get_default_model("anthropic").id
+
+
+def _provider_api_key(provider: str) -> tuple[str, str | None]:
+    env_names = _PROVIDER_API_KEY_ENV_NAMES.get(provider, ("ANTHROPIC_API_KEY",))
+    for env_name in env_names:
+        api_key = os.environ.get(env_name)
+        if api_key:
+            return env_name, api_key
+    return env_names[0], None
+
+
+def _available_provider_api_keys() -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for provider in _PROVIDER_API_KEY_ENV_NAMES:
+        _env_name, api_key = _provider_api_key(provider)
+        if api_key:
+            keys[provider] = api_key
+    return keys
 
 
 def _console_event_printer(event: Any) -> None:
@@ -299,13 +323,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
             provider = "anthropic"
 
     # Get API key
-    key_env_map = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GOOGLE_API_KEY",
-    }
-    env_var = key_env_map.get(provider, "ANTHROPIC_API_KEY")
-    api_key = os.environ.get(env_var)
+    env_var, api_key = _provider_api_key(provider)
     if not api_key:
         print(f"Error: Set {env_var} environment variable")
         sys.exit(1)
@@ -313,17 +331,10 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     # Set up LLM client — register ALL available providers so per-node
     # llm_provider= overrides work without needing multiple CLI invocations.
     client = Client()
-    all_providers = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GOOGLE_API_KEY",
-    }
     registered = []
-    for p, env in all_providers.items():
-        key = os.environ.get(env)
-        if key:
-            client.register_adapter(p, _create_adapter(p, key))
-            registered.append(p)
+    for p, key in _available_provider_api_keys().items():
+        client.register_adapter(p, _create_adapter(p, key))
+        registered.append(p)
     # If the selected provider wasn't auto-detected above (e.g. custom key),
     # ensure it's registered using the key we already validated.
     if provider not in registered:
