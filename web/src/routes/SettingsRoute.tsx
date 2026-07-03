@@ -236,6 +236,7 @@ function ModelCatalogSection({
   const catalog = safeArray<ModelCatalogRow>(catalogState.data);
   const providerCredentials = settings.models?.provider_credentials ?? {};
   const filteredCatalog = useMemo(() => filterModelCatalog(catalog, query), [catalog, query]);
+  const testingProgressLabel = `Testing... ${testResult?.items.length ?? 0}/${catalog.length}`;
   const testResultsByModel = useMemo(() => {
     const results = new Map<string, ModelTestResult>();
     for (const item of testResult?.items ?? []) {
@@ -265,7 +266,14 @@ function ModelCatalogSection({
         <div className="models-test-actions">
           {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
           <button type="button" disabled={testing || catalogState.loading} onClick={() => void runModelTests()}>
-            {testing ? "Testing" : "Test models"}
+            {testing ? (
+              <>
+                <span className="models-test-spinner" aria-hidden="true" />
+                <span>{testingProgressLabel}</span>
+              </>
+            ) : (
+              "Test models"
+            )}
           </button>
         </div>
       }

@@ -1,10 +1,11 @@
 import type { ModelCatalogRow, SettingsOverview } from "./api.js";
 
-type FetchHandler = (path: string) => {
+type FetchResult = {
   ok?: boolean;
   status?: number;
   body: unknown;
 };
+type FetchHandler = (path: string, init?: RequestInit) => FetchResult | Promise<FetchResult>;
 
 function assertIncludes(actual: string, expected: string, message: string) {
   if (!actual.includes(expected)) {
@@ -22,17 +23,28 @@ async function renderSettingsRoute(handler: FetchHandler): Promise<{
   markup: string;
   fetchCalls: string[];
 }> {
+  const { container, fetchCalls, root } = await mountSettingsRoute(handler);
+  const markup = container.innerHTML;
+  root.unmount();
+  return { markup, fetchCalls };
+}
+
+async function mountSettingsRoute(handler: FetchHandler): Promise<{
+  container: MiniElement;
+  fetchCalls: string[];
+  root: { unmount(): void };
+}> {
   const { document } = installMiniDom("/settings");
   const fetchCalls: string[] = [];
-  globalThis.fetch = ((input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     fetchCalls.push(path);
-    const result = handler(path);
-    return Promise.resolve({
+    const result = await handler(path, init);
+    return {
       ok: result.ok ?? true,
       status: result.status ?? (result.ok === false ? 500 : 200),
       text: () => Promise.resolve(JSON.stringify(result.body))
-    } as Response);
+    } as Response;
   }) as typeof fetch;
 
   const [{ createRoot }, { SettingsRoute }] = await Promise.all([
@@ -46,9 +58,7 @@ async function renderSettingsRoute(handler: FetchHandler): Promise<{
 
   await waitFor(() => fetchCalls.length >= 2);
   await waitFor(() => !container.textContent.includes("Loading"));
-  const markup = container.innerHTML;
-  root.unmount();
-  return { markup, fetchCalls };
+  return { container, fetchCalls, root };
 }
 
 async function renderAppRoute(
@@ -61,15 +71,15 @@ async function renderAppRoute(
 }> {
   const { document } = installMiniDom(pathname);
   const fetchCalls: string[] = [];
-  globalThis.fetch = ((input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     fetchCalls.push(path);
-    const result = handler(path);
-    return Promise.resolve({
+    const result = await handler(path, init);
+    return {
       ok: result.ok ?? true,
       status: result.status ?? (result.ok === false ? 500 : 200),
       text: () => Promise.resolve(JSON.stringify(result.body))
-    } as Response);
+    } as Response;
   }) as typeof fetch;
 
   const [{ createRoot }, { default: App }] = await Promise.all([
@@ -124,7 +134,7 @@ function installMiniDom(pathname = "/settings") {
     HTMLInputElement: MiniElement,
     Node: MiniNode,
     Text: MiniText,
-    Event: class {}
+    Event: MiniEvent
   };
   document.defaultView = window;
   for (const [name, value] of Object.entries({
@@ -135,7 +145,8 @@ function installMiniDom(pathname = "/settings") {
     HTMLInputElement: MiniElement,
     HTMLIFrameElement: MiniElement,
     Node: MiniNode,
-    Text: MiniText
+    Text: MiniText,
+    Event: MiniEvent
   })) {
     Object.defineProperty(globalThis, name, {
       configurable: true,
@@ -146,10 +157,44 @@ function installMiniDom(pathname = "/settings") {
   return { document, window };
 }
 
+class MiniEvent {
+  currentTarget: MiniNode | null = null;
+  target: MiniNode | null = null;
+  defaultPrevented = false;
+  propagationStopped = false;
+  readonly timeStamp = Date.now();
+
+  constructor(
+    public readonly type: string,
+    public readonly options: { bubbles?: boolean; cancelable?: boolean } = {}
+  ) {}
+
+  get bubbles(): boolean {
+    return this.options.bubbles ?? false;
+  }
+
+  get cancelable(): boolean {
+    return this.options.cancelable ?? false;
+  }
+
+  preventDefault() {
+    if (this.cancelable) {
+      this.defaultPrevented = true;
+    }
+  }
+
+  stopPropagation() {
+    this.propagationStopped = true;
+  }
+}
+
+type MiniEventListener = ((event: MiniEvent) => void) | { handleEvent(event: MiniEvent): void };
+
 class MiniNode {
   parentNode: MiniNode | null = null;
   childNodes: MiniNode[] = [];
   ownerDocument: MiniDocument;
+  private readonly eventListeners = new Map<string, Set<MiniEventListener>>();
 
   constructor(
     public readonly nodeType: number,
@@ -220,8 +265,39 @@ class MiniNode {
     return this.childNodes.some((child) => child.contains(node));
   }
 
-  addEventListener() {}
-  removeEventListener() {}
+  addEventListener(type: string, listener: MiniEventListener | null) {
+    if (!listener) {
+      return;
+    }
+    const listeners = this.eventListeners.get(type) ?? new Set<MiniEventListener>();
+    listeners.add(listener);
+    this.eventListeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: MiniEventListener | null) {
+    if (!listener) {
+      return;
+    }
+    this.eventListeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: MiniEvent): boolean {
+    if (!event.target) {
+      event.target = this;
+    }
+    event.currentTarget = this;
+    for (const listener of this.eventListeners.get(event.type) ?? []) {
+      if (typeof listener === "function") {
+        listener(event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+    if (event.bubbles && !event.propagationStopped && this.parentNode) {
+      this.parentNode.dispatchEvent(event);
+    }
+    return !event.defaultPrevented;
+  }
 }
 
 class MiniText extends MiniNode {
@@ -294,6 +370,12 @@ class MiniElement extends MiniNode {
     return this.attributes.has(name);
   }
 
+  click() {
+    if (!this.disabled) {
+      this.dispatchEvent(new MiniEvent("click", { bubbles: true, cancelable: true }));
+    }
+  }
+
   focus() {}
   blur() {}
 }
@@ -353,6 +435,30 @@ function escapeHtml(value: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function findButtonByText(container: MiniElement, label: string): MiniElement {
+  const button = findElement(
+    container,
+    (element) => element.localName === "button" && element.textContent.trim() === label
+  );
+  if (!button) {
+    throw new Error(`Button not found: ${label}\nactual: ${container.innerHTML}`);
+  }
+  return button;
+}
+
+function findElement(node: MiniNode, predicate: (element: MiniElement) => boolean): MiniElement | null {
+  if (node instanceof MiniElement && predicate(node)) {
+    return node;
+  }
+  for (const child of node.childNodes) {
+    const match = findElement(child, predicate);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
 }
 
 const settingsPayload: SettingsOverview = {
@@ -478,6 +584,53 @@ async function main() {
     "invalid settings subpages render the app not-found route"
   );
   assertEqual(invalidRouteResult.fetchCalls.length, 0, "invalid settings subpages do not load settings data");
+
+  let resolveModelTest: (result: FetchResult) => void = () => undefined;
+  const pendingModelTest = new Promise<FetchResult>((resolve) => {
+    resolveModelTest = resolve;
+  });
+  const modelTestResult = await mountSettingsRoute((path) => {
+    if (path === "/api/settings") {
+      return { body: settingsPayload };
+    }
+    if (path === "/api/settings/models/catalog") {
+      return { body: { items: catalogPayload } };
+    }
+    if (path === "/api/settings/models/test") {
+      return pendingModelTest;
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  findButtonByText(modelTestResult.container, "Test models").click();
+  await waitFor(() => modelTestResult.fetchCalls.includes("/api/settings/models/test"));
+  await waitFor(() => modelTestResult.container.textContent.includes("Testing"));
+  assertIncludes(
+    modelTestResult.container.textContent,
+    "Testing... 0/1",
+    "model testing shows deterministic in-progress count while the test request is pending"
+  );
+  assertIncludes(
+    modelTestResult.container.innerHTML,
+    "models-test-spinner",
+    "model testing shows a spinner while the test request is pending"
+  );
+  resolveModelTest({
+    body: {
+      summary: { ok: 1, failed: 0, skipped: 0, tested_at: "2026-07-03T12:00:00Z" },
+      items: [
+        {
+          provider: "openai",
+          model: "gpt-cli-task-4",
+          display_name: "GPT CLI Task 4",
+          ok: true,
+          latency_ms: 42,
+          error: null
+        }
+      ]
+    }
+  });
+  await waitFor(() => modelTestResult.container.textContent.includes("1 ok"));
+  modelTestResult.root.unmount();
 
   const happyResult = await renderSettingsRoute((path) => {
     if (path === "/api/settings") {

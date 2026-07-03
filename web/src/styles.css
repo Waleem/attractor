@@ -1247,6 +1247,21 @@ td {
   font-weight: var(--font-weight-medium);
 }
 
+.models-test-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: models-test-spin 700ms linear infinite;
+}
+
+@keyframes models-test-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .models-catalog-toolbar {
   display: flex;
   gap: var(--space-1-5);
