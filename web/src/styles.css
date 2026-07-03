@@ -777,6 +777,26 @@ td {
 
 .live-dot.connected {
   background: var(--status-completed);
+  animation: live-dot-pulse 1.9s ease-in-out infinite;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-completed) 28%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot.connected {
+    animation: none;
+    box-shadow: none;
+  }
+}
+
+@keyframes live-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-completed) 28%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-completed) 0%, transparent);
+  }
 }
 
 .run-list {
