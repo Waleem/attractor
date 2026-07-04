@@ -15,6 +15,7 @@ from pathlib import Path
 
 import uvicorn
 
+from attractor_llm.catalog import get_default_model
 from attractor_server.app import create_app
 from attractor_server.pipeline_manager import PipelineManager
 
@@ -57,6 +58,13 @@ def _resolve_platform_spa_dist(explicit_spa_dist: str | None) -> Path | None:
 
     dev_dist = Path.cwd() / "web" / "dist"
     return _existing_spa_dist(dev_dist)
+
+
+def _provider_default_model(provider: str | None) -> str:
+    try:
+        return get_default_model(provider or "anthropic").id
+    except KeyError:
+        return get_default_model("anthropic").id
 
 
 def main() -> None:
@@ -149,6 +157,9 @@ def main() -> None:
             default_provider=runtime_default_provider,
             default_model=runtime_default_model,
             spa_dist=_resolve_platform_spa_dist(args.spa_dist),
+            server_host=args.host,
+            server_port=args.port,
+            max_concurrent_runs=args.max_concurrent,
         )
 
         print(f"Attractor platform server starting on http://{args.host}:{args.port}")
@@ -176,7 +187,13 @@ def main() -> None:
     provider = args.provider
     model = args.model
 
-    if provider or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+    if (
+        provider
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    ):
         try:
             from attractor_llm.client import Client
             from attractor_pipeline.backends import DirectLLMBackend
@@ -199,7 +216,7 @@ def main() -> None:
                 )
                 if not provider:
                     provider = "anthropic"
-                    model = model or "claude-sonnet-4-5"
+                    model = model or get_default_model("anthropic").id
 
             if os.environ.get("OPENAI_API_KEY"):
                 from attractor_llm.adapters.base import ProviderConfig
@@ -216,11 +233,29 @@ def main() -> None:
                 )
                 if not provider:
                     provider = "openai"
-                    model = model or "gpt-4.1-mini"
+                    model = model or get_default_model("openai").id
+
+            gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            if gemini_key:
+                from attractor_llm.adapters.base import ProviderConfig
+                from attractor_llm.adapters.gemini import GeminiAdapter
+
+                client.register_adapter(
+                    "gemini",
+                    GeminiAdapter(
+                        ProviderConfig(
+                            api_key=gemini_key,
+                            timeout=120.0,
+                        )
+                    ),
+                )
+                if not provider:
+                    provider = "gemini"
+                    model = model or get_default_model("gemini").id
 
             backend = DirectLLMBackend(
                 client,
-                default_model=model or "claude-sonnet-4-5",
+                default_model=model or _provider_default_model(provider),
                 default_provider=provider,
             )
             register_default_handlers(registry, codergen_backend=backend)

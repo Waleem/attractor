@@ -41,6 +41,7 @@ htmlcov/
 
 # Git worktrees (local development only, must not be committed)
 .worktrees/
+.attractor-worktrees/
 
 .superpowers/brainstorm/*
 .attractor-artifacts/*

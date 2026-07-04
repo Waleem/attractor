@@ -77,7 +77,7 @@ class SessionConfig:
     Controls model selection, limits, and behavior.
     """
 
-    model: str = "claude-sonnet-4-5"
+    model: str = "claude-sonnet-5"
     provider: str | None = None
     system_prompt: str = ""
     max_turns: int = 0  # 0 = unlimited (spec §9 SessionConfig)

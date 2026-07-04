@@ -23,7 +23,7 @@ from attractor_platform.storage.db import (
 )
 from attractor_platform.storage.models import SettingSecretModel
 
-_PROVIDER_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+_PROVIDER_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY")
 
 
 def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,9 +34,10 @@ def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("env_name", "expected_provider", "expected_model"),
     [
-        ("ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-4-5"),
-        ("OPENAI_API_KEY", "openai", "gpt-5.2"),
-        ("GOOGLE_API_KEY", "gemini", "gemini-3-flash-preview"),
+        ("ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-5"),
+        ("OPENAI_API_KEY", "openai", "gpt-5.5"),
+        ("GOOGLE_API_KEY", "gemini", "gemini-3.5-flash"),
+        ("GEMINI_API_KEY", "gemini", "gemini-3.5-flash"),
     ],
 )
 def test_build_platform_codergen_backend_detects_provider_env_keys(
@@ -72,7 +73,7 @@ def test_build_platform_codergen_backend_selects_first_available_key(
     backend_any = cast(Any, backend)
     assert set(backend_any._client._adapters) == {"anthropic", "openai", "gemini"}
     assert backend_any._default_provider == "anthropic"
-    assert backend_any._default_model == "claude-sonnet-4-5"
+    assert backend_any._default_model == "claude-sonnet-5"
 
 
 def test_build_platform_codergen_backend_honors_explicit_provider_and_model(
@@ -154,7 +155,7 @@ async def test_build_platform_codergen_backend_uses_vault_provider_key_without_e
         backend_any = cast(Any, backend)
         assert set(backend_any._client._adapters) == {"openai"}
         assert backend_any._default_provider == "openai"
-        assert backend_any._default_model == "gpt-5.2"
+        assert backend_any._default_model == "gpt-5.5"
     finally:
         await engine.dispose()
 

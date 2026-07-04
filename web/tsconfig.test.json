@@ -11,6 +11,12 @@
     "src/graphHighlight.test.ts",
     "src/graphHighlight.ts",
     "src/graphViewerController.ts",
-    "src/components/GraphViewer.tsx"
+    "src/components/GraphViewer.tsx",
+    "src/settingsRouteRender.test.tsx",
+    "src/routes/SettingsRoute.tsx",
+    "src/api.ts",
+    "src/appBase.ts",
+    "src/components/useAsync.ts",
+    "src/components/ui.tsx"
   ]
 }

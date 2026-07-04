@@ -13,7 +13,7 @@ from attractor_llm.types import FinishReason, StreamEvent, StreamEventKind, Usag
 
 class TestModelCatalog:
     def test_get_known_model(self):
-        info = get_model_info("claude-opus-4-6")
+        info = get_model_info("claude-opus-4-8")
         assert info is not None
         assert info.provider == "anthropic"
         assert info.supports_tools is True
@@ -23,24 +23,24 @@ class TestModelCatalog:
 
     def test_list_all_models(self):
         models = list_models()
-        assert len(models) == 10  # 2 anthropic + 4 openai + 4 gemini
+        assert len(models) == 12  # 4 anthropic + 5 openai + 3 gemini
 
     def test_list_by_provider(self):
         anthropic = list_models("anthropic")
-        assert len(anthropic) == 2
+        assert len(anthropic) == 4
         assert all(m.provider == "anthropic" for m in anthropic)
 
         openai = list_models("openai")
-        assert len(openai) == 4  # gpt-5.2, gpt-5.2-mini, gpt-4.1-mini, gpt-5.2-codex
+        assert len(openai) == 5
         assert all(m.provider == "openai" for m in openai)
 
         gemini = list_models("gemini")
-        assert len(gemini) == 4  # 3-pro, 3-flash, 2.5-pro, 2.5-flash
+        assert len(gemini) == 3
 
     def test_default_models(self):
-        assert get_default_model("anthropic").id == "claude-sonnet-4-5"
-        assert get_default_model("openai").id == "gpt-5.2"
-        assert get_default_model("gemini").id == "gemini-3-flash-preview"
+        assert get_default_model("anthropic").id == "claude-sonnet-5"
+        assert get_default_model("openai").id == "gpt-5.5"
+        assert get_default_model("gemini").id == "gemini-3.5-flash"
 
     def test_unknown_provider_raises(self):
         import pytest

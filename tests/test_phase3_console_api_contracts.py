@@ -79,6 +79,7 @@ class _Repository:
         self.workflows: dict[str, _Workflow] = {}
         self.runs: dict[str, _Run] = {}
         self.events: dict[str, list[_Event]] = {}
+        self.artifacts: dict[str, list[Any]] = {}
 
     async def register_repo(
         self,
@@ -208,6 +209,7 @@ class _Executor:
         self.max_concurrent_runs = 3
         self._run_number = 0
         self.git: GitRunner = GitRunner()
+        self._artifact_root: Path | None = None
 
     async def register_and_launch(
         self,

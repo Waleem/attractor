@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from attractor_agent.session import SessionConfig
+from attractor_llm.catalog import get_default_model
 from attractor_llm.types import Tool
 
 
@@ -31,7 +32,7 @@ class OpenAIProfile:
 
     @property
     def default_model(self) -> str:
-        return "gpt-5.2"
+        return get_default_model("openai").id
 
     @property
     def supports_parallel_tool_calls(self) -> bool:

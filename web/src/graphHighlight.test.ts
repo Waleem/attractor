@@ -5,10 +5,14 @@ import {
 } from "./graphHighlight.js";
 import {
   applyGraphHighlightsToRenderedSvg,
+  buildThemedGraphDot,
+  calculateGraphFitTransform,
+  graphLayoutKey,
   shouldRenderGraphLayout,
   type GraphViewerUpdateInput
 } from "./graphViewerController.js";
 import type { RunEvent, WorkflowGraph } from "./api";
+import { Graphviz } from "@hpcc-js/wasm";
 
 function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
   const actualJson = JSON.stringify(actual);
@@ -97,10 +101,10 @@ class SvgRootFixture {
 function graphvizSvgFixture() {
   const svg = `
     <svg>
-      <g class="node active checkpointed"><title>build</title></g>
-      <g class="node complete"><title>deploy</title></g>
-      <g class="edge active"><title>approve-&gt;deploy</title></g>
-      <g class="edge active"><title>deploy-&gt;notify</title></g>
+      <g class="node running checkpointed"><title>build</title></g>
+      <g class="node completed"><title>deploy</title></g>
+      <g class="edge running"><title>approve-&gt;deploy</title></g>
+      <g class="edge running"><title>deploy-&gt;notify</title></g>
     </svg>
   `;
   const groups = Array.from(
@@ -126,7 +130,7 @@ const graph: WorkflowGraph = {
   workflow_id: "workflow-1",
   repo_id: "repo-1",
   name: "release",
-  dot: "digraph Release {}",
+  dot: "digraph Release { build -> approve; approve -> deploy; deploy -> notify; }",
   nodes: [
     {
       id: "build",
@@ -230,13 +234,28 @@ const events: RunEvent[] = [
 ];
 
 const highlightState = buildGraphHighlightState(graph, events);
+const waitingHighlightState = buildGraphHighlightState(graph, [
+  {
+    sequence: 1,
+    event_type: "approval.requested",
+    payload: { node_id: "approve" },
+    actor_label: "executor",
+    created_at: null
+  }
+]);
+
+assertDeepEqual(
+  mapEntries(waitingHighlightState.nodeClasses),
+  [["approve", ["waiting"]]],
+  "marks approval request nodes as waiting"
+);
 
 assertDeepEqual(
   mapEntries(highlightState.nodeClasses),
   [
-    ["approve", ["complete"]],
-    ["build", ["complete", "checkpointed"]],
-    ["deploy", ["active"]],
+    ["approve", ["completed"]],
+    ["build", ["completed", "checkpointed"]],
+    ["deploy", ["running"]],
     ["notify", ["failed"]]
   ],
   "normalizes node_id and stage name payloads into node highlight classes"
@@ -244,37 +263,37 @@ assertDeepEqual(
 
 assertDeepEqual(
   mapEntries(highlightState.edgeClasses),
-  [["approve->deploy", ["active"]]],
-  "marks the edge from the latest completed node to the active node"
+  [["approve->deploy", ["running"]]],
+  "marks the edge from the latest completed node to the running node"
 );
 
-const buildNode = target("node", "build", ["node", "active", "checkpointed"]);
-const deployNode = target("node", "deploy", ["node", "complete"]);
-const activeEdge = target("edge", "approve->deploy", ["edge"]);
-const staleEdge = target("edge", "deploy->notify", ["edge", "active"]);
+const buildNode = target("node", "build", ["node", "running", "checkpointed"]);
+const deployNode = target("node", "deploy", ["node", "completed"]);
+const runningEdge = target("edge", "approve->deploy", ["edge"]);
+const staleEdge = target("edge", "deploy->notify", ["edge", "running"]);
 const untitledNode = target("node", null, ["node", "failed"]);
 
 applyGraphHighlightClassesToTargets(
-  [buildNode, deployNode, activeEdge, staleEdge, untitledNode],
+  [buildNode, deployNode, runningEdge, staleEdge, untitledNode],
   highlightState
 );
 
 assertDeepEqual(
   Array.from(buildNode.classNames).sort(),
-  ["checkpointed", "complete", "node"],
+  ["checkpointed", "completed", "node"],
   "updates node targets by removing stale highlight classes and adding current classes"
 );
 
 assertDeepEqual(
   Array.from(deployNode.classNames).sort(),
-  ["active", "node"],
-  "applies current active class to node targets"
+  ["node", "running"],
+  "applies current running class to node targets"
 );
 
 assertDeepEqual(
-  Array.from(activeEdge.classNames).sort(),
-  ["active", "edge"],
-  "applies current active class to edge targets"
+  Array.from(runningEdge.classNames).sort(),
+  ["edge", "running"],
+  "applies current running class to edge targets"
 );
 
 assertDeepEqual(
@@ -295,19 +314,19 @@ applyGraphHighlightsToRenderedSvg(svgRoot as unknown as ParentNode, highlightSta
 
 assertDeepEqual(
   groupClasses(svgRoot, "build"),
-  ["checkpointed", "complete", "node"],
+  ["checkpointed", "completed", "node"],
   "updates Graphviz node groups using title text as the node id"
 );
 
 assertDeepEqual(
   groupClasses(svgRoot, "deploy"),
-  ["active", "node"],
+  ["node", "running"],
   "replaces stale Graphviz node highlight classes"
 );
 
 assertDeepEqual(
   groupClasses(svgRoot, "approve->deploy"),
-  ["active", "edge"],
+  ["edge", "running"],
   "applies current highlights to Graphviz edge groups using source->target titles"
 );
 
@@ -342,3 +361,84 @@ assertDeepEqual(
   true,
   "renders Graphviz layout again when the DOT source changes"
 );
+
+const commentBraceDot = `// Compound Conditions and \${braced} Expansion
+digraph CommentBrace {
+  build -> deploy;
+}`;
+const themedCommentBraceDot = buildThemedGraphDot(commentBraceDot);
+const commentBraceBodyIndex = themedCommentBraceDot.indexOf("digraph CommentBrace {\n  graph [bgcolor");
+
+if (commentBraceBodyIndex === -1) {
+  throw new Error("inserts graph theme inside graph body after leading comment braces");
+}
+
+if (themedCommentBraceDot.indexOf("graph [bgcolor") < themedCommentBraceDot.indexOf("digraph CommentBrace {")) {
+  throw new Error("does not insert graph theme before the graph body");
+}
+
+const quotedAttributeBraceDot = `digraph QuotedAttributeBrace {
+  graph [label="{quoted body brace}"];
+  build -> deploy;
+}`;
+const themedQuotedAttributeBraceDot = buildThemedGraphDot(quotedAttributeBraceDot);
+
+if (!themedQuotedAttributeBraceDot.includes('graph [bgcolor="transparent", rankdir="LR"];\n  edge ')) {
+  throw new Error("inserts graph theme and left-to-right layout before quoted graph attributes containing braces");
+}
+
+if (!themedQuotedAttributeBraceDot.includes('graph [label="{quoted body brace}"];')) {
+  throw new Error("preserves quoted graph attributes containing braces");
+}
+
+const htmlStringGraphIdDot = `digraph <G{prod}> {
+  build -> deploy;
+}`;
+const themedHtmlStringGraphIdDot = buildThemedGraphDot(htmlStringGraphIdDot);
+
+if (!themedHtmlStringGraphIdDot.includes("<G{prod}> {\n  graph [bgcolor")) {
+  throw new Error("inserts graph theme after HTML-string graph IDs containing braces");
+}
+
+if (!themedHtmlStringGraphIdDot.includes("digraph <G{prod}> {")) {
+  throw new Error("preserves HTML-string graph IDs containing braces");
+}
+
+const themedGraphDot = buildThemedGraphDot(graph.dot);
+
+if (!themedGraphDot.includes('graph [bgcolor="transparent", rankdir="LR"];')) {
+  throw new Error("sets a transparent canvas and left-to-right graph layout");
+}
+
+if (!themedGraphDot.includes('edge [color="#8fa0b3", fontcolor="#8fa0b3"];')) {
+  throw new Error("keeps muted edge defaults");
+}
+
+const tallGraphFit = calculateGraphFitTransform({
+  containerWidth: 784,
+  containerHeight: 400,
+  contentWidth: 100,
+  contentHeight: 267,
+  padding: 24
+});
+
+assertDeepEqual(
+  tallGraphFit,
+  { scale: 1.318352, x: 326.082397, y: 24 },
+  "fits a tall intrinsic SVG into a bounded graph panel without stretching to full width"
+);
+
+const graphviz = await Graphviz.load();
+const themedGraphSvg = graphviz.layout(graphLayoutKey(graph) ?? "", "svg", "dot");
+
+if (themedGraphSvg.includes('fill="white"')) {
+  throw new Error("renders Graphviz SVG without a white canvas polygon");
+}
+
+if (!themedGraphSvg.includes('stroke="#8fa0b3"')) {
+  throw new Error("renders default graph edges with a muted light stroke");
+}
+
+if (!themedGraphSvg.includes('fill="#8fa0b3" stroke="#8fa0b3"')) {
+  throw new Error("renders default graph arrowheads with muted light fill and stroke");
+}

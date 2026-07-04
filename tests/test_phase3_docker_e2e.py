@@ -200,7 +200,7 @@ async def test_docker_run_uses_prepared_worktree_and_persists_outputs(
 
     managed_output = Path(run.worktree_path) / "generated" / "task7.txt"
     assert managed_output.read_text(encoding="utf-8") == (
-        "/workspace\nseed-from-registered-repo"
+        "/workspace\n     1\tseed-from-registered-repo"
     )
     assert (repo_path / "generated" / "task7.txt").exists() is False
     assert before_status == ""

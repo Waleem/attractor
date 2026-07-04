@@ -33,6 +33,7 @@ _LLM_ENV_NAMES = (
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
     "ATTRACTOR_DEFAULT_PROVIDER",
     "ATTRACTOR_DEFAULT_MODEL",
 )
@@ -260,14 +261,14 @@ async def test_settings_overview_includes_required_sections_and_secret_status(
 
         assert response.status_code == 200
         payload = response.json()
-        assert set(payload) == {
+        assert {
             "models",
             "environments",
             "variables",
             "server",
             "storage",
             "monitoring",
-        }
+        } <= set(payload)
         assert payload["models"]["default_provider"] == "gemini"
         assert payload["models"]["default_model"] == get_profile("gemini").default_model
         assert payload["models"]["provider_credentials"]["openai"]["configured"] is True
@@ -320,6 +321,33 @@ async def test_settings_default_model_uses_gemini_when_only_google_key_exists(
         payload = response.json()
         assert payload["models"]["default_provider"] == "gemini"
         assert payload["models"]["default_model"] == get_profile("gemini").default_model
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_settings_default_model_uses_gemini_when_only_gemini_key_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, engine = await _client(tmp_path)
+    try:
+        _clear_llm_environment(monkeypatch)
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-status-only")
+
+        response = await client.get("/api/settings")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["models"]["default_provider"] == "gemini"
+        assert payload["models"]["default_model"] == get_profile("gemini").default_model
+        assert payload["models"]["provider_credentials"]["gemini"] == {
+            "name": "gemini",
+            "env_var": "GEMINI_API_KEY",
+            "configured": True,
+            "updated_at": None,
+            "source": "environment",
+        }
     finally:
         await client.aclose()
         await engine.dispose()

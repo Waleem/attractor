@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from attractor_agent.session import SessionConfig
+from attractor_llm.catalog import get_default_model
 from attractor_llm.types import Tool
 
 
@@ -31,7 +32,7 @@ class GeminiProfile:
 
     @property
     def default_model(self) -> str:
-        return "gemini-3-flash-preview"
+        return get_default_model("gemini").id
 
     @property
     def supports_parallel_tool_calls(self) -> bool:
@@ -91,10 +92,10 @@ class GeminiProfile:
         if config.temperature is None:
             config.temperature = 0.0
         # Only set reasoning_effort for models that support thinkingConfig.
-        # gemini-2.5-flash and older models don't support it.
+        # Gemini 3.5 and 3.1 models support it.
         if config.reasoning_effort is None:
             model = config.model or ""
-            if "2.5-pro" in model or "2.5-flash-preview" in model:
+            if model.startswith("gemini-3.") or "2.5-pro" in model:
                 config.reasoning_effort = "medium"
         # Tighter loop detection -- Gemini retries failed edits identically
         if config.loop_detection_threshold is None:

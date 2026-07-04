@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Layout } from "./components/Layout";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DashboardRoute } from "./routes/DashboardRoute";
 import { ReposRoute } from "./routes/ReposRoute";
 import { RepoDetailRoute } from "./routes/RepoDetailRoute";
@@ -8,7 +9,7 @@ import { RunsRoute } from "./routes/RunsRoute";
 import { RunDetailRoute } from "./routes/RunDetailRoute";
 import { ApprovalsRoute } from "./routes/ApprovalsRoute";
 import { SystemRoute } from "./routes/SystemRoute";
-import { SettingsRoute } from "./routes/SettingsRoute";
+import { isSettingsPageId, SettingsRoute } from "./routes/SettingsRoute";
 import { PageHeader, Panel } from "./components/ui";
 import { getAppBasePath, stripBasePath, toAppHref } from "./appBase";
 
@@ -32,7 +33,9 @@ export default function App() {
 
   return (
     <Layout path={path} navigate={navigate} basePath={basePath}>
-      <RouteSwitch path={path} navigate={navigate} />
+      <ErrorBoundary resetKey={path}>
+        <RouteSwitch path={path} navigate={navigate} />
+      </ErrorBoundary>
     </Layout>
   );
 }
@@ -72,7 +75,14 @@ function RouteSwitch({
     return <SystemRoute />;
   }
   if (path === "/settings") {
-    return <SettingsRoute />;
+    return <SettingsRoute navigate={navigate} />;
+  }
+  const settingsMatch = path.match(/^\/settings\/([^/]+)$/);
+  if (settingsMatch) {
+    const pageId = decodeURIComponent(settingsMatch[1]);
+    if (isSettingsPageId(pageId)) {
+      return <SettingsRoute pageId={pageId} navigate={navigate} />;
+    }
   }
   return (
     <>

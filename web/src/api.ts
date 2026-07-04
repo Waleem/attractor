@@ -233,6 +233,8 @@ export interface RunDiffFile {
   status: string;
   additions: number;
   deletions: number;
+  patch?: string;
+  patch_truncated?: boolean;
 }
 
 export interface RunDiff {
@@ -263,6 +265,61 @@ export interface SettingsVariable {
   key: string;
   value: string;
   updated_at: string | null;
+}
+
+export interface ModelCatalogRow {
+  provider: string;
+  model: string;
+  display_name: string;
+  context_window: number;
+  max_output: number | null;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  is_default: boolean;
+  is_small: boolean;
+}
+
+export interface ModelTestSummary {
+  ok: number;
+  failed: number;
+  skipped: number;
+  tested_at: string;
+}
+
+export interface ModelTestResult {
+  provider: string;
+  model: string;
+  display_name: string;
+  ok: boolean;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface ModelTestResponse {
+  summary: ModelTestSummary;
+  items: ModelTestResult[];
+}
+
+export type SettingsEditability = "editable" | "restart-required" | "read-only" | "reserved";
+
+export interface SettingsPageRow {
+  label: string;
+  description: string;
+  value: string | number | boolean | null;
+  editability: SettingsEditability;
+}
+
+export interface SettingsPageGroup {
+  title: string;
+  rows: SettingsPageRow[];
+}
+
+export interface SettingsPage {
+  id: string;
+  title: string;
+  description: string;
+  groups: SettingsPageGroup[];
 }
 
 export interface SettingsOverview {
@@ -298,6 +355,7 @@ export interface SettingsOverview {
     active_runs: number;
     event_stream: string;
   };
+  pages: SettingsPage[];
 }
 
 interface ItemsResponse<T> {
@@ -441,8 +499,16 @@ export async function cancelRun(runId: string): Promise<{ id: string; status: st
   );
 }
 
-export async function getRunDiff(runId: string): Promise<RunDiff> {
-  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff`);
+export async function getRunDiff(
+  runId: string,
+  options: { includePatch?: boolean } = {}
+): Promise<RunDiff> {
+  const params = new URLSearchParams();
+  if (options.includePatch) {
+    params.set("include_patch", "true");
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff${suffix}`);
 }
 
 export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
@@ -469,6 +535,12 @@ export async function listArtifacts(runId: string): Promise<ArtifactRecord[]> {
     `/api/runs/${encodeURIComponent(runId)}/artifacts`
   );
   return response.items;
+}
+
+export function artifactUrl(runId: string, artifactId: string): string {
+  return apiUrl(
+    `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`
+  );
 }
 
 export async function listCheckpoints(runId: string): Promise<CheckpointRecord[]> {
@@ -512,6 +584,20 @@ export async function getSystemCapacity(): Promise<SystemCapacity> {
 
 export async function getSettings(): Promise<SettingsOverview> {
   return requestJson<SettingsOverview>("/api/settings");
+}
+
+export async function getModelCatalog(): Promise<ModelCatalogRow[]> {
+  const response = await requestJson<ItemsResponse<ModelCatalogRow>>(
+    "/api/settings/models/catalog"
+  );
+  return response.items;
+}
+
+export async function testModels(): Promise<ModelTestResponse> {
+  return requestJson<ModelTestResponse>("/api/settings/models/test", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
 }
 
 export async function listSettingsSecrets(): Promise<SecretMetadata[]> {

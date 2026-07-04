@@ -20,10 +20,32 @@ from attractor_agent.profiles import get_profile
 from attractor_agent.prompt_layer import layer_prompt_for_node
 from attractor_agent.session import Session, SessionConfig
 from attractor_agent.tools.core import ALL_CORE_TOOLS
+from attractor_llm.catalog import get_default_model
 from attractor_llm.client import Client
 from attractor_llm.types import Message, Request
 from attractor_pipeline.engine.runner import HandlerResult, Outcome
 from attractor_pipeline.graph import Node
+
+
+def _resolve_backend_default_model(default_provider: str | None) -> str:
+    provider = default_provider or "anthropic"
+    try:
+        return get_default_model(provider).id
+    except KeyError:
+        return get_default_model("anthropic").id
+
+
+def _resolve_run_model(
+    *,
+    node_model: str,
+    node_provider: str,
+    default_model: str,
+) -> str:
+    if node_model:
+        return node_model
+    if node_provider:
+        return get_profile(node_provider).default_model
+    return default_model
 
 
 class AgentLoopBackend:
@@ -46,14 +68,14 @@ class AgentLoopBackend:
         self,
         client: Client,
         *,
-        default_model: str = "claude-sonnet-4-5",
+        default_model: str | None = None,
         default_provider: str | None = None,
         system_prompt: str = "",
         include_tools: bool = True,
     ) -> None:
         self._client = client
-        self._default_model = default_model
         self._default_provider = default_provider
+        self._default_model = default_model or _resolve_backend_default_model(default_provider)
         self._system_prompt = system_prompt
         self._include_tools = include_tools
 
@@ -75,8 +97,11 @@ class AgentLoopBackend:
         # Load provider profile for provider-specific defaults
         profile = get_profile(provider or "")
 
-        # Resolve model: node attr > backend default > profile default
-        model = node.llm_model or self._default_model or profile.default_model
+        model = _resolve_run_model(
+            node_model=node.llm_model,
+            node_provider=node.llm_provider,
+            default_model=self._default_model or profile.default_model,
+        )
 
         # Build session config from node attributes
         config = SessionConfig(
@@ -141,12 +166,12 @@ class DirectLLMBackend:
         self,
         client: Client,
         *,
-        default_model: str = "claude-sonnet-4-5",
+        default_model: str | None = None,
         default_provider: str | None = None,
     ) -> None:
         self._client = client
-        self._default_model = default_model
         self._default_provider = default_provider
+        self._default_model = default_model or _resolve_backend_default_model(default_provider)
 
     async def run(
         self,
@@ -156,8 +181,12 @@ class DirectLLMBackend:
         abort_signal: AbortSignal | None = None,
     ) -> str | HandlerResult:
         """Execute a single LLM call (no tools, no agent loop)."""
-        model = node.llm_model or self._default_model
         provider = node.llm_provider or self._default_provider
+        model = _resolve_run_model(
+            node_model=node.llm_model,
+            node_provider=node.llm_provider,
+            default_model=self._default_model,
+        )
 
         request = Request(
             model=model,

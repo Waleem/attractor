@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from attractor_agent.session import SessionConfig
+from attractor_llm.catalog import get_default_model
 from attractor_llm.types import Tool
 
 
@@ -77,7 +78,7 @@ class BaseProfile:
 
     @property
     def default_model(self) -> str:
-        return "claude-sonnet-4-5"
+        return get_default_model("anthropic").id
 
     @property
     def supports_parallel_tool_calls(self) -> bool:

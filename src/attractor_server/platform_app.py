@@ -9,12 +9,17 @@ import html
 import inspect
 import json
 import os
+import platform as platform_module
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -33,6 +38,13 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from attractor_llm.adapters.anthropic import AnthropicAdapter
+from attractor_llm.adapters.base import ProviderConfig
+from attractor_llm.adapters.gemini import GeminiAdapter
+from attractor_llm.adapters.openai import OpenAIAdapter
+from attractor_llm.catalog import ModelInfo, get_default_model, list_models
+from attractor_llm.client import Client
+from attractor_llm.types import Request as LLMRequest
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
@@ -65,6 +77,75 @@ from attractor_platform.storage.models import (
 from attractor_platform.storage.repositories import PlatformRepository
 from attractor_server.platform_sse import durable_run_event_stream, parse_sse_after_sequence
 
+_DIFF_PATCH_LIMIT = 60_000
+_DIFF_PATCH_FILE_LIMIT = 50
+_DIFF_PATCH_TOTAL_LIMIT = 600_000
+
+
+@dataclass(frozen=True)
+class PlatformModelTestResult:
+    ok: bool
+    latency_ms: float | None
+    error: str | None
+
+
+class PlatformModelTester(Protocol):
+    async def test_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> PlatformModelTestResult: ...
+
+
+class LivePlatformModelTester:
+    async def test_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> PlatformModelTestResult:
+        adapter_factory = {
+            "anthropic": AnthropicAdapter,
+            "openai": OpenAIAdapter,
+            "gemini": GeminiAdapter,
+        }.get(provider)
+        if adapter_factory is None:
+            return PlatformModelTestResult(
+                ok=False,
+                latency_ms=None,
+                error=f"Unsupported provider: {provider}",
+            )
+
+        client = Client(default_provider=provider)
+        client.register_adapter(
+            provider,
+            adapter_factory(ProviderConfig(api_key=api_key, timeout=30.0)),
+        )
+        started_at = time.perf_counter()
+        try:
+            await client.complete(
+                LLMRequest.simple(
+                    model,
+                    "Reply with exactly: ok",
+                    provider=provider,
+                    max_tokens=16,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            return PlatformModelTestResult(
+                ok=False,
+                latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                error=str(exc),
+            )
+        return PlatformModelTestResult(
+            ok=True,
+            latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            error=None,
+        )
+
 
 @dataclass(frozen=True)
 class _PlatformServices:
@@ -74,7 +155,15 @@ class _PlatformServices:
     secret_vault: SecretVault
     default_provider: str | None
     default_model: str | None
+    model_tester: PlatformModelTester
     codergen_backend_refresh_lock: asyncio.Lock
+    started_at: dt.datetime
+    database_url: str | None
+    server_host: str | None
+    server_port: int | None
+    web_url: str | None
+    api_url: str | None
+    max_concurrent_runs: int | None
 
 
 def _services(request: Request) -> _PlatformServices:
@@ -300,10 +389,10 @@ def _parse_non_negative_int(value: str | None, default: int) -> int:
     return max(parsed, 0)
 
 
-_PROVIDER_CREDENTIALS: tuple[tuple[str, str], ...] = (
-    ("openai", "OPENAI_API_KEY"),
-    ("anthropic", "ANTHROPIC_API_KEY"),
-    ("gemini", "GOOGLE_API_KEY"),
+_PROVIDER_CREDENTIALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("openai", ("OPENAI_API_KEY",)),
+    ("anthropic", ("ANTHROPIC_API_KEY",)),
+    ("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
 )
 _SECRET_NAME_MAX_LENGTH = 120
 _VARIABLE_KEY_MAX_LENGTH = 160
@@ -344,8 +433,22 @@ async def _provider_api_keys_from_vault(services: _PlatformServices) -> dict[str
     return await load_provider_secret_values(
         session_factory=services.session_factory,
         secret_vault=services.secret_vault,
-        provider_names=(credential_name for credential_name, _ in _PROVIDER_CREDENTIALS),
+        provider_names=(credential_name for credential_name, _env_names in _PROVIDER_CREDENTIALS),
     )
+
+
+async def _configured_provider_api_keys(services: _PlatformServices) -> dict[str, str]:
+    vault_keys = await _provider_api_keys_from_vault(services)
+    configured: dict[str, str] = {}
+    for provider, env_names in _PROVIDER_CREDENTIALS:
+        env_key = next(
+            (os.environ[env_name] for env_name in env_names if os.environ.get(env_name)),
+            None,
+        )
+        key = env_key or vault_keys.get(provider)
+        if key:
+            configured[provider] = key
+    return configured
 
 
 async def _refresh_codergen_backend(services: _PlatformServices) -> None:
@@ -358,6 +461,40 @@ async def _refresh_codergen_backend(services: _PlatformServices) -> None:
                 provider_api_keys=provider_api_keys,
             )
         )
+
+
+def _small_model_badge(model: ModelInfo) -> bool:
+    model_id = model.id.lower()
+    display_name = model.display_name.lower()
+    return any(
+        marker in model_id or marker in display_name for marker in ("haiku", "mini", "nano", "lite")
+    )
+
+
+def _serialize_model_catalog_row(model: ModelInfo) -> dict[str, Any]:
+    default_model = get_default_model(model.provider)
+    return {
+        "provider": model.provider,
+        "model": model.id,
+        "display_name": model.display_name,
+        "context_window": model.context_window,
+        "max_output": model.max_output,
+        "supports_tools": model.supports_tools,
+        "supports_vision": model.supports_vision,
+        "supports_reasoning": model.supports_reasoning,
+        "is_default": model.id == default_model.id,
+        "is_small": _small_model_badge(model),
+    }
+
+
+def _redact_model_test_error(error: str | None, secrets: list[str]) -> str | None:
+    if error is None:
+        return None
+    redacted = error
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
 
 
 def _serialize_secret_metadata(secret: SettingSecretModel) -> dict[str, Any]:
@@ -381,8 +518,10 @@ def _serialize_variable(variable: SettingVariableModel) -> dict[str, Any]:
 
 
 def _valid_setting_name(value: str) -> bool:
-    return bool(value) and value.isascii() and all(
-        character.isalnum() or character in {"_", "-"} for character in value
+    return (
+        bool(value)
+        and value.isascii()
+        and all(character.isalnum() or character in {"_", "-"} for character in value)
     )
 
 
@@ -464,6 +603,631 @@ def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=dt.UTC)
     return timestamp.isoformat()
+
+
+def _settings_row(
+    label: str,
+    description: str,
+    value: Any,
+    editability: str,
+) -> dict[str, Any]:
+    return {
+        "label": label,
+        "description": description,
+        "value": "None" if value is None or value == "" else value,
+        "editability": editability,
+    }
+
+
+def _settings_group(title: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"title": title, "rows": rows}
+
+
+def _settings_page(
+    page_id: str,
+    title: str,
+    description: str,
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "id": page_id,
+        "title": title,
+        "description": description,
+        "groups": groups,
+    }
+
+
+def _format_bytes(value: int | None) -> str:
+    if value is None:
+        return "Unknown"
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(value)
+    unit = units[0]
+    for unit in units:
+        if abs(size) < 1024 or unit == units[-1]:
+            break
+        size /= 1024
+    if unit == "B":
+        return f"{int(size)} {unit}"
+    return f"{size:.1f} {unit}"
+
+
+def _directory_size_bytes(path: Path | None) -> int | None:
+    if path is None or not path.exists():
+        return None
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _redacted_database_url(services: _PlatformServices) -> str:
+    engine = services.session_factory.kw.get("bind")
+    if engine is not None and hasattr(engine, "url"):
+        if engine.url.get_backend_name() == "sqlite":
+            return "sqlite+aiosqlite:///[redacted-local-path]"
+        return engine.url.render_as_string(hide_password=True)
+    if services.database_url:
+        if services.database_url.startswith("sqlite"):
+            return "sqlite+aiosqlite:///[redacted-local-path]"
+        return services.database_url
+    return "Unknown"
+
+
+def _database_type(services: _PlatformServices) -> str:
+    engine = services.session_factory.kw.get("bind")
+    if engine is not None and hasattr(engine, "url"):
+        return str(engine.url.get_backend_name())
+    database_url = _redacted_database_url(services)
+    return database_url.split(":", 1)[0] if ":" in database_url else "Unknown"
+
+
+def _package_version() -> str:
+    try:
+        return version("attractor")
+    except PackageNotFoundError:
+        return "editable checkout"
+
+
+def _runtime_url(request: Request, path: str = "") -> str:
+    base = str(request.base_url).rstrip("/")
+    return f"{base}{path}"
+
+
+def _executor_root(executor: DurableRunExecutor, attribute_path: tuple[str, ...]) -> Path | None:
+    value: Any = executor
+    for attribute in attribute_path:
+        value = getattr(value, attribute, None)
+        if value is None:
+            return None
+    return Path(value)
+
+
+def _configured_environment_rows(repo_values: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not repo_values:
+        return [
+            _settings_row(
+                "project.toml [environments]",
+                "Repo-local environment definitions appear here after a repo is registered.",
+                "No registered repositories; local defaults active",
+                "restart-required",
+            ),
+            _settings_row(
+                "Provider",
+                "Execution provider selected from each environment mode.",
+                "local",
+                "restart-required",
+            ),
+            _settings_row(
+                "Image",
+                "Docker image used by docker environments when configured.",
+                "python:3.12-slim",
+                "restart-required",
+            ),
+            _settings_row(
+                "CPU / memory / disk",
+                "Resource limits are not yet enforced by the local Phase 2 runner.",
+                "Reserved for scheduler policy",
+                "reserved",
+            ),
+            _settings_row(
+                "Lifecycle",
+                "Worktrees and containers are created per run and cleaned up by run policy.",
+                "Per-run activate / stop",
+                "read-only",
+            ),
+        ]
+
+    for repo in repo_values:
+        try:
+            config = load_project_config(Path(repo.local_path) / ".attractor" / "project.toml")
+        except Exception:  # noqa: BLE001
+            continue
+        if not config.environments:
+            rows.append(
+                _settings_row(
+                    f"{repo.name} environments",
+                    "Repo has no explicit [environments] entries; default local mode applies.",
+                    "local",
+                    "restart-required",
+                )
+            )
+            continue
+        for name, environment in config.environments.items():
+            rows.extend(
+                [
+                    _settings_row(
+                        f"{repo.name} / {name} provider",
+                        "Provider from repo project.toml [environments].",
+                        environment.mode,
+                        "restart-required",
+                    ),
+                    _settings_row(
+                        f"{repo.name} / {name} image",
+                        "Docker image from repo project.toml when mode is docker.",
+                        environment.image or "None",
+                        "restart-required",
+                    ),
+                    _settings_row(
+                        f"{repo.name} / {name} CPU / memory / disk",
+                        "Resource limits are reserved for scheduler policy.",
+                        "Reserved for scheduler policy",
+                        "reserved",
+                    ),
+                    _settings_row(
+                        f"{repo.name} / {name} lifecycle",
+                        "Environment activation lifecycle for durable runs.",
+                        "Per-run activate / stop",
+                        "read-only",
+                    ),
+                ]
+            )
+    return rows
+
+
+def _build_settings_pages(
+    request: Request,
+    services: _PlatformServices,
+    *,
+    provider: str,
+    model: str,
+    provider_credentials: dict[str, dict[str, Any]],
+    variables: list[SettingVariableModel],
+    repos: list[Any],
+    active_count: int,
+    max_concurrent: int | None,
+) -> list[dict[str, Any]]:
+    worktree_root = _executor_root(services.executor, ("_worktree_manager", "_root"))
+    artifact_root = _executor_root(services.executor, ("_artifact_root",))
+    worktree_bytes = _directory_size_bytes(worktree_root) or 0
+    artifact_bytes = _directory_size_bytes(artifact_root) or 0
+    managed_bytes = worktree_bytes + artifact_bytes
+    uptime_seconds = int((dt.datetime.now(dt.UTC) - services.started_at).total_seconds())
+    configured_providers = sum(
+        1 for credential in provider_credentials.values() if credential["configured"]
+    )
+    concurrency_limit = max_concurrent if max_concurrent is not None else "unlimited"
+    api_url = services.api_url or _runtime_url(request, "/api")
+    web_url = services.web_url or _runtime_url(request)
+    listen_address = (
+        f"{services.server_host}:{services.server_port}"
+        if services.server_host and services.server_port is not None
+        else "ASGI runtime"
+    )
+    credential_rows = [
+        _settings_row(
+            f"{credential['name']} credential",
+            f"Configured from {credential['env_var']} or encrypted settings vault.",
+            f"{credential['source']} ({'configured' if credential['configured'] else 'missing'})",
+            "editable",
+        )
+        for credential in provider_credentials.values()
+    ]
+    variable_rows = [
+        _settings_row(
+            variable.key,
+            "Runtime variable stored in platform settings.",
+            variable.value,
+            "editable",
+        )
+        for variable in variables
+    ] or [
+        _settings_row(
+            "Variables",
+            "Key/value variables are available to workflows when configured.",
+            "No variables configured",
+            "editable",
+        )
+    ]
+    secret_rows = [
+        _settings_row(
+            f"{credential['name']} secret",
+            f"Write-only key for {credential['name']}; values are never returned by the API.",
+            "Configured" if credential["configured"] else "Missing",
+            "editable",
+        )
+        for credential in provider_credentials.values()
+    ]
+
+    return [
+        _settings_page(
+            "models",
+            "Models",
+            "Model defaults and catalog readiness for provider-backed runs.",
+            [
+                _settings_group(
+                    "Defaults",
+                    [
+                        _settings_row(
+                            "Default provider",
+                            "Resolved from flags, environment, credentials, and catalog defaults.",
+                            provider,
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Default model",
+                            "Provider-specific model used when no run override is supplied.",
+                            model,
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Catalog source",
+                            "Static verified model catalog bundled with this server.",
+                            f"{len(list_models())} models",
+                            "read-only",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "integrations",
+            "Integrations",
+            "Provider credentials and external integration readiness.",
+            [
+                _settings_group(
+                    "Provider Credentials",
+                    credential_rows
+                    + [
+                        _settings_row(
+                            "Configured providers",
+                            "Count of providers with either environment or vault credentials.",
+                            f"{configured_providers}/{len(provider_credentials)}",
+                            "read-only",
+                        )
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "sandboxes",
+            "Sandboxes",
+            "RunEnvironment providers available to durable runs.",
+            [
+                _settings_group(
+                    "Providers",
+                    [
+                        _settings_row(
+                            "Local RunEnvironment",
+                            "Executes inside a prepared server-managed git worktree.",
+                            "Enabled",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Docker RunEnvironment",
+                            "Executes in a mounted Docker container for docker environments.",
+                            "Enabled when Docker is available on the host",
+                            "read-only",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "environments",
+            "Environments",
+            "Repo project.toml environment definitions and lifecycle policy.",
+            [_settings_group("Repo Environments", _configured_environment_rows(repos))],
+        ),
+        _settings_page(
+            "variables",
+            "Variables",
+            "Editable runtime key/value settings stored in the platform database.",
+            [_settings_group("Configured Variables", variable_rows)],
+        ),
+        _settings_page(
+            "secrets",
+            "Secrets",
+            "Write-only provider secrets stored in the encrypted settings vault.",
+            [_settings_group("Provider Secrets", secret_rows)],
+        ),
+        _settings_page(
+            "run-defaults",
+            "Run Defaults",
+            "Defaults that shape queueing, retries, approvals, and write-back behavior.",
+            [
+                _settings_group(
+                    "Execution",
+                    [
+                        _settings_row(
+                            "--max-concurrent",
+                            "Maximum durable runs allowed to execute concurrently.",
+                            max_concurrent if max_concurrent is not None else "Unlimited",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Default environment",
+                            "Default run environment when repo config does not override it.",
+                            "local",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Retry presets",
+                            "Pipeline stage retry behavior from workflow engine defaults.",
+                            "Workflow-defined",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Timeouts",
+                            "Provider and execution timeouts use adapter and workflow defaults.",
+                            "Provider 30s smoke / workflow-defined runtime",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Approval policy",
+                            "Human approval nodes pause durable runs until answered.",
+                            "wait.human approval required by graph",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Write-back policy",
+                            "Write-back is explicit through the run write-back endpoint.",
+                            "Manual operator action",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Protected branches",
+                            "Protected targets require explicit allow_protected write-back input.",
+                            "main, master",
+                            "reserved",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "server",
+            "Server",
+            "Runtime process metadata and externally visible URLs.",
+            [
+                _settings_group(
+                    "Runtime",
+                    [
+                        _settings_row(
+                            "--host",
+                            "Host passed to the platform server.",
+                            services.server_host or "Unknown",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "--port",
+                            "Port passed to the platform server.",
+                            services.server_port or "Unknown",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Web URL", "Base URL used by the browser console.", web_url, "read-only"
+                        ),
+                        _settings_row(
+                            "API URL", "Base API URL for console requests.", api_url, "read-only"
+                        ),
+                        _settings_row(
+                            "Listen address",
+                            "Effective host and port for the ASGI runtime.",
+                            listen_address,
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Version",
+                            "Installed Attractor package version.",
+                            _package_version(),
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "OS",
+                            "Operating system reported by the server host.",
+                            platform_module.platform(),
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Uptime",
+                            "Seconds since this platform app instance was created.",
+                            f"{uptime_seconds}s",
+                            "read-only",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "security",
+            "Security",
+            "Local-console security posture and redaction behavior.",
+            [
+                _settings_group(
+                    "Access",
+                    [
+                        _settings_row(
+                            "Authentication",
+                            "The local platform console does not enforce user authentication.",
+                            "No auth configured",
+                            "reserved",
+                        ),
+                        _settings_row(
+                            "Allowed repo roots",
+                            "Registered repositories define the allowed local workspace roots.",
+                            "Registered repo paths",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Redaction",
+                            "Secrets are encrypted at rest and not returned through settings APIs.",
+                            "Enabled for settings secrets and model-test errors",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Actor labels",
+                            "Run and approval requests carry operator-provided actor labels.",
+                            "Operator supplied per action",
+                            "editable",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "storage",
+            "Storage",
+            "Database, worktree, and artifact storage configured from server flags.",
+            [
+                _settings_group(
+                    "Database",
+                    [
+                        _settings_row(
+                            "DB type",
+                            "SQLAlchemy backend used for platform metadata.",
+                            _database_type(services),
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "--database-url",
+                            "Controls the platform metadata store; credentials are redacted.",
+                            _redacted_database_url(services),
+                            "restart-required",
+                        ),
+                    ],
+                ),
+                _settings_group(
+                    "Managed Paths",
+                    [
+                        _settings_row(
+                            "--worktree-root",
+                            "Root directory for server-managed durable run worktrees.",
+                            str(worktree_root) if worktree_root else "Unknown",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "--artifact-root",
+                            "Root directory for captured runtime artifacts.",
+                            str(artifact_root) if artifact_root else "Unknown",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Retention policy",
+                            "Project defaults for events, artifacts, and failed workspaces.",
+                            "30 days events/artifacts; failed workspaces removed unless configured",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Artifact capture",
+                            "Default artifact capture policy from project configuration.",
+                            "logs, patches, summaries",
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Max artifact size",
+                            "Default maximum captured artifact bytes.",
+                            _format_bytes(10_000_000),
+                            "restart-required",
+                        ),
+                        _settings_row(
+                            "Managed bytes",
+                            "Current disk usage under managed worktree and artifact roots.",
+                            _format_bytes(managed_bytes),
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Reclaimable bytes",
+                            "Completed-run cleanup accounting is reserved for retention jobs.",
+                            "Reserved for retention jobs",
+                            "reserved",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        _settings_page(
+            "monitoring",
+            "Monitoring",
+            "Process resource signals and durable run concurrency.",
+            [
+                _settings_group(
+                    "Capacity",
+                    [
+                        _settings_row(
+                            "CPU",
+                            "Host CPU count available to the server process.",
+                            os.cpu_count() or "Unknown",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Memory",
+                            "Memory pressure collection is reserved for process telemetry.",
+                            "Reserved for telemetry",
+                            "reserved",
+                        ),
+                        _settings_row(
+                            "Disk",
+                            "Managed storage bytes are sampled from configured roots.",
+                            _format_bytes(managed_bytes),
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Run concurrency",
+                            "Active durable runs versus configured concurrency.",
+                            f"{active_count}/{concurrency_limit}",
+                            "read-only",
+                        ),
+                    ],
+                )
+            ],
+        ),
+        _settings_page(
+            "live-events",
+            "Live Events",
+            "Durable SSE stream endpoints and replay behavior.",
+            [
+                _settings_group(
+                    "Streams",
+                    [
+                        _settings_row(
+                            "Durable SSE endpoint",
+                            "Run detail and list views use existing durable run event streams.",
+                            "/api/runs/{run_id}/events/stream",
+                            "read-only",
+                        ),
+                        _settings_row(
+                            "Current active streams",
+                            "The server does not currently expose per-client stream accounting.",
+                            "Not tracked",
+                            "reserved",
+                        ),
+                        _settings_row(
+                            "Replay behavior",
+                            "Clients may resume after the last seen event sequence.",
+                            "after sequence cursor",
+                            "read-only",
+                        ),
+                    ],
+                )
+            ],
+        ),
+    ]
 
 
 async def _get_run_or_404(
@@ -1305,6 +2069,12 @@ async def get_run_diff(request: Request) -> JSONResponse:
         return _json_error(f"Diff path {diff_cwd} is not available", 409)
 
     git = _executor_git_runner(services.executor)
+    include_patch = request.query_params.get("include_patch", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     try:
         head_commit = git.run(diff_cwd, "rev-parse", "HEAD").stdout
         if isinstance(managed_branch, str) and managed_branch:
@@ -1314,7 +2084,8 @@ async def get_run_diff(request: Request) -> JSONResponse:
                     f"Run {run_id} worktree HEAD does not match managed branch",
                     409,
                 )
-        limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+        requested_limit = min(_parse_non_negative_int(request.query_params.get("limit"), 200), 500)
+        limit = min(requested_limit, _DIFF_PATCH_FILE_LIMIT) if include_patch else requested_limit
         diff_paths_output = git.run(
             diff_cwd,
             "diff",
@@ -1329,6 +2100,7 @@ async def get_run_diff(request: Request) -> JSONResponse:
 
     paths, truncated = _parse_diff_paths(diff_paths_output, limit)
     files: list[dict[str, Any]] = []
+    remaining_patch_bytes = _DIFF_PATCH_TOTAL_LIMIT
     for path in paths:
         try:
             status_output = git.run(
@@ -1354,7 +2126,33 @@ async def get_run_diff(request: Request) -> JSONResponse:
         except RuntimeError as exc:
             return _json_error(f"Diff could not be computed for {path}: {exc}", 409)
         statuses = _parse_diff_name_status(status_output)
-        files.extend(_parse_diff_numstat(numstat_output, statuses))
+        parsed_files = _parse_diff_numstat(numstat_output, statuses)
+        if include_patch:
+            if remaining_patch_bytes <= 0:
+                bounded_patch = ""
+                patch_truncated = True
+            else:
+                try:
+                    patch_output = git.run(
+                        diff_cwd,
+                        "diff",
+                        "--find-renames",
+                        "--unified=80",
+                        base_commit,
+                        head_commit,
+                        "--",
+                        path,
+                    ).stdout
+                except RuntimeError as exc:
+                    return _json_error(f"Diff patch could not be computed for {path}: {exc}", 409)
+                patch_limit = min(_DIFF_PATCH_LIMIT, remaining_patch_bytes)
+                bounded_patch = patch_output[:patch_limit]
+                patch_truncated = len(patch_output) > patch_limit
+                remaining_patch_bytes -= len(bounded_patch)
+            for file_row in parsed_files:
+                file_row["patch"] = bounded_patch
+                file_row["patch_truncated"] = patch_truncated
+        files.extend(parsed_files)
     return JSONResponse(
         {
             "run_id": run_id,
@@ -1418,6 +2216,53 @@ async def list_artifacts(request: Request) -> JSONResponse:
 
     artifacts = await _list_artifacts_for_run(services, run_id)
     return JSONResponse({"items": [_serialize_artifact(artifact) for artifact in artifacts]})
+
+
+def _artifact_uri_path(uri: str, artifact_root: Path) -> Path:
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        raise ValueError("artifact URI must be a file URI")
+    if parsed.netloc not in {"", "localhost"}:
+        raise ValueError("artifact URI must refer to a local file")
+    resolved_path = Path(url2pathname(unquote(parsed.path))).resolve()
+    resolved_path.relative_to(artifact_root)
+    return resolved_path
+
+
+async def get_artifact(request: Request) -> FileResponse | JSONResponse:
+    services = _services(request)
+    run_id = request.path_params["run_id"]
+    artifact_id = request.path_params["artifact_id"]
+    run = await _get_run_or_404(services.repository, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+
+    artifacts = await _list_artifacts_for_run(services, run_id)
+    artifact = next(
+        (item for item in artifacts if str(getattr(item, "id", "")) == artifact_id),
+        None,
+    )
+    if artifact is None:
+        return _json_error(f"Artifact {artifact_id} not found for run {run_id}", 404)
+
+    artifact_root = getattr(services.executor, "_artifact_root", None)
+    if artifact_root is None:
+        return _json_error("Artifact root is not configured", 404)
+    try:
+        resolved_root = Path(artifact_root).expanduser().resolve()
+        resolved_path = _artifact_uri_path(str(artifact.uri), resolved_root)
+    except (OSError, ValueError) as exc:
+        return _json_error(
+            f"Artifact {artifact_id} is not available from artifact storage: {exc}", 403
+        )
+    if not resolved_path.is_file():
+        return _json_error(f"Artifact file for {artifact_id} is not available", 404)
+
+    return FileResponse(
+        resolved_path,
+        media_type=getattr(artifact, "media_type", None) or None,
+        filename=getattr(artifact, "name", None) or resolved_path.name,
+    )
 
 
 async def list_checkpoints(request: Request) -> JSONResponse:
@@ -1877,6 +2722,71 @@ async def delete_settings_variable(request: Request) -> JSONResponse:
     return JSONResponse({"key": key, "deleted": True})
 
 
+async def get_model_catalog(request: Request) -> JSONResponse:
+    del request
+    return JSONResponse({"items": [_serialize_model_catalog_row(model) for model in list_models()]})
+
+
+async def test_models(request: Request) -> JSONResponse:
+    services = _services(request)
+    provider_api_keys = await _configured_provider_api_keys(services)
+    secrets = list(provider_api_keys.values())
+    tested_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    items: list[dict[str, Any]] = []
+    ok_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    for model in list_models():
+        provider_key = provider_api_keys.get(model.provider)
+        base_item = {
+            "provider": model.provider,
+            "model": model.id,
+            "display_name": model.display_name,
+        }
+        if provider_key is None:
+            skipped_count += 1
+            items.append(
+                {
+                    **base_item,
+                    "ok": False,
+                    "latency_ms": None,
+                    "error": "Missing provider API key",
+                }
+            )
+            continue
+
+        result = await services.model_tester.test_model(
+            provider=model.provider,
+            model=model.id,
+            api_key=provider_key,
+        )
+        if result.ok:
+            ok_count += 1
+        else:
+            failed_count += 1
+        items.append(
+            {
+                **base_item,
+                "ok": result.ok,
+                "latency_ms": result.latency_ms,
+                "error": _redact_model_test_error(result.error, secrets),
+            }
+        )
+
+    return JSONResponse(
+        {
+            "summary": {
+                "ok": ok_count,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "tested_at": tested_at,
+            },
+            "items": items,
+        }
+    )
+
+
 async def get_settings(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
@@ -1890,12 +2800,16 @@ async def get_settings(request: Request) -> JSONResponse:
     provider_api_keys = await _provider_api_keys_from_vault(services)
     provider, model = _default_provider_and_model(services, provider_api_keys)
     provider_credentials: dict[str, dict[str, Any]] = {}
-    for credential_name, env_name in _PROVIDER_CREDENTIALS:
+    for credential_name, env_names in _PROVIDER_CREDENTIALS:
         secret = secrets_by_name.get(credential_name)
-        configured_from_env = bool(os.environ.get(env_name))
+        configured_env_name = next(
+            (env_name for env_name in env_names if os.environ.get(env_name)),
+            None,
+        )
+        configured_from_env = configured_env_name is not None
         provider_credentials[credential_name] = {
             "name": credential_name,
-            "env_var": env_name,
+            "env_var": configured_env_name or env_names[0],
             "configured": secret is not None or configured_from_env,
             "updated_at": _serialize_settings_timestamp(secret.updated_at)
             if secret is not None
@@ -1909,7 +2823,21 @@ async def get_settings(request: Request) -> JSONResponse:
 
     active_tasks = getattr(services.executor, "active_tasks", {})
     active_count = sum(1 for task in active_tasks.values() if not task.done())
-    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    max_concurrent = services.max_concurrent_runs
+    if max_concurrent is None:
+        max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    repos = await _list_repos(services)
+    pages = _build_settings_pages(
+        request,
+        services,
+        provider=provider,
+        model=model,
+        provider_credentials=provider_credentials,
+        variables=variables,
+        repos=repos,
+        active_count=active_count,
+        max_concurrent=max_concurrent,
+    )
     return JSONResponse(
         {
             "models": {
@@ -1939,6 +2867,7 @@ async def get_settings(request: Request) -> JSONResponse:
                 "active_runs": active_count,
                 "event_stream": "enabled",
             },
+            "pages": pages,
         }
     )
 
@@ -1952,7 +2881,9 @@ async def system_capacity(request: Request) -> JSONResponse:
     services = _services(request)
     active_tasks = getattr(services.executor, "active_tasks", {})
     active_count = sum(1 for task in active_tasks.values() if not task.done())
-    max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
+    max_concurrent = services.max_concurrent_runs
+    if max_concurrent is None:
+        max_concurrent = getattr(services.executor, "max_concurrent_runs", None)
     return JSONResponse(
         {
             "active_runs": active_count,
@@ -2078,6 +3009,10 @@ def create_platform_app(
     default_provider: str | None = None,
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
+    model_tester: PlatformModelTester | None = None,
+    server_host: str | None = None,
+    server_port: int | None = None,
+    max_concurrent_runs: int | None = None,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -2108,10 +3043,13 @@ def create_platform_app(
             methods=["POST"],
         ),
         Route("/api/runs/{run_id}/artifacts", list_artifacts, methods=["GET"]),
+        Route("/api/runs/{run_id}/artifacts/{artifact_id}", get_artifact, methods=["GET"]),
         Route("/api/runs/{run_id}/checkpoints", list_checkpoints, methods=["GET"]),
         Route("/api/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
         Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
         Route("/api/settings", get_settings, methods=["GET"]),
+        Route("/api/settings/models/catalog", get_model_catalog, methods=["GET"]),
+        Route("/api/settings/models/test", test_models, methods=["POST"]),
         Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
         Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
         Route("/api/settings/secrets/{name}", delete_settings_secret, methods=["DELETE"]),
@@ -2140,7 +3078,17 @@ def create_platform_app(
         secret_vault=SecretVault(secret_key_path),
         default_provider=_platform_runtime_default_provider(default_provider),
         default_model=_platform_runtime_default_model(default_model),
+        model_tester=model_tester or LivePlatformModelTester(),
         codergen_backend_refresh_lock=asyncio.Lock(),
+        started_at=dt.datetime.now(dt.UTC),
+        database_url=engine.url.render_as_string(hide_password=True)
+        if engine is not None
+        else None,
+        server_host=server_host,
+        server_port=server_port,
+        web_url=f"http://{server_host}:{server_port}" if server_host and server_port else None,
+        api_url=f"http://{server_host}:{server_port}/api" if server_host and server_port else None,
+        max_concurrent_runs=max_concurrent_runs,
     )
     return app
 
@@ -2154,6 +3102,7 @@ def create_app(
     default_provider: str | None = None,
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
+    model_tester: PlatformModelTester | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
@@ -2163,4 +3112,5 @@ def create_app(
         default_provider=default_provider,
         default_model=default_model,
         spa_dist=spa_dist,
+        model_tester=model_tester,
     )

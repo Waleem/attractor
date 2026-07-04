@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent
+} from "react";
 import {
   getWorkflowGraph,
   type RunEvent,
@@ -11,8 +19,10 @@ import {
 } from "../graphHighlight";
 import {
   applyGraphHighlightsToRenderedSvg,
+  calculateGraphFitTransform,
   graphGroupTitle,
-  graphLayoutKey
+  graphLayoutKey,
+  type GraphTransform
 } from "../graphViewerController";
 import { useAsync } from "./useAsync";
 import { EmptyState, ErrorBanner, Loading, Panel } from "./ui";
@@ -26,85 +36,9 @@ type GraphvizModule = {
   };
 };
 let graphvizLoadPromise: Promise<GraphvizRenderer> | null = null;
-
-const GRAPH_SVG_STYLE = `
-svg {
-  max-width: 100%;
-  height: auto;
-}
-.node polygon,
-.node ellipse,
-.node path {
-  transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
-}
-.edge path,
-.edge polygon {
-  transition: fill 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
-}
-.node.complete polygon,
-.node.complete ellipse,
-.node.complete path {
-  fill: #dcefe5;
-  stroke: #2f7d52;
-}
-.node.active polygon,
-.node.active ellipse,
-.node.active path {
-  fill: #d8e9fb;
-  stroke: #245a9f;
-  stroke-width: 2;
-}
-.node.checkpointed polygon,
-.node.checkpointed ellipse,
-.node.checkpointed path {
-  stroke-dasharray: 5 3;
-}
-.node.failed polygon,
-.node.failed ellipse,
-.node.failed path {
-  fill: #f7dada;
-  stroke: #b44343;
-  stroke-width: 2;
-}
-.edge.active path {
-  stroke: #245a9f;
-  stroke-width: 2.5;
-}
-.edge.active polygon {
-  fill: #245a9f;
-  stroke: #245a9f;
-}
-`;
-
-const shellStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.8rem"
-};
-
-const graphCanvasStyle: CSSProperties = {
-  overflowX: "auto",
-  border: "1px solid #d8dee6",
-  borderRadius: 6,
-  background: "#ffffff",
-  padding: "0.75rem"
-};
-
-const legendStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "0.55rem",
-  color: "#526173",
-  fontSize: "0.82rem"
-};
-
-const swatchBaseStyle: CSSProperties = {
-  width: 12,
-  height: 12,
-  borderRadius: 2,
-  display: "inline-block",
-  marginRight: 5,
-  verticalAlign: -1
-};
+const GRAPH_ZOOM_STEP = 1.2;
+const MIN_GRAPH_ZOOM = 0.2;
+const MAX_GRAPH_ZOOM = 4;
 
 export function GraphViewer({ workflowId, events }: { workflowId: string; events: RunEvent[] }) {
   const graphState = useAsync(() => getWorkflowGraph(workflowId), [workflowId]);
@@ -117,7 +51,39 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   const [renderError, setRenderError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
   const graphCanvasRef = useRef<HTMLDivElement | null>(null);
+  const graphSceneRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  const [graphTransform, setGraphTransform] = useState<GraphTransform>({
+    scale: 1,
+    x: 0,
+    y: 0
+  });
+  const [panning, setPanning] = useState(false);
   const graphDot = graphLayoutKey(graph);
+
+  const fitGraphToCanvas = useCallback(() => {
+    const canvas = graphCanvasRef.current;
+    const svg = graphSceneRef.current?.querySelector<SVGSVGElement>("svg");
+    if (!canvas || !svg) {
+      return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const intrinsicSize = getSvgIntrinsicSize(svg);
+    setGraphTransform(
+      calculateGraphFitTransform({
+        containerWidth: canvasRect.width,
+        containerHeight: canvasRect.height,
+        contentWidth: intrinsicSize.width,
+        contentHeight: intrinsicSize.height
+      })
+    );
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -156,27 +122,138 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
   }, [graphDot]);
 
   useLayoutEffect(() => {
-    if (!graphCanvasRef.current || !svgMarkup) {
+    if (!graphSceneRef.current || !svgMarkup) {
       return;
     }
-    applyGraphHighlightsToRenderedSvg(graphCanvasRef.current, highlightState);
+    applyGraphHighlightsToRenderedSvg(graphSceneRef.current, highlightState);
   }, [highlightState, svgMarkup]);
+
+  useLayoutEffect(() => {
+    if (!svgMarkup) {
+      return;
+    }
+    fitGraphToCanvas();
+  }, [fitGraphToCanvas, svgMarkup]);
+
+  useEffect(() => {
+    if (!svgMarkup) {
+      return;
+    }
+    window.addEventListener("resize", fitGraphToCanvas);
+    return () => {
+      window.removeEventListener("resize", fitGraphToCanvas);
+    };
+  }, [fitGraphToCanvas, svgMarkup]);
+
+  const zoomGraph = useCallback((scaleMultiplier: number) => {
+    const canvas = graphCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const centerX = canvasRect.width / 2;
+    const centerY = canvasRect.height / 2;
+    setGraphTransform((current) => {
+      const scale = clampGraphZoom(current.scale * scaleMultiplier);
+      const contentCenterX = (centerX - current.x) / current.scale;
+      const contentCenterY = (centerY - current.y) / current.scale;
+      return {
+        scale,
+        x: centerX - contentCenterX * scale,
+        y: centerY - contentCenterY * scale
+      };
+    });
+  }, []);
+
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!svgMarkup || !event.isPrimary || event.button !== 0) {
+      return;
+    }
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: graphTransform.x,
+      originY: graphTransform.y
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPanning(true);
+  }, [graphTransform.x, graphTransform.y, svgMarkup]);
+
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    setGraphTransform((current) => ({
+      ...current,
+      x: dragState.originX + event.clientX - dragState.startX,
+      y: dragState.originY + event.clientY - dragState.startY
+    }));
+  }, []);
+
+  const stopPanning = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    if (event.currentTarget.hasPointerCapture(dragState.pointerId)) {
+      event.currentTarget.releasePointerCapture(dragState.pointerId);
+    }
+    dragStateRef.current = null;
+    setPanning(false);
+  }, []);
 
   return (
     <Panel title="Workflow Graph">
-      <div style={shellStyle}>
+      <div className="graph-viewer">
         <ErrorBanner message={graphState.error ?? renderError} />
         {graphState.loading || rendering ? <Loading label="Rendering graph" /> : null}
         {!graphState.loading && graph && graph.nodes.length === 0 ? (
           <EmptyState>No graph nodes</EmptyState>
         ) : null}
         {svgMarkup ? (
-          <div
-            ref={graphCanvasRef}
-            style={graphCanvasStyle}
-            aria-label={`${graph?.name ?? "workflow"} graph`}
-            dangerouslySetInnerHTML={{ __html: svgMarkup }}
-          />
+          <>
+            <div className="graph-toolbar" role="toolbar" aria-label="Workflow graph controls">
+              <button type="button" className="secondary" onClick={fitGraphToCanvas}>
+                Fit
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                aria-label="Zoom out"
+                onClick={() => zoomGraph(1 / GRAPH_ZOOM_STEP)}
+              >
+                -
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                aria-label="Zoom in"
+                onClick={() => zoomGraph(GRAPH_ZOOM_STEP)}
+              >
+                +
+              </button>
+            </div>
+            <div
+              ref={graphCanvasRef}
+              className={`graph-canvas${panning ? " is-panning" : ""}`}
+              aria-label={`${graph?.name ?? "workflow"} graph`}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={stopPanning}
+              onPointerCancel={stopPanning}
+            >
+              <div
+                ref={graphSceneRef}
+                className="graph-scene"
+                style={{
+                  transform: `translate(${graphTransform.x}px, ${graphTransform.y}px) scale(${graphTransform.scale})`
+                }}
+                dangerouslySetInnerHTML={{ __html: svgMarkup }}
+              />
+            </div>
+          </>
         ) : null}
         {graph ? <GraphLegend /> : null}
       </div>
@@ -186,27 +263,25 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
 
 function GraphLegend() {
   return (
-    <div style={legendStyle}>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#d8e9fb", border: "1px solid #245a9f" }} />
-        active
+    <div className="graph-legend">
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-running" aria-hidden="true" />
+        running
       </span>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#dcefe5", border: "1px solid #2f7d52" }} />
-        complete
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-waiting" aria-hidden="true" />
+        waiting
       </span>
-      <span>
-        <span style={{ ...swatchBaseStyle, background: "#f7dada", border: "1px solid #b44343" }} />
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-completed" aria-hidden="true" />
+        completed
+      </span>
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-failed" aria-hidden="true" />
         failed
       </span>
-      <span>
-        <span
-          style={{
-            ...swatchBaseStyle,
-            background: "#ffffff",
-            border: "1px dashed #526173"
-          }}
-        />
+      <span className="graph-legend-item">
+        <span className="graph-swatch graph-swatch-checkpointed" aria-hidden="true" />
         checkpointed
       </span>
     </div>
@@ -215,6 +290,30 @@ function GraphLegend() {
 
 function emptyHighlightState(): GraphHighlightState {
   return { nodeClasses: new Map(), edgeClasses: new Map() };
+}
+
+function clampGraphZoom(scale: number): number {
+  return Math.min(MAX_GRAPH_ZOOM, Math.max(MIN_GRAPH_ZOOM, scale));
+}
+
+function getSvgIntrinsicSize(svg: SVGSVGElement): { width: number; height: number } {
+  const viewBox = svg.viewBox.baseVal;
+  if (viewBox.width > 0 && viewBox.height > 0) {
+    return { width: viewBox.width, height: viewBox.height };
+  }
+
+  return {
+    width: readSvgLength(svg.getAttribute("width")),
+    height: readSvgLength(svg.getAttribute("height"))
+  };
+}
+
+function readSvgLength(value: string | null): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 async function renderDotToSvg(dot: string): Promise<string> {
@@ -245,18 +344,15 @@ function prepareGraphSvg(
   if (parserError) {
     throw new Error(parserError.textContent ?? "Unable to parse rendered SVG");
   }
-  const svg = document.querySelector("svg");
+  const svg = document.querySelector<SVGSVGElement>("svg");
   if (!svg) {
     throw new Error("Graphviz did not return an SVG");
   }
 
   sanitizeSvg(document);
+  normalizeSvgIntrinsicDimensions(svg);
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `${graph.name} workflow graph`);
-
-  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-  style.textContent = GRAPH_SVG_STYLE;
-  svg.insertBefore(style, svg.firstChild);
 
   document.querySelectorAll<SVGGElement>("g.node").forEach((group) => {
     const nodeId = graphGroupTitle(group);
@@ -295,4 +391,21 @@ function sanitizeSvg(document: Document) {
       }
     }
   });
+}
+
+function normalizeSvgIntrinsicDimensions(svg: SVGSVGElement) {
+  const viewBox = svg.getAttribute("viewBox")?.trim().split(/\s+/).map(Number);
+  if (!viewBox || viewBox.length !== 4) {
+    return;
+  }
+  const [, , width, height] = viewBox;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return;
+  }
+  svg.setAttribute("width", formatSvgDimension(width));
+  svg.setAttribute("height", formatSvgDimension(height));
+}
+
+function formatSvgDimension(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }

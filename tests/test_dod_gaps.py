@@ -2118,11 +2118,11 @@ class TestKnowledgeCutoffWiring:
         from attractor_llm.catalog import get_model_info
 
         for model_id, expected_cutoff in [
-            ("claude-opus-4-6", "2024-08"),
-            ("claude-sonnet-4-5", "2024-08"),
-            ("gpt-5.2", "2024-04"),
-            ("gemini-3-pro-preview", "2024-12"),
-            ("gemini-3-flash-preview", "2024-12"),
+            ("claude-opus-4-8", "2026-01"),
+            ("claude-sonnet-5", "2026-01"),
+            ("gpt-5.5", "2025-12"),
+            ("gemini-3.1-pro-preview", "2025-01"),
+            ("gemini-3.5-flash", "2025-01"),
         ]:
             info = get_model_info(model_id)
             assert info is not None, f"Model {model_id} not found in catalog"
@@ -2136,12 +2136,12 @@ class TestKnowledgeCutoffWiring:
 
         result = build_environment_context(
             working_dir="/tmp",
-            model="claude-sonnet-4-5",
-            knowledge_cutoff="2024-08",
+            model="claude-sonnet-5",
+            knowledge_cutoff="2026-01",
             git_info={"is_git": False, "branch": "", "modified_count": 0,
                       "untracked_count": 0, "recent_commits": []},
         )
-        assert "Knowledge cutoff: 2024-08" in result
+        assert "Knowledge cutoff: 2026-01" in result
 
     def test_build_environment_context_omits_cutoff_when_none(self):
         """build_environment_context() must NOT emit 'Knowledge cutoff:' when None."""
@@ -2149,7 +2149,7 @@ class TestKnowledgeCutoffWiring:
 
         result = build_environment_context(
             working_dir="/tmp",
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-5",
             knowledge_cutoff=None,
             git_info={"is_git": False, "branch": "", "modified_count": 0,
                       "untracked_count": 0, "recent_commits": []},
