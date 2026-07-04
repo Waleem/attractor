@@ -1,139 +1,262 @@
 # Attractor
 
-An implementation of [StrongDM's Attractor](https://github.com/strongdm/attractor) -- a DOT-based pipeline runner for orchestrating multi-stage AI workflows.
+Attractor is a Python platform for running multi-stage AI agent workflows.
 
-Attractor lets you define AI workflows as Graphviz DOT files. Each node in the graph is a task (LLM call, human review, conditional branch, shell command) and edges define the flow between them. The engine walks the graph, calling LLMs at each stage, branching on conditions, and producing results.
+It combines:
+
+- A DOT workflow engine for graph-shaped agent pipelines.
+- A durable operations platform with git worktree isolation, run history, checkpoints, human approval gates, and branch write-back.
+- A React operations console for registering repositories, launching workflows, watching live runs, approving gates, testing model configuration, and reviewing run output.
+
+The platform is the primary way to use Attractor. The lower-level DOT engine and legacy local runner are still available for standalone `.dot` files.
+
+## Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js and npm, for building or developing the operations console
+- Provider API key(s) only when you want real agent model calls:
+  - `ANTHROPIC_API_KEY`
+  - `OPENAI_API_KEY`
+  - `GOOGLE_API_KEY` or `GEMINI_API_KEY`
+
+SQLite is the default platform database. There is no database service to install for local use.
+
+## Quickstart
+
+Clone the repository and install Python dependencies:
+
+```bash
+uv sync
+```
+
+Build the console:
+
+```bash
+(cd web && npm install && npm run build)
+```
+
+Start the platform server:
+
+```bash
+uv run python -m attractor_server --platform --port 8000
+```
+
+Open <http://127.0.0.1:8000>.
+
+In platform mode, the server serves both the API and the built console. The console build is resolved in this order:
+
+1. `--spa-dist`
+2. `ATTRACTOR_SPA_DIST`
+3. bundled `attractor_server/web/dist`
+4. local `web/dist`
+
+For example:
+
+```bash
+uv run python -m attractor_server --platform --port 8000 --spa-dist web/dist
+```
+
+## Dev Mode
+
+Run the backend and frontend as two processes when you want Vite hot reload:
+
+```bash
+uv run python -m attractor_server --platform --port 8000
+```
+
+```bash
+(cd web && npm run dev)
+```
+
+The Vite server listens on <http://127.0.0.1:5173> and proxies `/api` to `http://127.0.0.1:8000` by default. Override the proxy target with `VITE_PLATFORM_API_TARGET`.
+
+## Configuration
+
+Local platform defaults:
+
+- database: `.attractor-platform.sqlite3`
+- managed worktrees: `.attractor-worktrees`
+- artifacts: `.attractor-artifacts`
+- settings secret key: `~/.attractor/platform-secret.key`
+
+Useful server options:
+
+```bash
+uv run python -m attractor_server \
+  --platform \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --database-url sqlite+aiosqlite:///./.attractor-platform.sqlite3 \
+  --worktree-root .attractor-worktrees \
+  --artifact-root .attractor-artifacts
+```
+
+Environment variables:
+
+- `ATTRACTOR_DATABASE_URL`: optional database URL. SQLite is the default; Postgres is optional.
+- `ATTRACTOR_SPA_DIST`: path to a built console directory containing `index.html`.
+- `ATTRACTOR_PLATFORM_URL`: default platform URL for `attractor run`.
+- `ATTRACTOR_DEFAULT_PROVIDER` and `ATTRACTOR_DEFAULT_MODEL`: runtime defaults for new model-backed runs.
+- `ATTRACTOR_WORKTREE_ROOT` and `ATTRACTOR_ARTIFACT_ROOT`: default roots for managed worktrees and artifacts.
+- `ATTRACTOR_SECRET_KEY_PATH`: optional path for the encrypted settings vault key.
+
+Provider keys can be supplied through environment variables or through **Settings -> Secrets** in the console. Console-entered provider secrets are stored in the encrypted, write-only settings vault and are not returned by the settings API. **Settings -> Models** shows catalog readiness and runs model tests against configured credentials.
+
+Recommended example model IDs from the shipped catalog:
+
+- Anthropic: `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` with alias `claude-haiku-4-5`
+- OpenAI: `gpt-5.5`, `gpt-5.4-mini`
+- Google: `gemini-3.5-flash`
+
+Defaults are `claude-sonnet-5`, `gpt-5.5`, and `gemini-3.5-flash` for Anthropic, OpenAI, and Gemini respectively.
+
+## Author A Workflow
+
+Platform workflows live inside the repository they operate on:
+
+```text
+<repo>/
+  .attractor/
+    project.toml
+    workflows/
+      release-checks/
+        workflow.dot
+        workflow.toml
+```
+
+Only `workflow.dot` is required. `.attractor/project.toml` and each `workflow.toml` are optional.
+
+Create a workflow package:
+
+```bash
+mkdir -p .attractor/workflows/release-checks
+$EDITOR .attractor/workflows/release-checks/workflow.dot
+```
+
+Example `workflow.dot`:
 
 ```dot
-digraph Pipeline {
-    graph [goal="Build a REST API"]
+digraph ReleaseChecks {
+    graph [goal="Check whether this repository is ready to release"]
 
     start [shape=Mdiamond]
-    plan [shape=box, prompt="Create a plan for: $goal"]
-    implement [shape=box, prompt="Write the code for: $goal"]
-    review [shape=diamond]
+    inspect [shape=box, prompt="Inspect the repository and summarize release risks for: $goal"]
+    approve [shape=house, question="Proceed with release branch write-back?"]
     done [shape=Msquare]
 
-    start -> plan -> implement -> review
-    review -> done [condition="outcome = success"]
-    review -> implement [condition="outcome = fail"]
+    start -> inspect -> approve -> done
 }
 ```
 
-## What is this?
+Example `.attractor/project.toml`:
 
-StrongDM published a set of [natural language specifications](https://github.com/strongdm/attractor) (nlspecs) describing a 3-layer AI workflow platform:
+```toml
+default_environment = "local"
+allowed_execution_modes = ["local"]
 
-1. **Unified LLM Client** -- single interface across OpenAI, Anthropic, Google Gemini, and any OpenAI-compatible server
-2. **Coding Agent Loop** -- autonomous agentic loop pairing LLMs with developer tools
-3. **Attractor Pipeline Engine** -- DOT-graph orchestrator that chains LLM calls into workflows
+[variables]
+release_channel = "internal"
+```
 
-They published the specs but no implementation. This repo is an implementation of those specs.
+Example `workflow.toml`:
 
-## Quick Start
+```toml
+display_name = "Release Checks"
+description = "Inspect release readiness and pause for operator approval."
+tags = ["release", "quality"]
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+[inputs]
+target = "wheel"
+```
+
+Workflow names are names, not paths. Absolute paths, `..`, `/`, and `\` are rejected.
+
+Platform runs use git worktrees, so the registered repository must be a clean, committed git repository. Commit the workflow files before launching:
 
 ```bash
-# Clone and install
-git clone https://github.com/samueljklee/attractor.git
-cd attractor
-uv sync
-
-# Run a pipeline via CLI (requires API key)
-ANTHROPIC_API_KEY=sk-... uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --no-tools
-
-# Run with OpenAI
-OPENAI_API_KEY=sk-... uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --no-tools --provider openai --model gpt-4.1-mini
-
-# Run with Gemini
-GOOGLE_API_KEY=... uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --no-tools --provider gemini --model gemini-2.5-flash
-
-# Validate a pipeline (no API key needed)
-uv run python -m attractor_pipeline.cli validate examples/fibonacci.dot
-
-# Start the HTTP server
-ANTHROPIC_API_KEY=sk-... uv run python -m attractor_server --port 8080
+git status --short
+git add .attractor
+git commit -m "add attractor workflow"
 ```
 
-## HTTP Server
+## Launch A Run
 
-Attractor exposes a REST API with SSE event streaming (spec S9.5-9.6):
+### From The Console
+
+1. Start the platform server.
+2. Open the console.
+3. Go to **Repos** and register the local repository path.
+4. Open the repo, choose a discovered workflow, validate it, and launch a run.
+5. Watch the run from **Runs** or the run detail page.
+
+The run detail page shows graph state, live timeline events, approvals, artifacts, checkpoints, diffs, and write-back actions when available.
+
+### From The CLI
+
+Launch a durable platform run:
 
 ```bash
-# Start server
-uv run python -m attractor_server --port 8080
-
-# Submit a pipeline
-curl -X POST http://localhost:8080/pipelines \
-  -H "Content-Type: application/json" \
-  -d '{"dot_source": "digraph { start [shape=Mdiamond]; task [shape=box, prompt=\"Write a haiku\"]; done [shape=Msquare]; start -> task -> done }"}'
-
-# Watch events in real-time (SSE)
-curl -N http://localhost:8080/pipelines/{id}/events
-
-# Check status
-curl http://localhost:8080/pipelines/{id}
-
-# Cancel a running pipeline
-curl -X POST http://localhost:8080/pipelines/{id}/cancel
+uv run attractor run release-checks \
+  --repo /path/to/repo \
+  --server-url http://127.0.0.1:8000 \
+  --input target=wheel
 ```
 
-### 9 Endpoints
+Or set the server URL once:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/pipelines` | Start a pipeline from DOT source |
-| `GET` | `/pipelines/{id}` | Pipeline status and progress |
-| `GET` | `/pipelines/{id}/events` | SSE event stream (real-time) |
-| `POST` | `/pipelines/{id}/cancel` | Cancel a running pipeline |
-| `GET` | `/pipelines/{id}/graph` | Graph structure as JSON |
-| `GET` | `/pipelines/{id}/questions` | Pending human gate questions |
-| `POST` | `/pipelines/{id}/questions/{qid}/answer` | Answer a human gate question |
-| `GET` | `/pipelines/{id}/checkpoint` | Checkpoint state |
-| `GET` | `/pipelines/{id}/context` | Context key-value store |
-
-### SSE Event Types
-
-```
-event: pipeline.started
-data: {"id": "abc123", "name": "MyPipeline", "goal": "Build a widget"}
-
-event: pipeline.completed
-data: {"id": "abc123", "duration": 12.3, "nodes_completed": 5}
-
-event: interview.started
-data: {"qid": "q_abc", "question": "Deploy to production?", "stage": "gate"}
-
-event: pipeline.failed
-data: {"id": "abc123", "error": "...", "duration": 8.1}
+```bash
+export ATTRACTOR_PLATFORM_URL=http://127.0.0.1:8000
+uv run attractor run release-checks --repo /path/to/repo --input target=wheel
 ```
 
-Late-connecting SSE clients receive the full event history replay.
+`--input` accepts `key=value` and can be provided more than once. The CLI posts the launch request to `/api/runs` and prints the run id, initial status, and API URL.
 
-## How It Works
+To run a bare DOT file with the old in-process engine instead of the platform:
 
-### Node Shapes
+```bash
+uv run attractor run --legacy-local examples/fibonacci.dot --provider anthropic --model claude-sonnet-5 --no-tools
+```
 
-| Shape | Node Type | What It Does |
-|-------|-----------|-------------|
-| `Mdiamond` | Start | Entry point (no-op) |
-| `box` | Codergen | Calls an LLM with the node's prompt |
-| `diamond` | Conditional | Branches based on edge conditions |
-| `house` | Human Gate | Waits for human approval (CLI or HTTP) |
-| `hexagon` | Manager | Supervisor: runs a child pipeline, retries on failure |
+To validate a bare DOT file without running it:
+
+```bash
+uv run attractor validate examples/fibonacci.dot
+```
+
+## Shipped Platform Features
+
+- Durable run history, run records, artifacts, approvals, checkpoints, and events stored in the platform database.
+- Server-managed git worktree isolation on branches named `attractor/runs/<run_id>`.
+- Per-stage git checkpoints recorded under `refs/attractor/runs/<run_id>/checkpoints/...`.
+- Human approval gates for `house` nodes, with console/API decision flow and run resume.
+- Branch-from-worktree write-back for completed runs, with branch validation and protected-branch safeguards.
+- Model catalog, provider credential status, and **Test models** action in Settings.
+- Operations console with repo registration, workflow validation, run board, run detail graph, timeline, approvals, settings, system health, and live event streaming.
+
+## DOT Engine Reference
+
+A workflow is a Graphviz DOT graph. Nodes are stages; edges define order and conditional flow.
+
+Common node shapes:
+
+| Shape | Node type | Purpose |
+| --- | --- | --- |
+| `Mdiamond` | Start | Entry point |
+| `box` | Codergen | Calls an LLM or agent backend |
+| `diamond` | Conditional | Chooses an outgoing edge by condition |
+| `house` | Human gate | Waits for an operator answer |
+| `hexagon` | Manager | Runs a child graph with retry/supervision |
 | `parallelogram` | Tool | Runs a shell command |
-| `component` | Parallel | Fans out to concurrent branches |
-| `tripleoctagon` | Fan-In | Collects results from parallel branches |
-| `Msquare` | Exit | Terminal node (pipeline complete) |
+| `component` | Parallel | Fans out concurrent branches |
+| `tripleoctagon` | Fan-in | Joins parallel branches |
+| `Msquare` | Exit | Terminal stage |
 
-### Variable Expansion
-
-Node prompts support `$variable` and `${variable}` expansion from the pipeline context:
+Prompts support `$variable` and `${variable}` expansion from graph context:
 
 ```dot
 digraph {
-    graph [goal="Build a CLI tool"]
+    graph [goal="Build a CLI tool", language="Python"]
     start [shape=Mdiamond]
     plan [shape=box, prompt="Plan: $goal"]
     implement [shape=box, prompt="Implement: $goal using ${language}"]
@@ -142,31 +265,29 @@ digraph {
 }
 ```
 
-Escaped `\$literal` produces a literal `$` (no expansion).
-
-### Model Stylesheets
-
-Assign LLM models to nodes using CSS-like selectors:
+Model stylesheets assign providers and models to nodes with CSS-like selectors:
 
 ```dot
 digraph Pipeline {
     graph [
         goal="Build feature X",
         model_stylesheet="
-            * { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }
-            .critical { llm_model: claude-opus-4-6; reasoning_effort: high; }
-            #final_review { llm_model: gpt-5.2; llm_provider: openai; }
+            * { llm_model: claude-sonnet-5; llm_provider: anthropic; }
+            .critical { llm_model: claude-opus-4-8; reasoning_effort: high; }
+            #final_review { llm_model: gpt-5.5; llm_provider: openai; }
         "
     ]
     plan [shape=box]
     review [shape=box, class="critical"]
+    final_review [shape=box]
     done [shape=Msquare]
+    plan -> review -> final_review -> done
 }
 ```
 
-Specificity: `*` (0) < `shape` (1) < `.class` (2) < `#id` (3). Explicit node attributes always override.
+Specificity is `*` < shape selector < `.class` < `#id`. Explicit node attributes override stylesheet values.
 
-### Parallel Execution
+Parallel fan-out and fan-in:
 
 ```dot
 digraph {
@@ -174,387 +295,67 @@ digraph {
     fork [shape=component]
     a [shape=box, prompt="Approach A"]
     b [shape=box, prompt="Approach B"]
-    c [shape=box, prompt="Approach C"]
     join [shape=tripleoctagon]
     done [shape=Msquare]
 
     start -> fork
     fork -> a -> join
     fork -> b -> join
-    fork -> c -> join
     join -> done
 }
 ```
 
-### Supervisor / Manager Loop
+## Legacy HTTP API
 
-A hexagon node runs a child pipeline and retries if it fails:
-
-```dot
-digraph {
-    start [shape=Mdiamond]
-    supervisor [shape=hexagon, child_graph="child.dot", max_iterations="3"]
-    done [shape=Msquare]
-    start -> supervisor -> done
-}
-```
-
-### System Prompt Layering
-
-The system prompt is composed from 4 layers (highest priority wins):
-
-1. **Profile** -- provider-specific base (Claude Code style, codex-rs style)
-2. **Pipeline goal** -- `[GOAL]` section from the DOT graph
-3. **Node instruction** -- `[INSTRUCTION]` from per-node `system_prompt` attribute
-4. **User override** -- replaces everything if set
-
-### Three-Layer Architecture
-
-```
-HTTP Server (REST + SSE)            <-- 9 endpoints, real-time events
-    |
-    v
-DOT File (.dot)
-    |
-    v
-Attractor Pipeline Engine          <-- Parses DOT, walks graph, runs handlers
-    |
-    v
-Coding Agent Loop                   <-- Agentic loop with tools (read/write/edit/shell)
-    |
-    v
-Unified LLM Client                  <-- Provider adapters + middleware
-    |
-    v
-Provider APIs                       <-- Claude, GPT, Gemini, Ollama, vLLM
-```
-
-### High-Level API
-
-Use the SDK directly without pipelines:
-
-```python
-from attractor_llm.generate import generate, generate_object, stream
-
-# Simple text generation
-text = await generate(client, "claude-sonnet-4-5", "Explain recursion")
-
-# With automatic tool loop
-text = await generate(client, "claude-sonnet-4-5", "Read config.py",
-                      tools=[read_file_tool], max_rounds=5)
-
-# Structured JSON output
-data = await generate_object(client, "claude-sonnet-4-5",
-                              "Extract entities from: ...",
-                              schema={"type": "object", ...})
-
-# Streaming
-async for chunk in stream(client, "claude-sonnet-4-5", "Write a poem"):
-    print(chunk, end="")
-```
-
-### Middleware
-
-Intercept LLM requests and responses for logging, caching, token counting, rate limiting:
-
-```python
-from attractor_llm.middleware import (
-    apply_middleware, LoggingMiddleware,
-    TokenCountingMiddleware, CachingMiddleware,
-)
-
-client = apply_middleware(client, [
-    LoggingMiddleware(),
-    TokenCountingMiddleware(),
-    CachingMiddleware(max_size=100),
-])
-# Client works normally -- middleware intercepts transparently
-```
-
-### Subagent Spawning
-
-Delegate tasks to child agent sessions with depth limiting:
-
-```python
-from attractor_agent.subagent import spawn_subagent
-
-result = await spawn_subagent(
-    client=client,
-    prompt="Refactor the auth module",
-    parent_depth=0, max_depth=3,
-    model="claude-sonnet-4-5", provider="anthropic",
-)
-print(result.text)
-```
-
-## Project Structure
-
-```
-src/
-├── attractor_llm/              # Layer 1: Unified LLM Client
-│   ├── types.py                 # Request, Response, Message, ContentPart, Usage
-│   ├── errors.py                # Error hierarchy with retryability classification
-│   ├── retry.py                 # Exponential backoff, honors Retry-After headers
-│   ├── catalog.py               # Model catalog (7 models across 3 providers)
-│   ├── streaming.py             # StreamAccumulator for building responses from SSE
-│   ├── client.py                # Client with provider routing
-│   ├── generate.py              # High-level generate(), stream(), generate_object()
-│   ├── middleware.py             # Middleware chain (logging, tokens, cache, rate limit)
-│   └── adapters/
-│       ├── base.py              # ProviderAdapter protocol + ProviderConfig
-│       ├── anthropic.py         # Anthropic Messages API adapter
-│       ├── openai.py            # OpenAI Responses API adapter
-│       ├── gemini.py            # Google Gemini native API adapter
-│       └── openai_compat.py     # OpenAI-compatible adapter (Ollama, vLLM, LiteLLM)
-│
-├── attractor_agent/             # Layer 2: Coding Agent Loop
-│   ├── session.py               # Core agentic loop (LLM -> tools -> repeat)
-│   ├── events.py                # Event system (12 event kinds)
-│   ├── abort.py                 # Cooperative cancellation (AbortSignal)
-│   ├── truncation.py            # Two-pass output truncation
-│   ├── subagent.py              # Subagent spawning with depth limiting
-│   ├── prompt_layer.py          # 4-layer system prompt composition
-│   ├── environment.py           # ExecutionEnvironment protocol (Local + Docker)
-│   ├── profiles/                # Provider-specific agent configurations
-│   │   ├── anthropic.py         # Claude Code-style profile
-│   │   ├── openai.py            # codex-rs-style profile
-│   │   └── gemini.py            # gemini-cli-style profile
-│   └── tools/
-│       ├── registry.py          # Tool registry and execution pipeline
-│       ├── core.py              # 7 tools: read_file, write_file, edit_file, apply_patch, shell, grep, glob
-│       └── apply_patch.py       # Unified diff parser with context verification
-│
-├── attractor_pipeline/          # Layer 3: Pipeline Engine
-│   ├── graph.py                 # Graph, Node, Edge data model
-│   ├── conditions.py            # Condition expression evaluator (=, !=, &&)
-│   ├── backends.py              # CodergenBackend implementations (Direct + AgentLoop)
-│   ├── validation.py            # 12 graph lint rules
-│   ├── stylesheet.py            # CSS-like model selector engine
-│   ├── variable_expansion.py    # $variable and ${variable} expansion
-│   ├── cli.py                   # CLI: attractor run/validate
-│   ├── parser/
-│   │   └── parser.py            # Custom recursive-descent DOT parser
-│   ├── engine/
-│   │   ├── runner.py            # Core execution loop, edge selection, checkpoint
-│   │   ├── subgraph.py          # Branch execution primitive for parallel
-│   │   └── preamble.py          # Fidelity resume preamble for checkpoint continuation
-│   └── handlers/
-│       ├── basic.py             # Start, Exit, Conditional, Tool handlers
-│       ├── codergen.py          # LLM handler + CodergenBackend protocol
-│       ├── human.py             # Human-in-the-loop + Interviewer protocol
-│       ├── parallel.py          # Parallel fan-out + Fan-in handlers
-│       └── manager.py           # Supervisor loop handler (child pipeline orchestration)
-│
-├── attractor_server/            # HTTP Server (REST + SSE)
-│   ├── app.py                   # Starlette app with 9 endpoints
-│   ├── pipeline_manager.py      # Pipeline lifecycle (start, track, cancel, evict)
-│   ├── sse.py                   # SSE event formatting + streaming + history replay
-│   ├── interviewer.py           # WebInterviewer (HTTP-bridged human gates)
-│   ├── models.py                # Pydantic request/response schemas
-│   └── __main__.py              # Entry point: uv run python -m attractor_server
-│
-└── examples/
-    ├── fibonacci.dot              # Basic: plan -> implement
-    ├── code_review.dot            # Review loop with retry
-    ├── research_then_build.dot    # Research -> design -> implement
-    ├── parallel_approaches.dot    # Fan-out/fan-in (3 concurrent branches)
-    ├── model_stylesheet.dot       # CSS-like model selectors
-    ├── supervisor_loop.dot        # Manager/supervisor pattern
-    ├── supervisor_child.dot       # Child pipeline for supervisor
-    ├── conditional_goal_gate.dot  # Review loop with goal gate circuit breaker
-    ├── software_factory.dot       # 5-stage: research -> design -> implement -> test -> review
-    ├── human_approval.dot         # Human-in-the-loop approval gate
-    ├── variable_expansion.dot     # Full $variable expansion across stages
-    ├── prompt_layering.dot        # Per-node system_prompt with [INSTRUCTION] sections
-    ├── openai_compat_ollama.py    # OpenAI-compat adapter with Ollama/vLLM
-    └── e2e_test.py                # End-to-end pipeline test
-```
-
-## Spec Coverage (100%)
-
-### Unified LLM Client Spec
-
-| Feature | Status | Spec Section |
-|---------|--------|-------------|
-| Client with provider routing | Done | S2.1-2.6 |
-| Anthropic Messages API adapter | Done | S7.3 |
-| OpenAI Responses API adapter | Done | S7.3 |
-| Google Gemini native API adapter | Done | S7.4 |
-| OpenAI-compatible adapter (Ollama, vLLM, LiteLLM) | Done | S7.10 |
-| Request/Response data model | Done | S3 |
-| Streaming with StreamAccumulator | Done | S3.13 |
-| Error hierarchy with retryability | Done | S6 |
-| Retry with exponential backoff | Done | S6.6 |
-| Prompt caching (cache_control injection) | Done | S2.10 |
-| Reasoning token tracking | Done | S3.9 |
-| Model catalog | Done | S2.9 |
-| Tool calling (parallel execution) | Done | S5 |
-| High-level generate()/stream() API | Done | S4.3-4.6 |
-| generate_object() structured output | Done | S4.5 |
-| Middleware/interceptor chain | Done | S2.3 |
-
-### Coding Agent Loop Spec
-
-| Feature | Status | Spec Section |
-|---------|--------|-------------|
-| Session with agentic loop | Done | S2.1-2.5 |
-| Tool registry and execution pipeline | Done | S3.8 |
-| Core tools (read/write/edit/shell/grep/glob) | Done | S3.3 |
-| apply_patch v4a unified diff parser | Done | Appendix A |
-| Output truncation (char + line) | Done | S5.1-5.3 |
-| Event system (12 event kinds) | Done | S2.9 |
-| Steering/follow-up queues | Done | S2.6 |
-| Loop detection | Done | S2.10 |
-| Cooperative cancellation (AbortSignal) | Done | S2.8 |
-| Path confinement + symlink defense | Done | (multi-model designed) |
-| Shell command deny-list | Done | (multi-model designed) |
-| Provider profiles (Claude Code, codex-rs, gemini-cli) | Done | S3.4-3.6 |
-| Subagent spawning with depth limiting | Done | S7 |
-| System prompt layering (4-layer) | Done | S6 |
-| Execution environment abstraction (Local + Docker) | Done | S4 |
-
-### Attractor Pipeline Spec
-
-| Feature | Status | Spec Section |
-|---------|--------|-------------|
-| Custom DOT parser | Done | S2 |
-| Graph model (Node, Edge, Graph) | Done | S2.3-2.7 |
-| Execution engine (core loop) | Done | S3.2 |
-| 5-step edge selection algorithm | Done | S3.3 |
-| Goal gate with circuit breaker | Done | S3.4 |
-| Node retry with backoff | Done | S3.5 |
-| Checkpoint/resume with fidelity preamble | Done | S5.3-5.4 |
-| Condition expression evaluator | Done | S10 |
-| Handlers: start, exit, codergen, conditional, tool, human | Done | S4.3-4.10 |
-| Manager loop handler (supervisor) | Done | S4.11 |
-| Parallel handler (fan-out) | Done | S4.8 |
-| Fan-in handler (join with heuristic selection) | Done | S4.9 |
-| CodergenBackend protocol + implementations | Done | S4.5 |
-| Interviewer protocol (AutoApprove, Console, Web) | Done | S6 |
-| Cooperative cancellation | Done | S9.5 |
-| Graph validation/lint rules (12 rules) | Done | S7 |
-| Model stylesheet parser (CSS-like selectors) | Done | S8 |
-| Variable expansion ($var, ${var}) | Done | S9.1-9.3 |
-| HTTP server mode + SSE events (9 endpoints) | Done | S9.5-9.6 |
-| CLI (run + validate) | Done | -- |
-
-## Spec Customizations
-
-Enhancements beyond the upstream [Attractor nlspec](https://github.com/strongdm/attractor), driven by real user feedback:
-
-| Enhancement | Spec Section | Status | Reference |
-|-------------|-------------|--------|-----------|
-| R15 validation rule: hexagon nodes require `child_graph` | S7.2 | Implemented | [issue #36](https://github.com/samueljklee/attractor/issues/36) |
-| Section 9.6 event system with `--verbose` CLI flag | S9.6 | Implemented | [issue #36](https://github.com/samueljklee/attractor/issues/36) |
-| Add `error` field to `StageRetrying` event | S9.6 | Proposed upstream | [strongdm/attractor#4](https://github.com/strongdm/attractor/pull/4) |
-
-These changes are backward-compatible with the upstream spec. Proposed changes are submitted as PRs to the upstream repository.
-
-## Testing
+Starting the server without `--platform` runs the legacy in-memory pipeline API:
 
 ```bash
-# Run all unit tests (432 tests, ~3s, no API keys needed)
-uv run python -m pytest tests/ -q
-
-# Run end-to-end integration tests (8 tests, requires ANTHROPIC_API_KEY)
-uv run python -m pytest tests/test_e2e_integration.py -v -s
-
-# Run the quick e2e pipeline test
-ANTHROPIC_API_KEY=sk-... uv run python examples/e2e_test.py
+uv run python -m attractor_server --port 8080
 ```
 
-### Test Coverage
-
-| Test Type | Count | What It Covers |
-|-----------|-------|---------------|
-| Unit tests (mock) | 432 | Types, errors, retry, streaming, tools, parser, conditions, validation, stylesheet, profiles, subagent, apply_patch, generate API, parallel, manager, middleware, prompt layering, variable expansion, preamble, HTTP server (32 endpoint tests), SSE formatting, WebInterviewer, execution environment (25 tests: Local + Docker) |
-| E2E integration (real API) | 8 | Agent writes/edits real files, pipeline creates code on disk, multi-stage output chaining, generate() with tool loop, structured output, subagent with tools, software factory |
-| Live provider validation | 30+ | generate + generate_object + subagent across Anthropic + OpenAI + Gemini; HTTP server endpoints via real curl; SSE event streaming; pipeline cancel mid-run; questions/answer flow; concurrent SSE clients; multi-provider server backends; Docker environment (start, write, read, exec, grep, apply_patch inside real container); pipeline execution inside Docker with real Claude API |
-
-### What's Proven End-to-End
-
-- Agent writes files to disk via agentic tool loop (real LLM + real filesystem)
-- Agent reads and edits existing files, preserving unchanged content
-- Pipeline node drives AgentLoopBackend which creates code on disk
-- Multi-stage pipeline: plan output chains into implement stage
-- `generate()` reads a file via tool loop and extracts data
-- `generate_object()` returns structured JSON from natural language
-- Subagent writes files to disk using delegated tool access
-- Software factory pipeline produces working code
-- HTTP server: all 9 endpoints verified via curl against real Claude API
-- SSE events: `pipeline.started` + `pipeline.completed` streamed in real-time
-- SSE late-connect: full event history replayed to clients connecting after completion
-- Pipeline cancel: abort signal propagated mid-run, status correctly transitions
-- Human gates: questions appear, answers unblock pipeline, timeout returns default
-- Concurrent SSE: 3 simultaneous clients all receive events
-- All 3 providers (Anthropic, OpenAI, Gemini) tested as server backends
-- Docker environment: start container, write/read/exec/grep/apply_patch all inside real Docker
-- Pipeline execution inside Docker container with real Claude API
-- grep routes through `docker exec grep` when DockerEnvironment is active
-- apply_patch reads/writes via `docker exec` inside container
-
-## Security
-
-Security hardening identified during multi-model peer review (Claude, GPT, Gemini):
-
-- **Path confinement**: All file tools validate paths against an allowed-roots list
-- **Symlink traversal defense**: Resolved paths verified under base directory via `relative_to()`
-- **Shell command deny-list**: Dangerous patterns (`rm -rf /`, `mkfs`, fork bombs) blocked
-- **Shell variable injection prevention**: Context values escaped with `shlex.quote()`
-- **Environment variable filtering**: Sensitive variables (`_KEY`, `_SECRET`, `_TOKEN`) stripped
-- **Non-blocking shell execution**: Commands run via `asyncio.to_thread()`
-- **No traceback leakage**: Tool errors contain only the exception message
-- **apply_patch context verification**: Verifies diff context lines match actual file content before applying; rejects overlapping hunks
-- **DOT injection prevention**: `$goal` expansion sanitizes structural characters (backslash-first escaping, `->` neutralization)
-- **Hunk overlap detection**: Prevents silent file corruption from malformed patches
-
-## How This Was Built
-
-This implementation was built using [Amplifier](https://github.com/microsoft/amplifier) with a multi-model peer review process:
-
-- **Design phase**: Each feature planned with spec analysis, then reviewed by multiple models before implementation
-- **Implementation phase**: Code reviewed by 2-4 models per feature (Claude Opus 4.6, Sonnet 4.5, GPT O3, Gemini), with cross-reviews where one model verifies another's fixes
-- **Validation phase**: Every feature tested with mock tests AND live API calls against all 3 providers
-- **Security**: Opus 4.6 found a DOT injection-to-execution chain that Sonnet and Gemini both missed; Gemini found a parallel context deepcopy race; O3 found an apply_patch hunk overlap corruption bug
-- **Total**: 35+ swarm review rounds, 48 commits, ~21,000 lines of code
+That mode exposes `/pipelines` endpoints for direct DOT submission and SSE event streaming. It is useful for lower-level engine testing, but it does not provide durable platform storage, repo registration, worktree isolation, the operations console, or branch write-back.
 
 ## Development
 
+Install dev dependencies:
+
 ```bash
-# Install with dev dependencies
 uv sync --extra dev
-
-# Run linter
-uv run ruff check src/
-
-# Run type checker
-uv run pyright src/
-
-# Run all tests
-uv run python -m pytest tests/ -v
-
-# Run a pipeline via CLI
-uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --no-tools
-
-# Validate a DOT file
-uv run python -m attractor_pipeline.cli validate examples/fibonacci.dot
-
-# Start the HTTP server
-uv run python -m attractor_server --port 8080
-
-# Start with specific provider
-uv run python -m attractor_server --port 8080 --provider anthropic --model claude-sonnet-4-5
-
-# Run a pipeline inside Docker (sandboxed)
-uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --docker
-
-# Run with a specific Docker image
-uv run python -m attractor_pipeline.cli run examples/fibonacci.dot --docker --docker-image python:3.12-slim
 ```
+
+Run Python tests:
+
+```bash
+uv run python -m pytest tests/ -q
+```
+
+Run lint:
+
+```bash
+uv run ruff check src tests
+```
+
+Run web tests:
+
+```bash
+(cd web && npm run test:graph)
+```
+
+Build the wheel:
+
+```bash
+uv build
+```
+
+## Roadmap / Not Yet
+
+Attractor currently ships as clone, build, and run from source. There is no packaged binary, PyPI release, or Docker image yet.
+
+Factory features such as PR automation, steering, MCP integration, hooks, and scheduled automations are future work. Control-plane and distribution features such as cloud sandboxes, SSH/preview access, SSO, and hosted multi-tenant deployment are also not part of the current local platform.
 
 ## Credits
 
-This is an implementation of the [Attractor nlspec](https://github.com/strongdm/attractor) published by [StrongDM](https://www.strongdm.com/). The specifications (attractor-spec.md, coding-agent-loop-spec.md, unified-llm-spec.md) were designed by StrongDM's team. This implementation was built from those specs using [Amplifier](https://github.com/microsoft/amplifier) with multi-model peer review across Claude, GPT, and Gemini.
+Attractor implements the public [StrongDM Attractor](https://github.com/strongdm/attractor) natural-language specifications. This repository was forked from [samueljklee/attractor](https://github.com/samueljklee/attractor), whose implementation work provides the foundation for the DOT engine, agent loop, provider integrations, and local platform that this fork continues to develop.
 
 ## License
 
