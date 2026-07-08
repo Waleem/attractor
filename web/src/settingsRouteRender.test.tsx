@@ -685,6 +685,10 @@ async function main() {
   const pendingModelTest = new Promise<FetchResult>((resolve) => {
     resolveModelTest = resolve;
   });
+  let resolveModelSync: (result: FetchResult) => void = () => undefined;
+  const pendingModelSync = new Promise<FetchResult>((resolve) => {
+    resolveModelSync = resolve;
+  });
   const modelTestResult = await mountSettingsRoute((path) => {
     if (path === "/api/settings") {
       return { body: settingsPayload };
@@ -692,11 +696,28 @@ async function main() {
     if (path === "/api/settings/models/catalog") {
       return { body: { items: catalogPayload } };
     }
+    if (path === "/api/settings/models/sync") {
+      return pendingModelSync;
+    }
     if (path === "/api/settings/models/test") {
       return pendingModelTest;
     }
     throw new Error(`Unexpected fetch ${path}`);
   });
+  findButtonByText(modelTestResult.container, "Sync from provider").click();
+  await waitFor(() => modelTestResult.fetchCalls.includes("/api/settings/models/sync"));
+  resolveModelSync({
+    body: {
+      summary: { synced: 1, failed: 0, skipped: 2, synced_at: "2026-07-03T12:00:00Z" },
+      items: [
+        { provider: "openai", ok: true, models_synced: 1, error: null },
+        { provider: "anthropic", ok: false, models_synced: 0, error: "Missing provider API key" },
+        { provider: "gemini", ok: false, models_synced: 0, error: "Missing provider API key" }
+      ]
+    }
+  });
+  await waitFor(() => modelTestResult.fetchCalls.filter((path) => path === "/api/settings/models/catalog").length >= 2);
+  await waitFor(() => modelTestResult.container.textContent.includes("1 synced"));
   findButtonByText(modelTestResult.container, "Test models").click();
   await waitFor(() => modelTestResult.fetchCalls.includes("/api/settings/models/test"));
   await waitFor(() => modelTestResult.container.textContent.includes("Testing"));

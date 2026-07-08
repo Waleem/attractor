@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from attractor_llm.catalog_sync import SyncedModelInfo
 from attractor_llm.errors import (
     InvalidRequestError,
     ProviderError,
@@ -719,6 +720,28 @@ class AnthropicAdapter:
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
+
+    async def list_models(self) -> list[SyncedModelInfo]:
+        response = await self._client.get("/v1/models")
+        if response.status_code >= 400:
+            raise classify_http_error(
+                status_code=response.status_code,
+                body=response.text,
+                provider=self.provider_name,
+            )
+        payload = response.json()
+        items = payload.get("data", [])
+        models = [
+            SyncedModelInfo(
+                provider=self.provider_name,
+                id=item["id"],
+                display_name=item.get("display_name") or item["id"].replace("-", " ").title(),
+            )
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        models.sort(key=lambda item: item.id)
+        return models
 
     async def close(self) -> None:
         """Close the HTTP client."""

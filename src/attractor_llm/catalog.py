@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 
 _CAPABILITY_FIELDS: dict[str, str] = {
     "tools": "supports_tools",
@@ -193,12 +195,62 @@ MODEL_CATALOG: list[ModelInfo] = [
 ]
 
 _CATALOG_INDEX: dict[str, ModelInfo] = {m.id: m for m in MODEL_CATALOG}
+_SYNCED_CATALOG_BY_PROVIDER: dict[str, tuple[ModelInfo, ...]] = {}
 
 _DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-sonnet-5",
     "openai": "gpt-5.5",
     "gemini": "gemini-3.5-flash",
 }
+
+
+def merge_model_catalog(curated: Sequence[ModelInfo], synced: Sequence[ModelInfo]) -> list[ModelInfo]:
+    """Merge provider-synced rows onto curated catalog metadata.
+
+    Curated entries remain authoritative for overlapping model ids. Synced
+    entries only append previously unknown models.
+    """
+    curated_by_key = {(model.provider, model.id): model for model in curated}
+    merged = list(curated)
+    for model in synced:
+        if (model.provider, model.id) not in curated_by_key:
+            merged.append(model)
+    return merged
+
+
+def replace_synced_catalog(rows_by_provider: Mapping[str, Iterable[ModelInfo]]) -> None:
+    """Replace the in-memory provider-sync overlay."""
+    global _SYNCED_CATALOG_BY_PROVIDER
+    normalized: dict[str, tuple[ModelInfo, ...]] = {}
+    for provider, rows in rows_by_provider.items():
+        provider_rows = tuple(rows)
+        curated_rows = [model for model in MODEL_CATALOG if model.provider == provider]
+        normalized[provider] = tuple(
+            model
+            for model in merge_model_catalog(curated_rows, list(provider_rows))
+            if model.provider == provider and model.id not in {curated.id for curated in curated_rows}
+        )
+    _SYNCED_CATALOG_BY_PROVIDER = normalized
+
+
+def update_synced_catalog(rows_by_provider: Mapping[str, Iterable[ModelInfo]]) -> None:
+    """Replace synced rows for the provided providers, preserving other overlays."""
+    normalized = dict(_SYNCED_CATALOG_BY_PROVIDER)
+    replace_synced_catalog({**normalized, **rows_by_provider})
+
+
+def _catalog_rows(provider: str | None = None) -> list[ModelInfo]:
+    if provider is None:
+        merged = list(MODEL_CATALOG)
+        for provider_name in _DEFAULT_MODELS:
+            merged.extend(_SYNCED_CATALOG_BY_PROVIDER.get(provider_name, ()))
+        for provider_name in sorted(set(_SYNCED_CATALOG_BY_PROVIDER) - set(_DEFAULT_MODELS)):
+            merged.extend(_SYNCED_CATALOG_BY_PROVIDER.get(provider_name, ()))
+        return merged
+
+    curated_rows = [m for m in MODEL_CATALOG if m.provider == provider]
+    synced_rows = list(_SYNCED_CATALOG_BY_PROVIDER.get(provider, ()))
+    return merge_model_catalog(curated_rows, synced_rows)
 
 
 def get_model_info(model_id: str) -> ModelInfo | None:
@@ -214,8 +266,12 @@ def get_model_info(model_id: str) -> ModelInfo | None:
     if info is not None:
         return info
 
+    for entry in _catalog_rows():
+        if entry.id == model_id:
+            return entry
+
     # Alias search — return first entry whose aliases contain model_id
-    for entry in MODEL_CATALOG:
+    for entry in _catalog_rows():
         if model_id in entry.aliases:
             return entry
 
@@ -224,9 +280,7 @@ def get_model_info(model_id: str) -> ModelInfo | None:
 
 def list_models(provider: str | None = None) -> list[ModelInfo]:
     """List all known models, optionally filtered by provider."""
-    if provider is None:
-        return list(MODEL_CATALOG)
-    return [m for m in MODEL_CATALOG if m.provider == provider]
+    return _catalog_rows(provider)
 
 
 def get_default_model(provider: str) -> ModelInfo:

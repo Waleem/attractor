@@ -42,7 +42,13 @@ from attractor_llm.adapters.anthropic import AnthropicAdapter
 from attractor_llm.adapters.base import ProviderConfig
 from attractor_llm.adapters.gemini import GeminiAdapter
 from attractor_llm.adapters.openai import OpenAIAdapter
-from attractor_llm.catalog import ModelInfo, get_default_model, list_models
+from attractor_llm.catalog import (
+    ModelInfo,
+    get_default_model,
+    list_models,
+    update_synced_catalog,
+)
+from attractor_llm.catalog_sync import sync_provider_models
 from attractor_llm.client import Client
 from attractor_llm.types import Request as LLMRequest
 from attractor_platform.config import load_project_config
@@ -100,6 +106,15 @@ class PlatformModelTester(Protocol):
     ) -> PlatformModelTestResult: ...
 
 
+class PlatformModelSyncer(Protocol):
+    async def sync_models(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+    ) -> list[ModelInfo]: ...
+
+
 class LivePlatformModelTester:
     async def test_model(
         self,
@@ -148,6 +163,16 @@ class LivePlatformModelTester:
         )
 
 
+class LivePlatformModelSyncer:
+    async def sync_models(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+    ) -> list[ModelInfo]:
+        return await sync_provider_models(provider, api_key)
+
+
 @dataclass(frozen=True)
 class _PlatformServices:
     executor: DurableRunExecutor
@@ -157,6 +182,7 @@ class _PlatformServices:
     default_provider: str | None
     default_model: str | None
     model_tester: PlatformModelTester
+    model_syncer: PlatformModelSyncer
     codergen_backend_refresh_lock: asyncio.Lock
     started_at: dt.datetime
     database_url: str | None
@@ -2825,6 +2851,69 @@ async def test_models(request: Request) -> JSONResponse:
     )
 
 
+async def sync_models(request: Request) -> JSONResponse:
+    services = _services(request)
+    provider_api_keys = await _configured_provider_api_keys(services)
+    secrets = list(provider_api_keys.values())
+    synced_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    items: list[dict[str, Any]] = []
+    synced_count = 0
+    failed_count = 0
+    skipped_count = 0
+    synced_rows_by_provider: dict[str, list[ModelInfo]] = {}
+
+    for provider, _env_names in _PROVIDER_CREDENTIALS:
+        provider_key = provider_api_keys.get(provider)
+        base_item = {
+            "provider": provider,
+            "ok": False,
+            "models_synced": 0,
+            "error": None,
+        }
+        if provider_key is None:
+            skipped_count += 1
+            items.append({**base_item, "error": "Missing provider API key"})
+            continue
+
+        try:
+            synced_rows = await services.model_syncer.sync_models(
+                provider=provider,
+                api_key=provider_key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed_count += 1
+            items.append(
+                {
+                    **base_item,
+                    "error": _redact_model_test_error(str(exc), secrets),
+                }
+            )
+            continue
+
+        synced_rows_by_provider[provider] = synced_rows
+        synced_count += len(synced_rows)
+        items.append(
+            {
+                **base_item,
+                "ok": True,
+                "models_synced": len(synced_rows),
+            }
+        )
+
+    update_synced_catalog(synced_rows_by_provider)
+    return JSONResponse(
+        {
+            "summary": {
+                "synced": synced_count,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "synced_at": synced_at,
+            },
+            "items": items,
+        }
+    )
+
+
 async def get_settings(request: Request) -> JSONResponse:
     services = _services(request)
     async with session_scope(services.session_factory) as session:
@@ -3048,6 +3137,7 @@ def create_platform_app(
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
     model_tester: PlatformModelTester | None = None,
+    model_syncer: PlatformModelSyncer | None = None,
     server_host: str | None = None,
     server_port: int | None = None,
     max_concurrent_runs: int | None = None,
@@ -3088,6 +3178,7 @@ def create_platform_app(
         Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
         Route("/api/settings", get_settings, methods=["GET"]),
         Route("/api/settings/models/catalog", get_model_catalog, methods=["GET"]),
+        Route("/api/settings/models/sync", sync_models, methods=["POST"]),
         Route("/api/settings/models/test", test_models, methods=["POST"]),
         Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
         Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
@@ -3118,6 +3209,7 @@ def create_platform_app(
         default_provider=_platform_runtime_default_provider(default_provider),
         default_model=_platform_runtime_default_model(default_model),
         model_tester=model_tester or LivePlatformModelTester(),
+        model_syncer=model_syncer or LivePlatformModelSyncer(),
         codergen_backend_refresh_lock=asyncio.Lock(),
         started_at=dt.datetime.now(dt.UTC),
         database_url=engine.url.render_as_string(hide_password=True)
@@ -3142,6 +3234,7 @@ def create_app(
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
     model_tester: PlatformModelTester | None = None,
+    model_syncer: PlatformModelSyncer | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
@@ -3152,4 +3245,5 @@ def create_app(
         default_model=default_model,
         spa_dist=spa_dist,
         model_tester=model_tester,
+        model_syncer=model_syncer,
     )

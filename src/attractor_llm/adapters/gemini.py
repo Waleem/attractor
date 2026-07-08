@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from attractor_llm.catalog_sync import SyncedModelInfo
 from attractor_llm.errors import InvalidRequestError, ProviderError, classify_http_error
 from attractor_llm.types import (
     ContentPart,
@@ -595,6 +596,29 @@ class GeminiAdapter:
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
+
+    async def list_models(self) -> list[SyncedModelInfo]:
+        response = await self._client.get(f"{self._base_url}/v1beta/models")
+        if response.status_code >= 400:
+            raise classify_http_error(
+                status_code=response.status_code,
+                body=response.text,
+                provider=self.provider_name,
+            )
+        payload = response.json()
+        items = payload.get("models", [])
+        models = [
+            SyncedModelInfo(
+                provider=self.provider_name,
+                id=item["name"].removeprefix("models/"),
+                display_name=item.get("displayName")
+                or item["name"].removeprefix("models/").replace("-", " ").title(),
+            )
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        models.sort(key=lambda item: item.id)
+        return models
 
     async def close(self) -> None:
         """Close the HTTP client."""

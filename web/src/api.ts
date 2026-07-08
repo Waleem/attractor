@@ -302,6 +302,25 @@ export interface ModelTestResponse {
   items: ModelTestResult[];
 }
 
+export interface ModelSyncSummary {
+  synced: number;
+  failed: number;
+  skipped: number;
+  synced_at: string;
+}
+
+export interface ModelSyncItem {
+  provider: string;
+  ok: boolean;
+  models_synced: number;
+  error: string | null;
+}
+
+export interface ModelSyncResponse {
+  summary: ModelSyncSummary;
+  items: ModelSyncItem[];
+}
+
 export type SettingsEditability = "editable" | "restart-required" | "read-only" | "reserved";
 
 export interface SettingsPageRow {
@@ -621,6 +640,13 @@ export async function getModelCatalog(): Promise<ModelCatalogRow[]> {
 
 export async function testModels(): Promise<ModelTestResponse> {
   return requestJson<ModelTestResponse>("/api/settings/models/test", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function syncModels(): Promise<ModelSyncResponse> {
+  return requestJson<ModelSyncResponse>("/api/settings/models/sync", {
     method: "POST",
     body: JSON.stringify({})
   });
