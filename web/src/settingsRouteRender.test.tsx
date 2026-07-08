@@ -184,7 +184,8 @@ async function waitFor(assertion: () => boolean) {
 function installMiniDom(pathname = "/settings") {
   const document = new MiniDocument();
   const location = { pathname };
-  const confirm = () => true;
+  let confirmHandler = (_message?: string) => true;
+  const confirm = (message?: string) => confirmHandler(message);
   class MiniEventSource {
     onerror: (() => void) | null = null;
 
@@ -204,6 +205,9 @@ function installMiniDom(pathname = "/settings") {
     },
     navigator: { userAgent: "node" },
     confirm,
+    __setConfirmHandler(handler: (message?: string) => boolean) {
+      confirmHandler = handler;
+    },
     addEventListener() {},
     removeEventListener() {},
     getComputedStyle() {
@@ -1417,18 +1421,60 @@ async function main() {
     }
     throw new Error(`Unexpected fetch ${path}`);
   });
-  findButtonByText(reposDeleteResult.container, "× Remove").click();
+  assertIncludes(
+    reposDeleteResult.container.innerHTML,
+    'class="repos-table-scroll"',
+    "repos table is wrapped in a horizontal scroll container"
+  );
+  assertIncludes(
+    reposDeleteResult.container.innerHTML,
+    'aria-label="Remove Registered Repo"',
+    "repos remove button has an accessible repo-specific label"
+  );
+  assertNotIncludes(
+    reposDeleteResult.container.innerHTML,
+    "× Remove",
+    "repos remove button stays compact instead of forcing a wide actions column"
+  );
+  const confirmMessages: string[] = [];
+  const windowWithConfirm = globalThis.window as unknown as {
+    __setConfirmHandler(handler: (message?: string) => boolean): void;
+  };
+  windowWithConfirm.__setConfirmHandler((message) => {
+    confirmMessages.push(message ?? "");
+    return false;
+  });
+  findButtonByText(reposDeleteResult.container, "×").click();
+  await waitFor(() => confirmMessages.length === 1);
+  assertEqual(confirmMessages[0], "Remove Registered Repo?", "repos remove asks for confirmation");
+  assertEqual(
+    reposDeleteResult.fetchRequests.some(
+      (request) => request.path === "/api/repos/repo-1" && request.method === "DELETE"
+    ),
+    false,
+    "repos remove cancel does not issue DELETE"
+  );
+  windowWithConfirm.__setConfirmHandler((message) => {
+    confirmMessages.push(message ?? "");
+    return true;
+  });
+  findButtonByText(reposDeleteResult.container, "×").click();
   await waitFor(() =>
     reposDeleteResult.fetchRequests.some(
       (request) => request.path === "/api/repos/repo-1" && request.method === "DELETE"
     )
+  );
+  assertEqual(
+    confirmMessages.at(-1),
+    "Remove Registered Repo?",
+    "repos remove confirm is shown before DELETE"
   );
   await waitFor(
     () =>
       reposDeleteResult.fetchRequests.filter((request) => request.path === "/api/repos").length >= 2
   );
   deleteShouldFail = true;
-  findButtonByText(reposDeleteResult.container, "× Remove").click();
+  findButtonByText(reposDeleteResult.container, "×").click();
   await waitFor(() =>
     reposDeleteResult.container.textContent.includes("Unable to remove repo while workflows are active")
   );

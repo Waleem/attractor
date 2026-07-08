@@ -711,13 +711,28 @@ td {
   align-items: center;
 }
 
+.repos-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.repos-table {
+  min-width: 520px;
+}
+
 .repo-row-actions {
   width: 1%;
   white-space: nowrap;
 }
 
 .repo-remove-button {
-  min-width: 96px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+  font-size: var(--font-size-18);
+  line-height: 1;
 }
 
 .run-launch-form {

@@ -196,48 +196,52 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
         {repos.length === 0 && !reposState.loading ? (
           <EmptyState>No repos registered</EmptyState>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Default branch</th>
-                <th>Commit</th>
-                <th>Dirty</th>
-                <th>Config</th>
-                <th>Indexed</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {repos.map((repo) => (
-                <tr key={repo.id}>
-                  <td>
-                    <LinkButton to={`/repos/${repo.id}`} navigate={navigate}>
-                      {repo.name}
-                    </LinkButton>
-                    <div className="subtle path-cell">{repo.local_path}</div>
-                  </td>
-                  <td>{repo.default_branch}</td>
-                  <td className="mono">{shortSha(repo.current_commit)}</td>
-                  <td>{repo.dirty_state}</td>
-                  <td>
-                    <StatusBadge status={repo.project_config_status} />
-                  </td>
-                  <td>{formatDate(repo.last_indexed_at)}</td>
-                  <td className="repo-row-actions">
-                    <button
-                      type="button"
-                      className="button-danger repo-remove-button"
-                      disabled={deletingRepoId === repo.id}
-                      onClick={() => void removeRepo(repo)}
-                    >
-                      {deletingRepoId === repo.id ? "Removing" : "× Remove"}
-                    </button>
-                  </td>
+          <div className="repos-table-scroll">
+            <table className="repos-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Default branch</th>
+                  <th>Commit</th>
+                  <th>Dirty</th>
+                  <th>Config</th>
+                  <th>Indexed</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {repos.map((repo) => (
+                  <tr key={repo.id}>
+                    <td>
+                      <LinkButton to={`/repos/${repo.id}`} navigate={navigate}>
+                        {repo.name}
+                      </LinkButton>
+                      <div className="subtle path-cell">{repo.local_path}</div>
+                    </td>
+                    <td>{repo.default_branch}</td>
+                    <td className="mono">{shortSha(repo.current_commit)}</td>
+                    <td>{repo.dirty_state}</td>
+                    <td>
+                      <StatusBadge status={repo.project_config_status} />
+                    </td>
+                    <td>{formatDate(repo.last_indexed_at)}</td>
+                    <td className="repo-row-actions">
+                      <button
+                        type="button"
+                        className="button-danger repo-remove-button"
+                        aria-label={`Remove ${repo.name}`}
+                        title={`Remove ${repo.name}`}
+                        disabled={deletingRepoId === repo.id}
+                        onClick={() => void removeRepo(repo)}
+                      >
+                        {deletingRepoId === repo.id ? "..." : "×"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
     </>
