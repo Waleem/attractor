@@ -714,10 +714,39 @@ td {
 .repos-table-scroll {
   width: 100%;
   overflow-x: auto;
+  padding-right: var(--space-3);
 }
 
 .repos-table {
+  width: 100%;
   min-width: 520px;
+  table-layout: fixed;
+}
+
+.repos-table th:nth-child(7),
+.repos-table td:nth-child(7) {
+  width: 74px;
+  padding-right: var(--space-2);
+}
+
+.repos-table td:nth-child(1) {
+  overflow: hidden;
+}
+
+.repos-table td:nth-child(1) .link-button,
+.repos-table td:nth-child(1) .path-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+  vertical-align: bottom;
+}
+
+.repos-table td:nth-child(1) .path-cell {
+  display: block;
 }
 
 .repo-row-actions {
