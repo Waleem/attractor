@@ -44,6 +44,7 @@ htmlcov/
 .attractor-worktrees/
 
 .superpowers/brainstorm/*
+.superpowers/sdd/
 .attractor-artifacts/*
 .attractor-platform.sqlite3
 .gitignore.attractor-worktrees/

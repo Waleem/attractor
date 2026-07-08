@@ -7,6 +7,8 @@ import {
   type ProjectConfigStatus,
   type Workflow
 } from "../api";
+import { getAppBasePath, toAppHref } from "../appBase";
+import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
 import { EmptyState, ErrorBanner, Field, KeyValue, Loading, PageHeader, Panel, StatusBadge } from "../components/ui";
 
@@ -34,6 +36,7 @@ export function WorkflowDetailRoute({
   const repo = workflowState.data?.repo ?? null;
   const workflow = validation ?? workflowState.data?.workflow ?? null;
   const environmentOptions = environmentNames(configState.data?.config);
+  const repoHref = repo ? toAppHref(`/repos/${repo.id}`, getAppBasePath()) : null;
 
   async function runValidation() {
     setSubmitting(true);
@@ -78,6 +81,18 @@ export function WorkflowDetailRoute({
 
   return (
     <>
+      {repo ? (
+        <a
+          className="back-link"
+          href={repoHref ?? `/repos/${repo.id}`}
+          onClick={(event) => {
+            event.preventDefault();
+            navigate(`/repos/${repo.id}`);
+          }}
+        >
+          ← Back to {repo.name}
+        </a>
+      ) : null}
       <PageHeader title={workflow?.name ?? "Workflow"} eyebrow={workflowId} />
       <ErrorBanner message={workflowState.error ?? configState.error ?? actionError} />
       {workflowState.loading ? <Loading /> : null}
@@ -108,6 +123,7 @@ export function WorkflowDetailRoute({
               />
             </dl>
           </Panel>
+          <GraphViewer workflowId={workflowId} events={[]} />
           <Panel title="Launch Run">
             <form className="form-stack" onSubmit={onLaunch}>
               <Field label="Actor">
@@ -179,8 +195,9 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function Diagnostics({ workflow }: { workflow: Workflow }) {
   const items = workflow.diagnostics.items ?? [];
-  if (workflow.diagnostics.error) {
-    return <div className="error-banner">{workflow.diagnostics.error}</div>;
+  const diagnosticError = diagnosticErrorText(workflow.diagnostics.error);
+  if (diagnosticError) {
+    return <div className="error-banner">{diagnosticError}</div>;
   }
   if (items.length === 0) {
     return <EmptyState>No diagnostics</EmptyState>;
@@ -207,4 +224,24 @@ function Diagnostics({ workflow }: { workflow: Workflow }) {
       </tbody>
     </table>
   );
+}
+
+function diagnosticErrorText(error: unknown): string | null {
+  if (!error) {
+    return null;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const detail = record.detail;
+    if (detail && typeof detail === "object" && typeof (detail as Record<string, unknown>).error === "string") {
+      return (detail as Record<string, unknown>).error as string;
+    }
+    if (typeof record.message === "string") {
+      return record.message;
+    }
+  }
+  return String(error);
 }

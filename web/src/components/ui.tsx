@@ -256,7 +256,7 @@ export function formatDate(value: string | null | undefined): string {
   if (!value) {
     return "None";
   }
-  const date = new Date(value);
+  const date = parseTimestamp(value);
   if (Number.isNaN(date.valueOf())) {
     return value;
   }
@@ -277,7 +277,7 @@ export function formatRelativeTime(value: string | null | undefined): string {
   if (!value) {
     return "None";
   }
-  const date = new Date(value);
+  const date = parseTimestamp(value);
   if (Number.isNaN(date.valueOf())) {
     return value;
   }
@@ -305,8 +305,8 @@ export function formatDuration(start: string | null | undefined, end: string | n
   if (!start) {
     return "Not started";
   }
-  const startDate = new Date(start);
-  const endDate = end ? new Date(end) : new Date();
+  const startDate = parseTimestamp(start);
+  const endDate = end ? parseTimestamp(end) : new Date();
   if (Number.isNaN(startDate.valueOf()) || Number.isNaN(endDate.valueOf())) {
     return "Unknown";
   }
@@ -329,6 +329,14 @@ export function shortSha(value: string | null | undefined): string {
     return "None";
   }
   return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function parseTimestamp(value: string): Date {
+  return new Date(hasExplicitTimezone(value) ? value : `${value}Z`);
+}
+
+function hasExplicitTimezone(value: string): boolean {
+  return /(?:Z|[+-]\d{2}:\d{2})$/i.test(value);
 }
 
 export function statusTone(status: string): "good" | "warn" | "bad" | "neutral" {

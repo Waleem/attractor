@@ -24,7 +24,8 @@ from attractor_platform.storage.db import (
     initialize_platform_schema,
     session_scope,
 )
-from attractor_platform.storage.models import SettingSecretModel
+from attractor_platform.storage.models import RunRecordModel, SettingSecretModel
+from attractor_platform.storage.repositories import PlatformRepository
 from attractor_server import __main__ as server_main
 from attractor_server.platform_app import create_platform_app
 
@@ -44,6 +45,195 @@ async def test_initialize_sqlite_schema_creates_platform_tables(tmp_path: Path) 
         async with engine.begin() as conn:
             result = await conn.execute(text("select count(*) from registered_repos"))
         assert result.scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_initialize_sqlite_schema_upgrades_run_repo_links_to_preserve_history(
+    tmp_path: Path,
+) -> None:
+    engine = create_platform_engine(
+        DatabaseSettings(url=default_test_database_url(tmp_path / "old-links.sqlite3")),
+    )
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE registered_repos (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        name VARCHAR(200) NOT NULL,
+                        local_path TEXT NOT NULL UNIQUE,
+                        default_branch VARCHAR(200) NOT NULL,
+                        current_commit VARCHAR(40) NOT NULL,
+                        dirty_state VARCHAR(20) NOT NULL,
+                        project_config_status VARCHAR(40) NOT NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        last_indexed_at DATETIME
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE workflow_packages (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        repo_id VARCHAR(64) NOT NULL,
+                        name VARCHAR(200) NOT NULL,
+                        dot_path TEXT NOT NULL,
+                        toml_path TEXT,
+                        status VARCHAR(40) NOT NULL,
+                        diagnostics JSON NOT NULL,
+                        indexed_at DATETIME NOT NULL,
+                        FOREIGN KEY(repo_id) REFERENCES registered_repos (id) ON DELETE CASCADE,
+                        UNIQUE (repo_id, name)
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE run_records (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        repo_id VARCHAR(64) NOT NULL,
+                        workflow_id VARCHAR(64) NOT NULL,
+                        status VARCHAR(40) NOT NULL,
+                        run_spec JSON NOT NULL,
+                        actor_label VARCHAR(200) NOT NULL,
+                        source_commit VARCHAR(40) NOT NULL,
+                        source_branch VARCHAR(200) NOT NULL,
+                        worktree_path TEXT,
+                        managed_branch VARCHAR(300),
+                        error_category VARCHAR(100),
+                        error_message TEXT,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        started_at DATETIME,
+                        completed_at DATETIME,
+                        FOREIGN KEY(repo_id) REFERENCES registered_repos (id) ON DELETE RESTRICT,
+                        FOREIGN KEY(workflow_id)
+                            REFERENCES workflow_packages (id)
+                            ON DELETE RESTRICT
+                    )
+                    """
+                )
+            )
+            await conn.execute(text("CREATE INDEX ix_run_records_status ON run_records (status)"))
+            timestamp = "2026-07-08 12:00:00"
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO registered_repos (
+                        id,
+                        name,
+                        local_path,
+                        default_branch,
+                        current_commit,
+                        dirty_state,
+                        project_config_status,
+                        created_at,
+                        updated_at,
+                        last_indexed_at
+                    )
+                    VALUES (
+                        'repo_old',
+                        'old',
+                        '/tmp/old',
+                        'main',
+                        '0000000000000000000000000000000000000000',
+                        'clean',
+                        'valid',
+                        :timestamp,
+                        :timestamp,
+                        :timestamp
+                    )
+                    """
+                ),
+                {"timestamp": timestamp},
+            )
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO workflow_packages (
+                        id,
+                        repo_id,
+                        name,
+                        dot_path,
+                        toml_path,
+                        status,
+                        diagnostics,
+                        indexed_at
+                    )
+                    VALUES (
+                        'wf_old',
+                        'repo_old',
+                        'release',
+                        '/tmp/old/.attractor/workflows/release/workflow.dot',
+                        NULL,
+                        'valid',
+                        '{}',
+                        :timestamp
+                    )
+                    """
+                ),
+                {"timestamp": timestamp},
+            )
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO run_records (
+                        id,
+                        repo_id,
+                        workflow_id,
+                        status,
+                        run_spec,
+                        actor_label,
+                        source_commit,
+                        source_branch,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        'run_old',
+                        'repo_old',
+                        'wf_old',
+                        'completed',
+                        '{}',
+                        'alice',
+                        '0000000000000000000000000000000000000000',
+                        'main',
+                        :timestamp,
+                        :timestamp
+                    )
+                    """
+                ),
+                {"timestamp": timestamp},
+            )
+
+        await initialize_platform_schema(engine)
+
+        async with engine.begin() as conn:
+            columns = list(await conn.execute(text("PRAGMA table_info(run_records)")))
+            foreign_keys = list(await conn.execute(text("PRAGMA foreign_key_list(run_records)")))
+        not_null_by_column = {row[1]: row[3] for row in columns}
+        on_delete_by_column = {row[3]: row[6] for row in foreign_keys}
+        assert not_null_by_column["repo_id"] == 0
+        assert not_null_by_column["workflow_id"] == 0
+        assert on_delete_by_column["repo_id"] == "SET NULL"
+        assert on_delete_by_column["workflow_id"] == "SET NULL"
+
+        repository = PlatformRepository(create_session_factory(engine))
+        assert await repository.delete_repo("repo_old") is True
+
+        async with create_session_factory(engine)() as session:
+            run = await session.get(RunRecordModel, "run_old")
+        assert run is not None
+        assert run.repo_id is None
+        assert run.workflow_id is None
     finally:
         await engine.dispose()
 

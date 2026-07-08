@@ -63,6 +63,10 @@ _QUEUE_SENTINEL = object()
 CODERGEN_OUTPUT_PREVIEW_MAX_CHARS = 4096
 
 
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
 @dataclass(frozen=True)
 class _PersistedTerminalEvent:
     result_status: PipelineStatus
@@ -186,6 +190,13 @@ class DurableRunExecutor:
         requested_environment: str = "",
     ) -> str:
         package = load_workflow_package(repo_path, workflow_name)
+        get_repo = cast(
+            Callable[[str], Awaitable[Any | None]] | None,
+            getattr(self.repository, "get_repo", None),
+        )
+        existing_repo = None
+        if get_repo is not None:
+            existing_repo = await get_repo(_repo_identifier(package.repo_path))
         run_spec = build_run_spec(
             package,
             inputs=inputs,
@@ -203,11 +214,11 @@ class DurableRunExecutor:
             }
         )
         workflow_id = _workflow_identifier(run_spec.repo_id, package.name)
-        now = dt.datetime.now(dt.UTC)
+        now = _utc_now()
 
         register_repo_kwargs: dict[str, Any] = {
             "repo_id": run_spec.repo_id,
-            "name": package.repo_path.name,
+            "name": existing_repo.name if existing_repo is not None else package.repo_path.name,
             "local_path": str(package.repo_path),
             "default_branch": run_spec.source_branch,
             "current_commit": run_spec.source_commit,
@@ -327,7 +338,7 @@ class DurableRunExecutor:
                 status=RunStatus.RUNNING,
                 worktree_path=str(prepared.path),
                 managed_branch=prepared.branch,
-                started_at=dt.datetime.now(dt.UTC),
+                started_at=_utc_now(),
             )
             await self.repository.append_event(
                 run_id,
@@ -586,7 +597,7 @@ class DurableRunExecutor:
                     stage_index=checkpoint.stage_index,
                     commit_sha=checkpoint.commit_sha,
                     ref_name=checkpoint.ref_name,
-                    timestamp=dt.datetime.now(dt.UTC),
+                    timestamp=_utc_now(),
                 )
 
             event_record = await self.repository.append_event(
@@ -625,7 +636,7 @@ class DurableRunExecutor:
                     media_type=stored.media_type,
                     size_bytes=stored.size_bytes,
                     sha256=stored.sha256,
-                    timestamp=dt.datetime.now(dt.UTC),
+                    timestamp=_utc_now(),
                 )
             except asyncio.CancelledError:
                 if await self._artifact_row_exists(
@@ -682,7 +693,7 @@ class DurableRunExecutor:
                 run.completed_at = completed_at
             run.error_category = error_category
             run.error_message = error_message
-            run.updated_at = dt.datetime.now(dt.UTC)
+            run.updated_at = _utc_now()
             await session.flush()
 
     async def _record_terminal_result(
@@ -729,7 +740,7 @@ class DurableRunExecutor:
             status=_run_status_for_result(result),
             worktree_path=str(prepared.path) if prepared is not None else None,
             managed_branch=prepared.branch if prepared is not None else None,
-            completed_at=dt.datetime.now(dt.UTC),
+            completed_at=_utc_now(),
             error_category=error_category if error_category is not None else (
                 "pipeline" if result.error else None
             ),
@@ -790,7 +801,7 @@ class DurableRunExecutor:
             status=_run_status_for_result(result),
             worktree_path=str(prepared.path) if prepared is not None else None,
             managed_branch=prepared.branch if prepared is not None else None,
-            completed_at=dt.datetime.now(dt.UTC),
+            completed_at=_utc_now(),
             error_category=error_category if error_category is not None else (
                 "pipeline" if result.error else None
             ),
@@ -1091,7 +1102,7 @@ class DurableRunExecutor:
             allowed_options=tuple(question.options) if question.options is not None else None,
         )
         self._approval_waiters[approval_id] = waiter
-        timestamp = dt.datetime.now(dt.UTC)
+        timestamp = _utc_now()
 
         try:
             await self.repository.create_approval(

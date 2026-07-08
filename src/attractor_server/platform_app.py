@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -42,13 +42,20 @@ from attractor_llm.adapters.anthropic import AnthropicAdapter
 from attractor_llm.adapters.base import ProviderConfig
 from attractor_llm.adapters.gemini import GeminiAdapter
 from attractor_llm.adapters.openai import OpenAIAdapter
-from attractor_llm.catalog import ModelInfo, get_default_model, list_models
+from attractor_llm.catalog import (
+    ModelInfo,
+    get_default_model,
+    list_models,
+    update_synced_catalog,
+)
+from attractor_llm.catalog_sync import sync_provider_models
 from attractor_llm.client import Client
 from attractor_llm.types import Request as LLMRequest
 from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.git import GitRunner
+from attractor_platform.indexing import reindex_registered_repo
 from attractor_platform.llm_backend import (
     build_platform_codergen_backend,
     resolve_platform_llm_defaults,
@@ -99,6 +106,15 @@ class PlatformModelTester(Protocol):
     ) -> PlatformModelTestResult: ...
 
 
+class PlatformModelSyncer(Protocol):
+    async def sync_models(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+    ) -> list[ModelInfo]: ...
+
+
 class LivePlatformModelTester:
     async def test_model(
         self,
@@ -147,6 +163,16 @@ class LivePlatformModelTester:
         )
 
 
+class LivePlatformModelSyncer:
+    async def sync_models(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+    ) -> list[ModelInfo]:
+        return await sync_provider_models(provider, api_key)
+
+
 @dataclass(frozen=True)
 class _PlatformServices:
     executor: DurableRunExecutor
@@ -156,6 +182,7 @@ class _PlatformServices:
     default_provider: str | None
     default_model: str | None
     model_tester: PlatformModelTester
+    model_syncer: PlatformModelSyncer
     codergen_backend_refresh_lock: asyncio.Lock
     started_at: dt.datetime
     database_url: str | None
@@ -174,8 +201,20 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def _normalize_utc(timestamp: dt.datetime) -> dt.datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.UTC)
+    return timestamp.astimezone(dt.UTC)
+
+
 def _serialize_timestamp(timestamp: dt.datetime | None) -> str | None:
-    return timestamp.isoformat() if timestamp is not None else None
+    if timestamp is None:
+        return None
+    return _normalize_utc(timestamp).isoformat().replace("+00:00", "Z")
 
 
 def _serialize_run(run: RunRecordModel) -> dict[str, Any]:
@@ -484,6 +523,7 @@ def _serialize_model_catalog_row(model: ModelInfo) -> dict[str, Any]:
         "supports_reasoning": model.supports_reasoning,
         "is_default": model.id == default_model.id,
         "is_small": _small_model_badge(model),
+        "source": model.source,
     }
 
 
@@ -600,9 +640,7 @@ async def _upsert_setting_variable(
 def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
     if timestamp is None:
         return None
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=dt.UTC)
-    return timestamp.isoformat()
+    return _normalize_utc(timestamp).isoformat().replace("+00:00", "Z")
 
 
 def _settings_row(
@@ -807,7 +845,7 @@ def _build_settings_pages(
     worktree_bytes = _directory_size_bytes(worktree_root) or 0
     artifact_bytes = _directory_size_bytes(artifact_root) or 0
     managed_bytes = worktree_bytes + artifact_bytes
-    uptime_seconds = int((dt.datetime.now(dt.UTC) - services.started_at).total_seconds())
+    uptime_seconds = int((_utc_now() - services.started_at).total_seconds())
     configured_providers = sum(
         1 for credential in provider_credentials.values() if credential["configured"]
     )
@@ -1285,32 +1323,70 @@ async def _get_repo(services: _PlatformServices, repo_id: str) -> Any | None:
     raise RuntimeError("Repository does not support loading repositories")
 
 
+async def _delete_repo(services: _PlatformServices, repo_id: str) -> bool:
+    delete_repo = cast(
+        Callable[[str], Awaitable[bool]] | None,
+        getattr(services.repository, "delete_repo", None),
+    )
+    if delete_repo is not None:
+        return bool(await delete_repo(repo_id))
+
+    repos = getattr(services.repository, "repos", None)
+    workflows = getattr(services.repository, "workflows", None)
+    runs = getattr(services.repository, "runs", None)
+    if isinstance(repos, dict) and isinstance(workflows, dict):
+        if repo_id not in repos:
+            return False
+        workflow_ids = {
+            workflow.id for workflow in workflows.values() if workflow.repo_id == repo_id
+        }
+        if isinstance(runs, dict):
+            for run in runs.values():
+                if getattr(run, "repo_id", None) == repo_id:
+                    run.repo_id = None
+                if getattr(run, "workflow_id", None) in workflow_ids:
+                    run.workflow_id = None
+        for workflow_id, workflow in list(workflows.items()):
+            if workflow.repo_id == repo_id:
+                del workflows[workflow_id]
+        del repos[repo_id]
+        return True
+
+    raise RuntimeError("Repository does not support deleting repositories")
+
+
 async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any]:
     if isinstance(services.repository, PlatformRepository):
         async with session_scope(services.session_factory) as session:
-            return list(
+            workflows = list(
                 await session.scalars(
                     select(WorkflowPackageModel)
                     .where(WorkflowPackageModel.repo_id == repo_id)
                     .order_by(WorkflowPackageModel.name, WorkflowPackageModel.id)
                 )
             )
+            return _active_workflow_rows(workflows)
 
     list_workflows = cast(
         Callable[[str], Awaitable[list[Any]]] | None,
         getattr(services.repository, "list_workflows", None),
     )
     if list_workflows is not None:
-        return list(await list_workflows(repo_id))
+        return _active_workflow_rows(list(await list_workflows(repo_id)))
 
     workflows = getattr(services.repository, "workflows", None)
     if isinstance(workflows, dict):
-        return sorted(
+        sorted_workflows = sorted(
             [workflow for workflow in workflows.values() if workflow.repo_id == repo_id],
             key=lambda workflow: (workflow.name, workflow.id),
         )
+        return _active_workflow_rows(sorted_workflows)
 
     raise RuntimeError("Repository does not support listing workflows")
+
+
+def _active_workflow_rows(workflows: list[Any]) -> list[Any]:
+    return [workflow for workflow in workflows if Path(workflow.dot_path).is_file()]
 
 
 async def _get_workflow(services: _PlatformServices, workflow_id: str) -> Any | None:
@@ -1389,6 +1465,24 @@ def _is_hidden_browse_path(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _unique_existing_dirs(paths: list[Path]) -> list[Path]:
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        path_key = str(path)
+        if path_key not in seen and path.is_dir():
+            seen.add(path_key)
+            unique_paths.append(path)
+    return unique_paths
+
+
+def _registration_browse_roots() -> list[Path]:
+    configured = os.environ.get("ATTRACTOR_BROWSE_ROOTS", "")
+    roots = [Path(item).expanduser().resolve() for item in configured.split(os.pathsep) if item]
+    roots.extend([Path.cwd().resolve(), Path.home().resolve()])
+    return _unique_existing_dirs(roots)
+
+
 async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
     roots: list[Path] = []
     for repo in await _list_repos(services):
@@ -1401,14 +1495,7 @@ async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
         if isinstance(worktree_path, str) and worktree_path:
             roots.append(Path(worktree_path).expanduser().resolve())
 
-    unique_roots: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        root_key = str(root)
-        if root_key not in seen and root.is_dir():
-            seen.add(root_key)
-            unique_roots.append(root)
-    return unique_roots
+    return _unique_existing_dirs(roots)
 
 
 def _browse_entry(path: Path) -> dict[str, Any]:
@@ -1422,10 +1509,9 @@ def _browse_entry(path: Path) -> dict[str, Any]:
 
 
 async def _safe_browse_entries(
-    services: _PlatformServices,
     directory: Path,
+    roots: list[Path],
 ) -> tuple[list[dict[str, Any]], bool]:
-    roots = await _browse_allowed_roots(services)
     entries: list[Path] = []
     for child in directory.iterdir():
         if _is_hidden_browse_name(child.name):
@@ -1743,7 +1829,7 @@ async def register_repo(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return _json_error(str(exc), 500)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     repo_id = _repo_identifier(repo_path)
     register_repo_kwargs = {
         "repo_id": repo_id,
@@ -1793,6 +1879,54 @@ async def get_repo(request: Request) -> JSONResponse:
     if repo is None:
         return _json_error(f"Repository {request.path_params['repo_id']} not found", 404)
     return JSONResponse(_serialize_repo(repo))
+
+
+async def delete_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo_id = request.path_params["repo_id"]
+    deleted = await _delete_repo(services, repo_id)
+    if not deleted:
+        return _json_error(f"Repository {repo_id} not found", 404)
+    return JSONResponse({"id": repo_id, "deleted": True})
+
+
+async def refresh_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo_id = request.path_params["repo_id"]
+    repo = await _get_repo(services, repo_id)
+    if repo is None:
+        return _json_error(f"Repository {repo_id} not found", 404)
+
+    force = True
+    raw_body = await request.body()
+    if raw_body:
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return _json_error("Invalid JSON body", 400)
+        if not isinstance(body, dict):
+            return _json_error("JSON body must be an object", 400)
+        body_force = body.get("force", True)
+        if not isinstance(body_force, bool):
+            return _json_error("'force' must be a boolean", 400)
+        force = body_force
+
+    try:
+        result = await reindex_registered_repo(services, repo, force=force)
+    except AttractorPlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(str(exc), 500)
+
+    return JSONResponse(
+        {
+            "repo": _serialize_repo(result.repo),
+            "workflow_count": result.workflow_count,
+            "removed_workflow_count": result.removed_workflow_count,
+            "changed": result.changed,
+            "active_workflow_ids": sorted(result.active_workflow_ids),
+        }
+    )
 
 
 async def get_project_config(request: Request) -> JSONResponse:
@@ -1846,7 +1980,7 @@ async def validate_workflow(request: Request) -> JSONResponse:
             toml_path=str(package.toml_path) if package.toml_path is not None else None,
             status=package.status.value,
             diagnostics=_serialize_diagnostics(package),
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     return JSONResponse(_serialize_workflow_package(workflow_id, repo.id, package))
 
@@ -1959,30 +2093,36 @@ async def get_run(request: Request) -> JSONResponse:
 async def browse_filesystem(request: Request) -> JSONResponse:
     services = _services(request)
     path_param = request.query_params.get("path")
-    if not path_param:
-        return _json_error("Missing 'path' query parameter", 400)
+    mode = request.query_params.get("mode", "")
+    browse_roots = await _browse_allowed_roots(services)
+    use_registration_roots = mode == "registration" or not browse_roots
+    allowed_roots = _registration_browse_roots() if use_registration_roots else browse_roots
+    if not allowed_roots:
+        return _json_error("No allowed browse roots are available", 400)
 
-    try:
-        requested_path = Path(path_param).expanduser().resolve()
-    except OSError as exc:
-        return _json_error(f"Path could not be resolved: {exc}", 400)
-
-    allowed_roots = await _browse_allowed_roots(services)
-    if not any(_is_relative_to_path(requested_path, root) for root in allowed_roots):
-        return _json_error(f"Path {requested_path} is not allowed", 403)
+    if path_param:
+        try:
+            requested_path = Path(path_param).expanduser().resolve()
+        except OSError as exc:
+            return _json_error(f"Path could not be resolved: {exc}", 400)
+        if not any(_is_relative_to_path(requested_path, root) for root in allowed_roots):
+            return _json_error(f"Path {requested_path} is not allowed", 403)
+    else:
+        requested_path = allowed_roots[0]
     if not requested_path.is_dir():
         return _json_error(f"Path {requested_path} is not a directory", 400)
     if _is_hidden_browse_path(requested_path, allowed_roots):
         return _json_error(f"Path {requested_path} is not allowed", 403)
 
     try:
-        entries, truncated = await _safe_browse_entries(services, requested_path)
+        entries, truncated = await _safe_browse_entries(requested_path, allowed_roots)
     except OSError as exc:
         return _json_error(f"Path {requested_path} could not be listed: {exc}", 400)
 
     return JSONResponse(
         {
             "path": str(requested_path),
+            "roots": [str(root) for root in allowed_roots],
             "items": entries,
             "truncated": truncated,
         }
@@ -2049,6 +2189,8 @@ async def get_run_diff(request: Request) -> JSONResponse:
     if isinstance(run, JSONResponse):
         return run
 
+    if run.repo_id is None:
+        return _json_error(f"Run {run_id} is no longer linked to a registered repository", 409)
     repo = await _get_repo(services, run.repo_id)
     if repo is None:
         return _json_error(f"Repository {run.repo_id} not found", 404)
@@ -2317,7 +2459,7 @@ async def decide_approval(request: Request) -> JSONResponse:
             400,
         )
 
-    decided_at = dt.datetime.now(dt.UTC)
+    decided_at = _utc_now()
     decision_status, decided = await _decide_pending_approval(
         services,
         run_id=run_id,
@@ -2472,7 +2614,7 @@ async def _record_writeback_failure(
             status="failed",
             commit_sha=None,
             error_message=error_message,
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     except Exception as exc:  # noqa: BLE001
         return _json_error(
@@ -2521,6 +2663,14 @@ async def request_writeback(request: Request) -> JSONResponse:
             409,
         )
 
+    if run.repo_id is None:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message="Run is no longer linked to a registered repository",
+        )
     repo = await _get_repo(services, run.repo_id)
     if repo is None:
         return await _record_writeback_failure(
@@ -2588,7 +2738,7 @@ async def request_writeback(request: Request) -> JSONResponse:
             status="applied",
             commit_sha=commit_sha,
             error_message=None,
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     except Exception as exc:  # noqa: BLE001
         return _json_error(f"Write-back applied but persistence failed: {exc}", 500)
@@ -2629,7 +2779,7 @@ async def put_settings_secret(request: Request) -> JSONResponse:
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     async with session_scope(services.session_factory) as session:
         await _upsert_setting_secret(
             session,
@@ -2694,7 +2844,7 @@ async def put_settings_variable(request: Request) -> JSONResponse:
     if not isinstance(value, str):
         return _json_error("Missing 'value' field", 400)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     async with session_scope(services.session_factory) as session:
         await _upsert_setting_variable(
             session,
@@ -2731,7 +2881,7 @@ async def test_models(request: Request) -> JSONResponse:
     services = _services(request)
     provider_api_keys = await _configured_provider_api_keys(services)
     secrets = list(provider_api_keys.values())
-    tested_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    tested_at = _serialize_settings_timestamp(_utc_now())
     items: list[dict[str, Any]] = []
     ok_count = 0
     failed_count = 0
@@ -2781,6 +2931,70 @@ async def test_models(request: Request) -> JSONResponse:
                 "failed": failed_count,
                 "skipped": skipped_count,
                 "tested_at": tested_at,
+            },
+            "items": items,
+        }
+    )
+
+
+async def sync_models(request: Request) -> JSONResponse:
+    services = _services(request)
+    provider_api_keys = await _configured_provider_api_keys(services)
+    secrets = list(provider_api_keys.values())
+    synced_at = _serialize_settings_timestamp(_utc_now())
+    items: list[dict[str, Any]] = []
+    synced_count = 0
+    failed_count = 0
+    skipped_count = 0
+    synced_rows_by_provider: dict[str, list[ModelInfo]] = {}
+
+    for provider, _env_names in _PROVIDER_CREDENTIALS:
+        provider_key = provider_api_keys.get(provider)
+        base_item = {
+            "provider": provider,
+            "ok": False,
+            "models_synced": 0,
+            "error": None,
+        }
+        if provider_key is None:
+            skipped_count += 1
+            items.append({**base_item, "error": "Missing provider API key"})
+            continue
+
+        try:
+            synced_rows = await services.model_syncer.sync_models(
+                provider=provider,
+                api_key=provider_key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed_count += 1
+            items.append(
+                {
+                    **base_item,
+                    "error": _redact_model_test_error(str(exc), secrets),
+                }
+            )
+            continue
+
+        synced_rows = [replace(row, source="provider") for row in synced_rows]
+        synced_rows_by_provider[provider] = synced_rows
+        synced_count += len(synced_rows)
+        items.append(
+            {
+                **base_item,
+                "ok": True,
+                "models_synced": len(synced_rows),
+            }
+        )
+
+    update_synced_catalog(synced_rows_by_provider)
+    return JSONResponse(
+        {
+            "summary": {
+                "synced": synced_count,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "synced_at": synced_at,
             },
             "items": items,
         }
@@ -3010,6 +3224,7 @@ def create_platform_app(
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
     model_tester: PlatformModelTester | None = None,
+    model_syncer: PlatformModelSyncer | None = None,
     server_host: str | None = None,
     server_port: int | None = None,
     max_concurrent_runs: int | None = None,
@@ -3025,6 +3240,8 @@ def create_platform_app(
         Route("/api/repos", register_repo, methods=["POST"]),
         Route("/api/repos", list_repos, methods=["GET"]),
         Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
+        Route("/api/repos/{repo_id}", delete_repo, methods=["DELETE"]),
+        Route("/api/repos/{repo_id}/refresh", refresh_repo, methods=["POST"]),
         Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
         Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
         Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),
@@ -3049,6 +3266,7 @@ def create_platform_app(
         Route("/api/runs/{run_id}/writeback", request_writeback, methods=["POST"]),
         Route("/api/settings", get_settings, methods=["GET"]),
         Route("/api/settings/models/catalog", get_model_catalog, methods=["GET"]),
+        Route("/api/settings/models/sync", sync_models, methods=["POST"]),
         Route("/api/settings/models/test", test_models, methods=["POST"]),
         Route("/api/settings/secrets", list_settings_secrets, methods=["GET"]),
         Route("/api/settings/secrets/{name}", put_settings_secret, methods=["PUT"]),
@@ -3079,8 +3297,9 @@ def create_platform_app(
         default_provider=_platform_runtime_default_provider(default_provider),
         default_model=_platform_runtime_default_model(default_model),
         model_tester=model_tester or LivePlatformModelTester(),
+        model_syncer=model_syncer or LivePlatformModelSyncer(),
         codergen_backend_refresh_lock=asyncio.Lock(),
-        started_at=dt.datetime.now(dt.UTC),
+        started_at=_utc_now(),
         database_url=engine.url.render_as_string(hide_password=True)
         if engine is not None
         else None,
@@ -3103,6 +3322,7 @@ def create_app(
     default_model: str | None = None,
     spa_dist: str | Path | None = None,
     model_tester: PlatformModelTester | None = None,
+    model_syncer: PlatformModelSyncer | None = None,
 ) -> Starlette:
     return create_platform_app(
         session_factory=session_factory,
@@ -3113,4 +3333,5 @@ def create_app(
         default_model=default_model,
         spa_dist=spa_dist,
         model_tester=model_tester,
+        model_syncer=model_syncer,
     )

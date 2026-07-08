@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
+from attractor_llm.catalog import ModelInfo, replace_synced_catalog
+from attractor_llm.catalog_sync import (
+    SYNCED_CONTEXT_WINDOW_FALLBACK,
+    SyncedModelInfo,
+    sync_provider_models,
+)
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
     DatabaseSettings,
@@ -27,6 +34,13 @@ _LLM_ENV_NAMES = (
     "ATTRACTOR_DEFAULT_PROVIDER",
     "ATTRACTOR_DEFAULT_MODEL",
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_synced_model_catalog() -> Iterator[None]:
+    replace_synced_catalog({})
+    yield
+    replace_synced_catalog({})
 
 
 class FakeModelTester:
@@ -51,10 +65,30 @@ class FakeModelTester:
         return PlatformModelTestResult(ok=True, latency_ms=12.25, error=None)
 
 
+class FakeModelSyncer:
+    def __init__(
+        self,
+        *,
+        provider_rows: dict[str, list[ModelInfo]] | None = None,
+        failures: dict[str, str] | None = None,
+    ) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.provider_rows = provider_rows or {}
+        self.failures = failures or {}
+
+    async def sync_models(self, *, provider: str, api_key: str) -> list[ModelInfo]:
+        self.calls.append((provider, api_key))
+        failure = self.failures.get(provider)
+        if failure is not None:
+            raise RuntimeError(f"{api_key} {failure}")
+        return list(self.provider_rows.get(provider, []))
+
+
 async def _client(
     tmp_path: Path,
     *,
     model_tester: Any | None = None,
+    model_syncer: Any | None = None,
 ) -> tuple[httpx.AsyncClient, Any, FakeModelTester | None]:
     engine = create_platform_engine(
         DatabaseSettings(url=default_test_database_url(tmp_path / "model-testing.sqlite3")),
@@ -72,6 +106,7 @@ async def _client(
         engine=engine,
         secret_key_path=tmp_path / "platform-secret.key",
         model_tester=model_tester,
+        model_syncer=model_syncer,
     )
     transport = httpx.ASGITransport(app=app)
     return (
@@ -111,6 +146,7 @@ async def test_model_catalog_returns_operator_metadata(tmp_path: Path) -> None:
             "supports_reasoning": True,
             "is_default": True,
             "is_small": False,
+            "source": "curated",
         }
         assert by_id["gpt-5.4-mini"]["is_default"] is False
         assert by_id["gpt-5.4-mini"]["is_small"] is True
@@ -194,6 +230,178 @@ async def test_model_test_endpoint_skips_missing_provider_keys_without_live_call
         assert all(item["ok"] is False for item in payload["items"])
         assert all(item["latency_ms"] is None for item in payload["items"])
         assert all(item["error"] == "Missing provider API key" for item in payload["items"])
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_model_sync_merges_curated_and_synced_rows_without_live_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_llm_environment(monkeypatch)
+    raw_secret = "sk-sync-openai-secret"
+    fake_syncer = FakeModelSyncer(
+        provider_rows={
+            "openai": [
+                ModelInfo(
+                    id="gpt-live-new",
+                    provider="openai",
+                    display_name="GPT Live New",
+                    context_window=256_000,
+                    max_output=None,
+                ),
+                ModelInfo(
+                    id="gpt-5.5",
+                    provider="openai",
+                    display_name="Incorrect Synced Name",
+                    context_window=123,
+                    max_output=456,
+                ),
+            ]
+        }
+    )
+    client, engine, _tester = await _client(tmp_path, model_syncer=fake_syncer)
+    try:
+        put_response = await client.put(
+            "/api/settings/secrets/openai",
+            json={"value": raw_secret},
+        )
+        response = await client.post("/api/settings/models/sync", json={})
+        catalog_response = await client.get("/api/settings/models/catalog")
+
+        assert put_response.status_code == 200
+        assert response.status_code == 200
+        payload = response.json()
+        _assert_raw_secret_absent(payload, raw_secret)
+
+        assert payload["summary"]["synced"] == 2
+        assert payload["summary"]["failed"] == 0
+        assert payload["summary"]["skipped"] == 2
+        assert payload["summary"]["synced_at"]
+        assert fake_syncer.calls == [("openai", raw_secret)]
+
+        items_by_provider = {item["provider"]: item for item in payload["items"]}
+        assert items_by_provider["openai"]["ok"] is True
+        assert items_by_provider["openai"]["models_synced"] == 2
+        assert items_by_provider["anthropic"]["error"] == "Missing provider API key"
+        assert items_by_provider["gemini"]["error"] == "Missing provider API key"
+
+        catalog_items = catalog_response.json()["items"]
+        catalog_by_id = {item["model"]: item for item in catalog_items}
+        assert catalog_by_id["gpt-live-new"]["display_name"] == "GPT Live New"
+        assert catalog_by_id["gpt-live-new"]["source"] == "provider"
+        assert catalog_by_id["gpt-5.5"]["display_name"] == "GPT-5.5"
+        assert catalog_by_id["gpt-5.5"]["context_window"] == 1_000_000
+        assert catalog_by_id["gpt-5.5"]["source"] == "curated"
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def test_sync_provider_models_assigns_conservative_context_window_for_synced_only_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def __init__(self, config) -> None:  # noqa: ANN001
+            del config
+
+        async def list_models(self) -> list[SyncedModelInfo]:
+            return [
+                SyncedModelInfo(
+                    provider="openai",
+                    id="gpt-live-new",
+                    display_name="GPT Live New",
+                )
+            ]
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("attractor_llm.adapters.openai.OpenAIAdapter", FakeAdapter)
+
+    models = await sync_provider_models("openai", "sk-test")
+
+    assert models == [
+        ModelInfo(
+            id="gpt-live-new",
+            provider="openai",
+            display_name="GPT Live New",
+            context_window=SYNCED_CONTEXT_WINDOW_FALLBACK,
+            max_output=None,
+            source="provider",
+        )
+    ]
+
+
+async def test_model_sync_endpoint_preserves_existing_synced_rows_for_failed_or_skipped_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_llm_environment(monkeypatch)
+    fake_syncer = FakeModelSyncer(
+        provider_rows={
+            "openai": [
+                ModelInfo(
+                    id="gpt-openai-first-pass",
+                    provider="openai",
+                    display_name="GPT OpenAI First Pass",
+                    context_window=256_000,
+                    max_output=None,
+                )
+            ],
+            "anthropic": [
+                ModelInfo(
+                    id="claude-live-first-pass",
+                    provider="anthropic",
+                    display_name="Claude Live First Pass",
+                    context_window=200_000,
+                    max_output=None,
+                )
+            ],
+        }
+    )
+    client, engine, _tester = await _client(tmp_path, model_syncer=fake_syncer)
+    try:
+        assert (
+            await client.put("/api/settings/secrets/openai", json={"value": "sk-openai-initial"})
+        ).status_code == 200
+        assert (
+            await client.put(
+                "/api/settings/secrets/anthropic",
+                json={"value": "sk-anthropic-initial"},
+            )
+        ).status_code == 200
+
+        first_sync = await client.post("/api/settings/models/sync", json={})
+        assert first_sync.status_code == 200
+
+        fake_syncer.provider_rows["openai"] = [
+            ModelInfo(
+                id="gpt-openai-second-pass",
+                provider="openai",
+                display_name="GPT OpenAI Second Pass",
+                context_window=512_000,
+                max_output=None,
+            )
+        ]
+        fake_syncer.failures["anthropic"] = "transient provider failure"
+        assert (await client.delete("/api/settings/secrets/gemini")).status_code == 200
+
+        second_sync = await client.post("/api/settings/models/sync", json={})
+        catalog_response = await client.get("/api/settings/models/catalog")
+
+        assert second_sync.status_code == 200
+        payload = second_sync.json()
+        items_by_provider = {item["provider"]: item for item in payload["items"]}
+        assert items_by_provider["openai"]["ok"] is True
+        assert items_by_provider["anthropic"]["ok"] is False
+        assert items_by_provider["gemini"]["error"] == "Missing provider API key"
+
+        catalog_by_id = {item["model"]: item for item in catalog_response.json()["items"]}
+        assert "gpt-openai-first-pass" not in catalog_by_id
+        assert catalog_by_id["gpt-openai-second-pass"]["display_name"] == "GPT OpenAI Second Pass"
+        assert catalog_by_id["claude-live-first-pass"]["display_name"] == "Claude Live First Pass"
     finally:
         await client.aclose()
         await engine.dispose()

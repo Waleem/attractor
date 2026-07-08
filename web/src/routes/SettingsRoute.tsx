@@ -6,8 +6,10 @@ import {
   getSettings,
   putSettingsSecret,
   putSettingsVariable,
+  syncModels,
   testModels,
   type ModelCatalogRow,
+  type ModelSyncResponse,
   type ModelTestResponse,
   type ModelTestResult,
   type SettingsOverview,
@@ -230,7 +232,9 @@ function ModelCatalogSection({
   catalogState: AsyncState<ModelCatalogRow[]>;
 }) {
   const [testing, setTesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
+  const [syncResult, setSyncResult] = useState<ModelSyncResponse | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const catalog = safeArray<ModelCatalogRow>(catalogState.data);
@@ -259,12 +263,31 @@ function ModelCatalogSection({
     }
   }
 
+  async function runModelSync() {
+    setSyncing(true);
+    setError(null);
+    try {
+      const result = await syncModels();
+      setSyncResult(result);
+      catalogState.refresh();
+    } catch (caught) {
+      setSyncResult(null);
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <SectionCard
       title="Catalog"
       actions={
         <div className="models-test-actions">
+          {syncResult ? <span className="models-test-summary">{formatModelSyncSummary(syncResult)}</span> : null}
           {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
+          <button type="button" className="secondary" disabled={syncing} onClick={() => void runModelSync()}>
+            {syncing ? "Syncing…" : "Sync from provider"}
+          </button>
           <button type="button" disabled={testing || catalogState.loading} onClick={() => void runModelTests()}>
             {testing ? (
               <>
@@ -577,7 +600,8 @@ function SecretsEditor({
 function ModelBadges({ model }: { model: ModelCatalogRow }) {
   const badges = [
     model.is_default ? "default" : null,
-    model.is_small ? "small" : null
+    model.is_small ? "small" : null,
+    model.source === "provider" ? "provider" : null
   ].filter(Boolean);
   if (badges.length === 0) {
     return <span className="subtle">None</span>;
@@ -682,6 +706,17 @@ function isSkippedModelTest(result: ModelTestResult): boolean {
 
 function formatModelTestSummary(result: ModelTestResponse): string {
   const parts = [`${result.summary.ok} ok`, `${result.summary.failed} failed`];
+  if (result.summary.skipped > 0) {
+    parts.push(`${result.summary.skipped} skipped`);
+  }
+  return parts.join(" · ");
+}
+
+function formatModelSyncSummary(result: ModelSyncResponse): string {
+  const parts = [`${result.summary.synced} synced`];
+  if (result.summary.failed > 0) {
+    parts.push(`${result.summary.failed} failed`);
+  }
   if (result.summary.skipped > 0) {
     parts.push(`${result.summary.skipped} skipped`);
   }

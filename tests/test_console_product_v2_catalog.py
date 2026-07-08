@@ -3,7 +3,15 @@ from __future__ import annotations
 import attractor_pipeline.backends as backend_module
 import attractor_pipeline.cli as pipeline_cli
 from attractor_agent.profiles import get_profile
-from attractor_llm.catalog import get_default_model, get_latest_model, get_model_info, list_models
+from attractor_llm.catalog import (
+    ModelInfo,
+    get_default_model,
+    get_latest_model,
+    get_model_info,
+    list_models,
+    merge_model_catalog,
+    replace_synced_catalog,
+)
 from attractor_llm.client import Client
 from attractor_llm.types import Message, Response
 from attractor_pipeline.backends import AgentLoopBackend, DirectLLMBackend
@@ -86,6 +94,44 @@ def test_aliases_keep_operator_shortcuts_current() -> None:
     latest = get_latest_model("openai")
     assert latest is not None
     assert latest.id == "gpt-5.5"
+
+
+def test_synced_catalog_overlay_adds_new_rows_without_overwriting_curated_metadata() -> None:
+    replace_synced_catalog({})
+    synced = [
+        ModelInfo(
+            id="gpt-live-new",
+            provider="openai",
+            display_name="GPT Live New",
+            context_window=256_000,
+            max_output=None,
+            source="provider",
+        ),
+        ModelInfo(
+            id="gpt-5.5",
+            provider="openai",
+            display_name="Incorrect Synced Name",
+            context_window=123,
+            max_output=456,
+        ),
+    ]
+
+    merged = merge_model_catalog(list_models(), synced)
+    by_id = {model.id: model for model in merged}
+
+    assert by_id["gpt-live-new"].display_name == "GPT Live New"
+    assert by_id["gpt-live-new"].context_window == 256_000
+    assert by_id["gpt-5.5"].display_name == "GPT-5.5"
+    assert by_id["gpt-5.5"].context_window == 1_000_000
+
+    try:
+        replace_synced_catalog({"openai": synced})
+        openai_models = list_models("openai")
+        assert [model.id for model in openai_models[:2]] == ["gpt-5.5", "gpt-5.4"]
+        assert openai_models[-1].id == "gpt-live-new"
+        assert openai_models[-1].source == "provider"
+    finally:
+        replace_synced_catalog({})
 
 
 def test_backend_constructor_defaults_are_catalog_current() -> None:

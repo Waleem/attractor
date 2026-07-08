@@ -1,8 +1,21 @@
-import { useState, type FormEvent } from "react";
-import { browseFilesystem, listRepos, registerRepo, type FsBrowseEntry } from "../api";
+import { useRef, useState, type FormEvent } from "react";
+import { browseFilesystem, deleteRepo, listRepos, registerRepo, type FsBrowseEntry, type Repo } from "../api";
 import { LinkButton } from "../components/Layout";
 import { useAsync } from "../components/useAsync";
 import { EmptyState, ErrorBanner, Field, Loading, PageHeader, Panel, StatusBadge, formatDate, shortSha } from "../components/ui";
+
+const REGISTRATION_BROWSER_MODE = "registration";
+
+export function registrationNameForSelection(currentName: string, entry: FsBrowseEntry): string {
+  if (currentName) {
+    return currentName;
+  }
+  return entry.is_git_repo ? entry.name : currentName;
+}
+
+export function browseRegistrationFilesystem(path?: string) {
+  return browseFilesystem(path, { mode: REGISTRATION_BROWSER_MODE });
+}
 
 export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
   const reposState = useAsync(listRepos, []);
@@ -10,11 +23,15 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
   const [localPath, setLocalPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [browserPath, setBrowserPath] = useState("");
+  const [browserRoots, setBrowserRoots] = useState<string[]>([]);
   const [browserEntries, setBrowserEntries] = useState<FsBrowseEntry[]>([]);
   const [browserTruncated, setBrowserTruncated] = useState(false);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletingRepoId, setDeletingRepoId] = useState<string | null>(null);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -32,12 +49,13 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
     }
   }
 
-  async function browse(path: string) {
+  async function browse(path?: string) {
     setBrowserLoading(true);
     setBrowserError(null);
     try {
-      const result = await browseFilesystem(path);
+      const result = await browseRegistrationFilesystem(path);
       setBrowserPath(result.path);
+      setBrowserRoots(result.roots);
       setLocalPath(result.path);
       setBrowserEntries(result.items);
       setBrowserTruncated(result.truncated);
@@ -48,16 +66,49 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
     }
   }
 
+  function browserParentPath(): string | null {
+    if (!browserPath) {
+      return null;
+    }
+    const parent = browserPath.includes("/") ? browserPath.slice(0, browserPath.lastIndexOf("/")) || "/" : "";
+    if (!parent || parent === browserPath) {
+      return null;
+    }
+    return browserRoots.some((root) => parent === root || parent.startsWith(`${root}/`)) ? parent : null;
+  }
+
+  function onBrowseClick() {
+    const requestedPath = localPath || browserPath;
+    void browse(requestedPath || undefined);
+  }
+
+  async function removeRepo(repo: Repo) {
+    if (!window.confirm(`Remove ${repo.name}?`)) {
+      return;
+    }
+    setDeletingRepoId(repo.id);
+    setDeleteError(null);
+    try {
+      await deleteRepo(repo.id);
+      reposState.refresh();
+    } catch (caught) {
+      setDeleteError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setDeletingRepoId(null);
+    }
+  }
+
   const repos = reposState.data ?? [];
+  const parentPath = browserParentPath();
 
   return (
     <>
       <PageHeader title="Registered Repos" />
-      <ErrorBanner message={reposState.error ?? formError} />
+      <ErrorBanner message={reposState.error ?? formError ?? deleteError} />
       <Panel title="Register Local Path">
         <form className="form-grid" onSubmit={onSubmit}>
           <Field label="Name">
-            <input value={name} onChange={(event) => setName(event.target.value)} required />
+            <input ref={nameInputRef} value={name} onChange={(event) => setName(event.target.value)} required />
           </Field>
           <Field label="Local path">
             <input value={localPath} onChange={(event) => setLocalPath(event.target.value)} required />
@@ -73,10 +124,15 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
             <input
               value={localPath}
               onChange={(event) => setLocalPath(event.target.value)}
-              placeholder="Enter a registered repo path"
+              placeholder="Choose a folder to register"
             />
           </Field>
-          <button type="button" className="secondary" onClick={() => browse(localPath)} disabled={browserLoading}>
+          {parentPath ? (
+            <button type="button" className="secondary" onClick={() => browse(parentPath)} disabled={browserLoading}>
+              Up
+            </button>
+          ) : null}
+          <button type="button" className="secondary" onClick={onBrowseClick} disabled={browserLoading}>
             {browserLoading ? "Browsing" : "Browse"}
           </button>
         </div>
@@ -111,10 +167,12 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
                         <button
                           type="button"
                           onClick={() => {
+                            const currentName = nameInputRef.current?.value ?? name;
                             setLocalPath(entry.path);
                             setBrowserPath(entry.path);
-                            if (entry.is_git_repo && !name) {
-                              setName(entry.name);
+                            const nextName = registrationNameForSelection(currentName, entry);
+                            if (nextName !== name) {
+                              setName(nextName);
                             }
                           }}
                         >
@@ -138,37 +196,52 @@ export function ReposRoute({ navigate }: { navigate: (path: string) => void }) {
         {repos.length === 0 && !reposState.loading ? (
           <EmptyState>No repos registered</EmptyState>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Default branch</th>
-                <th>Commit</th>
-                <th>Dirty</th>
-                <th>Config</th>
-                <th>Indexed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {repos.map((repo) => (
-                <tr key={repo.id}>
-                  <td>
-                    <LinkButton to={`/repos/${repo.id}`} navigate={navigate}>
-                      {repo.name}
-                    </LinkButton>
-                    <div className="subtle path-cell">{repo.local_path}</div>
-                  </td>
-                  <td>{repo.default_branch}</td>
-                  <td className="mono">{shortSha(repo.current_commit)}</td>
-                  <td>{repo.dirty_state}</td>
-                  <td>
-                    <StatusBadge status={repo.project_config_status} />
-                  </td>
-                  <td>{formatDate(repo.last_indexed_at)}</td>
+          <div className="repos-table-scroll">
+            <table className="repos-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Default branch</th>
+                  <th>Commit</th>
+                  <th>Dirty</th>
+                  <th>Config</th>
+                  <th>Indexed</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {repos.map((repo) => (
+                  <tr key={repo.id}>
+                    <td>
+                      <LinkButton to={`/repos/${repo.id}`} navigate={navigate}>
+                        {repo.name}
+                      </LinkButton>
+                      <div className="subtle path-cell">{repo.local_path}</div>
+                    </td>
+                    <td>{repo.default_branch}</td>
+                    <td className="mono">{shortSha(repo.current_commit)}</td>
+                    <td>{repo.dirty_state}</td>
+                    <td>
+                      <StatusBadge status={repo.project_config_status} />
+                    </td>
+                    <td>{formatDate(repo.last_indexed_at)}</td>
+                    <td className="repo-row-actions">
+                      <button
+                        type="button"
+                        className="button-danger repo-remove-button"
+                        aria-label={`Remove ${repo.name}`}
+                        title={`Remove ${repo.name}`}
+                        disabled={deletingRepoId === repo.id}
+                        onClick={() => void removeRepo(repo)}
+                      >
+                        {deletingRepoId === repo.id ? "..." : "×"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
     </>

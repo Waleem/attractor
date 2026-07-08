@@ -72,9 +72,11 @@ class RunRecordModel(Base):
     __tablename__ = "run_records"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    repo_id: Mapped[str] = mapped_column(ForeignKey("registered_repos.id", ondelete="RESTRICT"))
-    workflow_id: Mapped[str] = mapped_column(
-        ForeignKey("workflow_packages.id", ondelete="RESTRICT"),
+    repo_id: Mapped[str | None] = mapped_column(
+        ForeignKey("registered_repos.id", ondelete="SET NULL")
+    )
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflow_packages.id", ondelete="SET NULL"),
     )
     status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     run_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

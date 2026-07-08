@@ -12,6 +12,7 @@ import {
   shortRunId,
   summarizeRunDiff
 } from "./runViewModel.js";
+import { formatDate, formatRelativeTime } from "./components/ui.js";
 
 function assertEqual(actual: unknown, expected: unknown, message: string) {
   if (actual !== expected) {
@@ -175,6 +176,26 @@ assertEqual(
   formatCompactRelativeTime("2026-07-03T12:00:30Z", Date.parse("2026-07-03T12:00:00Z")),
   "30s from now",
   "future timestamps use from-now suffix"
+);
+
+const originalDateNow = Date.now;
+Date.now = () => Date.parse("2026-07-03T13:00:00Z");
+assertEqual(
+  formatRelativeTime("2026-07-03T12:00:00Z"),
+  "1 hour ago",
+  "UTC timestamps are not treated as future local times"
+);
+assertEqual(
+  formatRelativeTime("2026-07-03T12:00:00"),
+  "1 hour ago",
+  "timezone-less server timestamps are treated as UTC"
+);
+Date.now = originalDateNow;
+
+assertEqual(
+  formatDate("2026-07-03T12:00:00Z"),
+  new Date("2026-07-03T12:00:00Z").toLocaleString(),
+  "date formatting preserves explicit UTC timestamps"
 );
 
 const event = eventFromSseMessage(

@@ -176,9 +176,17 @@ export function RunDetailRoute({ runId }: { runId: string }) {
             {run.error_message ? <div className="error-banner">{run.error_message}</div> : null}
           </Panel>
           <Panel title="Branch Diff">
-            <BranchDiffPanel diff={diffState.data} loading={diffState.loading} error={diffState.error} />
+            <div className="run-detail-scroll run-detail-scroll-diff">
+              <BranchDiffPanel diff={diffState.data} loading={diffState.loading} error={diffState.error} />
+            </div>
           </Panel>
-          <GraphViewer workflowId={run.workflow_id} events={events} />
+          {run.workflow_id ? (
+            <GraphViewer workflowId={run.workflow_id} events={events} />
+          ) : (
+            <Panel title="Workflow Graph">
+              <EmptyState>Workflow index was removed when the repo was unregistered.</EmptyState>
+            </Panel>
+          )}
           <PendingApprovals
             runId={runId}
             runStatus={run.status}
@@ -189,13 +197,19 @@ export function RunDetailRoute({ runId }: { runId: string }) {
             }}
           />
           <Panel title="Event Timeline">
-            <EventTimeline events={events} loading={relatedState.loading} />
+            <div className="run-detail-scroll run-detail-scroll-events">
+              <EventTimeline events={events} loading={relatedState.loading} />
+            </div>
           </Panel>
           <Panel title="Artifacts">
-            <ArtifactTable runId={runId} artifacts={related?.artifacts ?? []} loading={relatedState.loading} />
+            <div className="run-detail-scroll run-detail-scroll-artifacts">
+              <ArtifactTable runId={runId} artifacts={related?.artifacts ?? []} loading={relatedState.loading} />
+            </div>
           </Panel>
           <Panel title="Checkpoints">
-            <CheckpointTable checkpoints={related?.checkpoints ?? []} loading={relatedState.loading} />
+            <div className="run-detail-scroll run-detail-scroll-checkpoints">
+              <CheckpointTable checkpoints={related?.checkpoints ?? []} loading={relatedState.loading} />
+            </div>
           </Panel>
         </>
       ) : null}
@@ -586,7 +600,9 @@ function eventSummary(event: RunEvent): string {
     case "approval.decided":
       return `Approval ${stringPayload(event.payload, "answer") ?? "decided"}`;
     case "checkpoint.saved":
-      return node ? `Checkpoint saved for ${node} at ${commit}` : `Checkpoint saved ${commit}`;
+      if (node && commit !== "None") return `Checkpoint saved for ${node} at ${commit}`;
+      if (node) return `Checkpoint saved for ${node}`;
+      return commit !== "None" ? `Checkpoint saved ${commit}` : "Checkpoint saved";
     case "writeback.applied":
       return `Write-back applied to ${stringPayload(event.payload, "target_branch") ?? "target branch"}`;
     case "pipeline.event":

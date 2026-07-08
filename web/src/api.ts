@@ -28,6 +28,14 @@ export interface Repo {
   project_config?: ProjectConfig;
 }
 
+export interface RepoRefreshResult {
+  repo: Repo;
+  workflow_count: number;
+  removed_workflow_count: number;
+  changed: boolean;
+  active_workflow_ids?: string[];
+}
+
 export interface WorkflowDiagnostic {
   rule?: string;
   severity?: string;
@@ -45,7 +53,7 @@ export interface Workflow {
   toml_path: string | null;
   status: string;
   diagnostics: {
-    error?: string;
+    error?: unknown;
     items?: WorkflowDiagnostic[];
   };
   indexed_at?: string | null;
@@ -77,7 +85,7 @@ export interface WorkflowGraph {
   nodes: WorkflowGraphNode[];
   edges: WorkflowGraphEdge[];
   diagnostics: {
-    error?: string;
+    error?: unknown;
     items?: WorkflowDiagnostic[];
   };
 }
@@ -132,8 +140,8 @@ export interface SerializedRunSpec {
 export interface RunRecord {
   id: string;
   status: RunStatus;
-  repo_id: string;
-  workflow_id: string;
+  repo_id: string | null;
+  workflow_id: string | null;
   run_spec: SerializedRunSpec | null;
   actor_label: string;
   source_commit?: string;
@@ -224,6 +232,7 @@ export interface FsBrowseEntry {
 
 export interface FsBrowseResult {
   path: string;
+  roots: string[];
   items: FsBrowseEntry[];
   truncated: boolean;
 }
@@ -278,6 +287,7 @@ export interface ModelCatalogRow {
   supports_reasoning: boolean;
   is_default: boolean;
   is_small: boolean;
+  source: "curated" | "provider" | string;
 }
 
 export interface ModelTestSummary {
@@ -299,6 +309,25 @@ export interface ModelTestResult {
 export interface ModelTestResponse {
   summary: ModelTestSummary;
   items: ModelTestResult[];
+}
+
+export interface ModelSyncSummary {
+  synced: number;
+  failed: number;
+  skipped: number;
+  synced_at: string;
+}
+
+export interface ModelSyncItem {
+  provider: string;
+  ok: boolean;
+  models_synced: number;
+  error: string | null;
+}
+
+export interface ModelSyncResponse {
+  summary: ModelSyncSummary;
+  items: ModelSyncItem[];
 }
 
 export type SettingsEditability = "editable" | "restart-required" | "read-only" | "reserved";
@@ -366,15 +395,31 @@ function apiUrl(path: string): string {
   return apiPath(path);
 }
 
+export function apiErrorMessage(data: unknown, status: number): string {
+  if (data && typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    const detail = record.detail;
+    if (detail && typeof detail === "object") {
+      const detailError = (detail as Record<string, unknown>).error;
+      if (typeof detailError === "string" && detailError) {
+        return detailError;
+      }
+    }
+    if (typeof record.message === "string" && record.message) {
+      return record.message;
+    }
+    if (typeof record.error === "string" && record.error) {
+      return record.error;
+    }
+  }
+  return `Request failed with ${status}`;
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const message =
-      data && typeof data === "object" && "error" in data
-        ? String((data as { error: unknown }).error)
-        : `Request failed with ${response.status}`;
-    throw new Error(message);
+    throw new Error(apiErrorMessage(data, response.status));
   }
   return data as T;
 }
@@ -404,6 +449,22 @@ export async function listRepos(): Promise<Repo[]> {
 
 export async function getRepo(repoId: string): Promise<Repo> {
   return requestJson<Repo>(`/api/repos/${encodeURIComponent(repoId)}`);
+}
+
+export async function deleteRepo(repoId: string): Promise<{ deleted?: boolean }> {
+  return requestJson<{ deleted?: boolean }>(`/api/repos/${encodeURIComponent(repoId)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function refreshRepo(
+  repoId: string,
+  options: { force?: boolean } = {}
+): Promise<RepoRefreshResult> {
+  return requestJson<RepoRefreshResult>(`/api/repos/${encodeURIComponent(repoId)}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ force: options.force ?? true })
+  });
 }
 
 export async function getProjectConfig(repoId: string): Promise<ProjectConfigStatus> {
@@ -511,8 +572,17 @@ export async function getRunDiff(
   return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff${suffix}`);
 }
 
-export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
-  const params = new URLSearchParams({ path });
+export async function browseFilesystem(
+  path?: string,
+  options: { mode?: "registration" | string } = {}
+): Promise<FsBrowseResult> {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set("path", path);
+  }
+  if (options.mode) {
+    params.set("mode", options.mode);
+  }
   return requestJson<FsBrowseResult>(`/api/fs/browse?${params.toString()}`);
 }
 
@@ -595,6 +665,13 @@ export async function getModelCatalog(): Promise<ModelCatalogRow[]> {
 
 export async function testModels(): Promise<ModelTestResponse> {
   return requestJson<ModelTestResponse>("/api/settings/models/test", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function syncModels(): Promise<ModelSyncResponse> {
+  return requestJson<ModelSyncResponse>("/api/settings/models/sync", {
     method: "POST",
     body: JSON.stringify({})
   });

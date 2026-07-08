@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import Select
@@ -22,6 +22,16 @@ from attractor_platform.storage.models import (
     WorkflowPackageModel,
     WriteBackModel,
 )
+
+
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def _normalize_utc(timestamp: dt.datetime) -> dt.datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.UTC)
+    return timestamp.astimezone(dt.UTC)
 
 
 def _select_run_for_append_lock(run_id: str) -> Select[tuple[RunRecordModel]]:
@@ -46,6 +56,10 @@ class PlatformRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
+    async def get_repo(self, repo_id: str) -> RegisteredRepoModel | None:
+        async with session_scope(self._session_factory) as session:
+            return await session.get(RegisteredRepoModel, repo_id)
+
     async def register_repo(
         self,
         repo_id: str,
@@ -57,6 +71,7 @@ class PlatformRepository:
         timestamp: dt.datetime,
         project_config_status: str = "unknown",
     ) -> RegisteredRepoModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             repo = await session.get(RegisteredRepoModel, repo_id)
             if repo is None:
@@ -96,6 +111,7 @@ class PlatformRepository:
         diagnostics: dict[str, Any],
         timestamp: dt.datetime,
     ) -> WorkflowPackageModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             workflow = await session.get(WorkflowPackageModel, workflow_id)
             if workflow is None:
@@ -121,6 +137,81 @@ class PlatformRepository:
             await session.flush()
             return workflow
 
+    async def update_repo_index_metadata(
+        self,
+        repo_id: str,
+        *,
+        default_branch: str,
+        current_commit: str,
+        dirty_state: str,
+        timestamp: dt.datetime,
+    ) -> RegisteredRepoModel:
+        timestamp = _normalize_utc(timestamp)
+        async with session_scope(self._session_factory) as session:
+            repo = await session.get(RegisteredRepoModel, repo_id)
+            if repo is None:
+                raise KeyError(f"Repository not found: {repo_id}")
+            repo.default_branch = default_branch
+            repo.current_commit = current_commit
+            repo.dirty_state = dirty_state
+            repo.updated_at = timestamp
+            repo.last_indexed_at = timestamp
+            await session.flush()
+            return repo
+
+    async def delete_repo(self, repo_id: str) -> bool:
+        async with session_scope(self._session_factory) as session:
+            repo = await session.get(RegisteredRepoModel, repo_id)
+            if repo is None:
+                return False
+            workflow_ids = list(
+                await session.scalars(
+                    select(WorkflowPackageModel.id).where(WorkflowPackageModel.repo_id == repo_id)
+                )
+            )
+            if workflow_ids:
+                await session.execute(
+                    update(RunRecordModel)
+                    .where(RunRecordModel.workflow_id.in_(workflow_ids))
+                    .values(workflow_id=None)
+                )
+            await session.execute(
+                update(RunRecordModel)
+                .where(RunRecordModel.repo_id == repo_id)
+                .values(repo_id=None)
+            )
+            for workflow_id in workflow_ids:
+                workflow = await session.get(WorkflowPackageModel, workflow_id)
+                if workflow is not None:
+                    await session.delete(workflow)
+            await session.delete(repo)
+            return True
+
+    async def delete_workflows_not_in(self, repo_id: str, workflow_ids: set[str]) -> int:
+        async with session_scope(self._session_factory) as session:
+            current = await session.scalars(
+                select(WorkflowPackageModel.id).where(WorkflowPackageModel.repo_id == repo_id)
+            )
+            stale_ids = [workflow_id for workflow_id in current if workflow_id not in workflow_ids]
+            if not stale_ids:
+                return 0
+            referenced_ids = set(
+                await session.scalars(
+                    select(RunRecordModel.workflow_id)
+                    .where(RunRecordModel.workflow_id.in_(stale_ids))
+                    .distinct()
+                )
+            )
+            removed_count = 0
+            for workflow_id in stale_ids:
+                if workflow_id in referenced_ids:
+                    continue
+                workflow = await session.get(WorkflowPackageModel, workflow_id)
+                if workflow is not None:
+                    await session.delete(workflow)
+                    removed_count += 1
+            return removed_count
+
     async def create_run(
         self,
         run_id: str,
@@ -132,6 +223,7 @@ class PlatformRepository:
         source_branch: str,
         timestamp: dt.datetime,
     ) -> RunRecordModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             run = RunRecordModel(
                 id=run_id,
@@ -163,7 +255,7 @@ class PlatformRepository:
             run.status = status.value if isinstance(status, RunStatus) else status
             run.error_category = error_category
             run.error_message = error_message
-            run.updated_at = dt.datetime.now(dt.UTC)
+            run.updated_at = _utc_now()
             await session.flush()
             return run
 
@@ -204,6 +296,7 @@ class PlatformRepository:
         actor_label: str = "",
         timestamp: dt.datetime | None = None,
     ) -> RunEventModel:
+        timestamp = _normalize_utc(timestamp) if timestamp is not None else None
         async with session_scope(self._session_factory) as session:
             locked_run = await session.scalar(_select_run_for_append_lock(run_id))
             if locked_run is None:
@@ -217,7 +310,7 @@ class PlatformRepository:
                 event_type=event_type,
                 payload=redact_mapping(payload),
                 actor_label=actor_label,
-                created_at=timestamp or dt.datetime.now(dt.UTC),
+                created_at=timestamp or _utc_now(),
             )
             session.add(event)
             await session.flush()
@@ -253,6 +346,7 @@ class PlatformRepository:
         question: str,
         timestamp: dt.datetime,
     ) -> ApprovalDecisionModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             approval = ApprovalDecisionModel(
                 id=approval_id,
@@ -275,6 +369,7 @@ class PlatformRepository:
         actor_label: str,
         timestamp: dt.datetime,
     ) -> ApprovalDecisionModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             approval = await session.get(ApprovalDecisionModel, approval_id)
             if approval is None:
@@ -298,6 +393,7 @@ class PlatformRepository:
         sha256: str,
         timestamp: dt.datetime,
     ) -> ArtifactModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             artifact = ArtifactModel(
                 id=artifact_id,
@@ -333,6 +429,7 @@ class PlatformRepository:
         ref_name: str,
         timestamp: dt.datetime,
     ) -> CheckpointModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             checkpoint = CheckpointModel(
                 id=checkpoint_id,
@@ -368,6 +465,7 @@ class PlatformRepository:
         error_message: str | None,
         timestamp: dt.datetime,
     ) -> WriteBackModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             writeback = WriteBackModel(
                 id=writeback_id,
@@ -397,6 +495,7 @@ class PlatformRepository:
         error_message: str | None,
         timestamp: dt.datetime,
     ) -> WriteBackModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             locked_run = await session.scalar(_select_run_for_append_lock(run_id))
             if locked_run is None:
@@ -441,6 +540,6 @@ class PlatformRepository:
             )
             locked_run.error_category = None if status == "applied" else "writeback_failed"
             locked_run.error_message = error_message if status != "applied" else None
-            locked_run.updated_at = dt.datetime.now(dt.UTC)
+            locked_run.updated_at = _utc_now()
             await session.flush()
             return writeback

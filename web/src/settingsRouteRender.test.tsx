@@ -6,11 +6,31 @@ type FetchResult = {
   body: unknown;
 };
 type FetchHandler = (path: string, init?: RequestInit) => FetchResult | Promise<FetchResult>;
+type FetchRequest = {
+  path: string;
+  method: string;
+  body: string | null;
+};
 
 function assertIncludes(actual: string, expected: string, message: string) {
   if (!actual.includes(expected)) {
     throw new Error(`${message}\nexpected to include: ${expected}\nactual: ${actual}`);
   }
+}
+
+function assertNotIncludes(actual: string, unexpected: string, message: string) {
+  if (actual.includes(unexpected)) {
+    throw new Error(`${message}\nexpected not to include: ${unexpected}\nactual: ${actual}`);
+  }
+}
+
+function getSectionMarkup(markup: string, heading: string) {
+  const sectionStart = markup.indexOf(`<h2>${heading}</h2>`);
+  if (sectionStart < 0) {
+    throw new Error(`Missing section heading: ${heading}`);
+  }
+  const nextHeading = markup.indexOf("<h2>", sectionStart + heading.length + 9);
+  return markup.slice(sectionStart, nextHeading < 0 ? undefined : nextHeading);
 }
 
 function assertEqual(actual: unknown, expected: unknown, message: string) {
@@ -68,12 +88,19 @@ async function renderAppRoute(
 ): Promise<{
   markup: string;
   fetchCalls: string[];
+  fetchRequests: FetchRequest[];
 }> {
   const { document } = installMiniDom(pathname);
   const fetchCalls: string[] = [];
+  const fetchRequests: FetchRequest[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     fetchCalls.push(path);
+    fetchRequests.push({
+      path,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : null
+    });
     const result = await handler(path, init);
     return {
       ok: result.ok ?? true,
@@ -99,7 +126,49 @@ async function renderAppRoute(
   }
   const markup = container.innerHTML;
   root.unmount();
-  return { markup, fetchCalls };
+  return { markup, fetchCalls, fetchRequests };
+}
+
+async function mountAppRoute(
+  pathname: string,
+  handler: FetchHandler
+): Promise<{
+  container: MiniElement;
+  fetchCalls: string[];
+  fetchRequests: FetchRequest[];
+  root: { unmount(): void };
+}> {
+  const { document } = installMiniDom(pathname);
+  const fetchCalls: string[] = [];
+  const fetchRequests: FetchRequest[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    fetchCalls.push(path);
+    fetchRequests.push({
+      path,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : null
+    });
+    const result = await handler(path, init);
+    return {
+      ok: result.ok ?? true,
+      status: result.status ?? (result.ok === false ? 500 : 200),
+      text: () => Promise.resolve(JSON.stringify(result.body))
+    } as Response;
+  }) as typeof fetch;
+
+  const [{ createRoot }, { default: App }] = await Promise.all([
+    import("react-dom/client"),
+    import("./App.js")
+  ]);
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  root.render(<App />);
+
+  await waitFor(() => fetchCalls.length >= 1);
+  await waitFor(() => !container.textContent.includes("Loading"));
+  return { container, fetchCalls, fetchRequests, root };
 }
 
 async function waitFor(assertion: () => boolean) {
@@ -115,6 +184,17 @@ async function waitFor(assertion: () => boolean) {
 function installMiniDom(pathname = "/settings") {
   const document = new MiniDocument();
   const location = { pathname };
+  let confirmHandler = (_message?: string) => true;
+  const confirm = (message?: string) => confirmHandler(message);
+  class MiniEventSource {
+    onerror: (() => void) | null = null;
+
+    constructor(public readonly url: string) {}
+
+    addEventListener() {}
+    removeEventListener() {}
+    close() {}
+  }
   const window = {
     document,
     location,
@@ -124,29 +204,38 @@ function installMiniDom(pathname = "/settings") {
       }
     },
     navigator: { userAgent: "node" },
+    confirm,
+    __setConfirmHandler(handler: (message?: string) => boolean) {
+      confirmHandler = handler;
+    },
     addEventListener() {},
     removeEventListener() {},
     getComputedStyle() {
       return {};
     },
+    setTimeout,
+    clearTimeout,
     HTMLIFrameElement: MiniElement,
     HTMLElement: MiniElement,
     HTMLInputElement: MiniElement,
     Node: MiniNode,
     Text: MiniText,
-    Event: MiniEvent
+    Event: MiniEvent,
+    EventSource: MiniEventSource
   };
   document.defaultView = window;
   for (const [name, value] of Object.entries({
     window,
     document,
     navigator: window.navigator,
+    confirm,
     HTMLElement: MiniElement,
     HTMLInputElement: MiniElement,
     HTMLIFrameElement: MiniElement,
     Node: MiniNode,
     Text: MiniText,
-    Event: MiniEvent
+    Event: MiniEvent,
+    EventSource: MiniEventSource
   })) {
     Object.defineProperty(globalThis, name, {
       configurable: true,
@@ -329,6 +418,7 @@ class MiniElement extends MiniNode {
   value = "";
   checked = false;
   disabled = false;
+  selected = false;
 
   constructor(public readonly tagName: string, ownerDocument: MiniDocument) {
     super(1, tagName.toUpperCase(), ownerDocument);
@@ -368,6 +458,17 @@ class MiniElement extends MiniNode {
 
   hasAttribute(name: string): boolean {
     return this.attributes.has(name);
+  }
+
+  get options(): MiniElement[] | undefined {
+    if (this.localName !== "select") {
+      return undefined;
+    }
+    return this.childNodes.filter(
+      (child): child is MiniElement =>
+        child instanceof MiniElement &&
+        (child.localName === "option" || child.localName === "optgroup")
+    );
   }
 
   click() {
@@ -446,6 +547,27 @@ function findButtonByText(container: MiniElement, label: string): MiniElement {
     throw new Error(`Button not found: ${label}\nactual: ${container.innerHTML}`);
   }
   return button;
+}
+
+function findInputByLabel(container: MiniElement, label: string): MiniElement {
+  const field = findElement(
+    container,
+    (element) => element.localName === "label" && element.textContent.includes(label)
+  );
+  if (!field) {
+    throw new Error(`Input label not found: ${label}\nactual: ${container.innerHTML}`);
+  }
+  const input = findElement(field, (element) => element.localName === "input");
+  if (!input) {
+    throw new Error(`Input not found for label: ${label}\nactual: ${container.innerHTML}`);
+  }
+  return input;
+}
+
+function setInputValue(input: MiniElement, value: string) {
+  input.value = value;
+  input.dispatchEvent(new MiniEvent("input", { bubbles: true, cancelable: true }));
+  input.dispatchEvent(new MiniEvent("change", { bubbles: true, cancelable: true }));
 }
 
 function findElement(node: MiniNode, predicate: (element: MiniElement) => boolean): MiniElement | null {
@@ -544,7 +666,8 @@ const catalogPayload: ModelCatalogRow[] = [
     supports_vision: false,
     supports_reasoning: true,
     is_default: true,
-    is_small: false
+    is_small: false,
+    source: "provider"
   }
 ];
 
@@ -589,6 +712,10 @@ async function main() {
   const pendingModelTest = new Promise<FetchResult>((resolve) => {
     resolveModelTest = resolve;
   });
+  let resolveModelSync: (result: FetchResult) => void = () => undefined;
+  const pendingModelSync = new Promise<FetchResult>((resolve) => {
+    resolveModelSync = resolve;
+  });
   const modelTestResult = await mountSettingsRoute((path) => {
     if (path === "/api/settings") {
       return { body: settingsPayload };
@@ -596,11 +723,28 @@ async function main() {
     if (path === "/api/settings/models/catalog") {
       return { body: { items: catalogPayload } };
     }
+    if (path === "/api/settings/models/sync") {
+      return pendingModelSync;
+    }
     if (path === "/api/settings/models/test") {
       return pendingModelTest;
     }
     throw new Error(`Unexpected fetch ${path}`);
   });
+  findButtonByText(modelTestResult.container, "Sync from provider").click();
+  await waitFor(() => modelTestResult.fetchCalls.includes("/api/settings/models/sync"));
+  resolveModelSync({
+    body: {
+      summary: { synced: 1, failed: 0, skipped: 2, synced_at: "2026-07-03T12:00:00Z" },
+      items: [
+        { provider: "openai", ok: true, models_synced: 1, error: null },
+        { provider: "anthropic", ok: false, models_synced: 0, error: "Missing provider API key" },
+        { provider: "gemini", ok: false, models_synced: 0, error: "Missing provider API key" }
+      ]
+    }
+  });
+  await waitFor(() => modelTestResult.fetchCalls.filter((path) => path === "/api/settings/models/catalog").length >= 2);
+  await waitFor(() => modelTestResult.container.textContent.includes("1 synced"));
   findButtonByText(modelTestResult.container, "Test models").click();
   await waitFor(() => modelTestResult.fetchCalls.includes("/api/settings/models/test"));
   await waitFor(() => modelTestResult.container.textContent.includes("Testing"));
@@ -699,6 +843,642 @@ async function main() {
     "No provider credentials are available",
     "missing provider credentials render an empty state"
   );
+
+  const runDetailResult = await renderAppRoute(
+    "/runs/run-1",
+    (path) => {
+      if (path === "/api/runs/run-1") {
+        return {
+          body: {
+            id: "run-1",
+            status: "running",
+            repo_id: "repo-1",
+            workflow_id: "workflow-1",
+            run_spec: {
+              repo_path: "/workspace/sample-repo",
+              workflow_name: "Large Workflow",
+              actor_label: "operator",
+              inputs: {}
+            },
+            actor_label: "operator",
+            source_commit: "1234567890abcdef",
+            source_branch: "main",
+            worktree_path: "/tmp/run-1",
+            managed_branch: "attractor/run-1",
+            error_category: null,
+            error_message: null,
+            created_at: "2026-07-07T12:00:00Z",
+            updated_at: "2026-07-07T12:05:00Z",
+            started_at: "2026-07-07T12:01:00Z",
+            completed_at: null
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/events") {
+        return {
+          body: {
+            items: Array.from({ length: 12 }, (_, index) => ({
+              sequence: index + 1,
+              event_type: index % 2 === 0 ? "stage.completed" : "pipeline.event",
+              payload: {
+                node_id: `node-${index + 1}`,
+                output: `event ${index + 1}`
+              },
+              actor_label: "operator",
+              created_at: `2026-07-07T12:${String(index).padStart(2, "0")}:00Z`
+            }))
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/approvals") {
+        return { body: { items: [] } };
+      }
+      if (path === "/api/runs/run-1/artifacts") {
+        return {
+          body: {
+            items: Array.from({ length: 8 }, (_, index) => ({
+              id: `artifact-${index + 1}`,
+              run_id: "run-1",
+              kind: "file",
+              name: `artifact-${index + 1}.txt`,
+              uri: `file:///tmp/artifact-${index + 1}.txt`,
+              media_type: "text/plain",
+              size_bytes: 1024 + index,
+              sha256: `sha-${index + 1}`,
+              created_at: "2026-07-07T12:02:00Z"
+            }))
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/checkpoints") {
+        return { body: { items: [] } };
+      }
+      if (path === "/api/runs/run-1/diff?include_patch=true") {
+        return {
+          body: {
+            run_id: "run-1",
+            base_commit: "1234567890abcdef",
+            head_commit: "fedcba0987654321",
+            truncated: false,
+            files: Array.from({ length: 9 }, (_, index) => ({
+              path: `src/file-${index + 1}.ts`,
+              status: "modified",
+              additions: index + 1,
+              deletions: index,
+              patch: `@@ -1 +1 @@\n-old-${index + 1}\n+new-${index + 1}`,
+              patch_truncated: false
+            }))
+          }
+        };
+      }
+      if (path === "/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    7
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-diff"',
+    "run detail wraps branch diff in a bounded scroll container"
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-events"',
+    "run detail wraps event timeline in a bounded scroll container"
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-artifacts"',
+    "run detail wraps artifacts in a bounded scroll container"
+  );
+  assertIncludes(runDetailResult.markup, "<h2>Checkpoints</h2>", "run detail renders the checkpoints section");
+  assertIncludes(
+    getSectionMarkup(runDetailResult.markup, "Checkpoints"),
+    'class="run-detail-scroll run-detail-scroll-checkpoints"',
+    "run detail wraps checkpoints in a bounded scroll container"
+  );
+
+  const repoDetailResult = await mountAppRoute("/repos/repo-1", (path, init) => {
+    const repo = {
+      id: "repo-1",
+      name: "Registered Repo",
+      local_path: "/registered/repo",
+      default_branch: "main",
+      current_commit: "abc123",
+      dirty_state: "clean",
+      project_config_status: "valid",
+      created_at: null,
+      updated_at: "2026-07-07T12:05:00Z",
+      last_indexed_at: "2026-07-07T12:05:00Z"
+    };
+    const workflow = {
+      id: "workflow-1",
+      repo_id: "repo-1",
+      name: "Release",
+      status: "valid",
+      dot_path: "flows/release.dot",
+      toml_path: "flows/release.toml",
+      diagnostics: { items: [] },
+      indexed_at: "2026-07-07T12:05:00Z"
+    };
+    if (path === "/api/repos/repo-1") {
+      return { body: repo };
+    }
+    if (path === "/api/repos/repo-1/workflows") {
+      return { body: [workflow] };
+    }
+    if (path === "/api/repos/repo-1/refresh" && init?.method === "POST") {
+      return {
+        body: {
+          repo,
+          workflow_count: 1,
+          removed_workflow_count: 0,
+          changed: JSON.parse(String(init.body ?? "{}")).force === true
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  await waitFor(() =>
+    repoDetailResult.fetchRequests.some((request) => request.path === "/api/repos/repo-1/refresh")
+  );
+  const autoRefreshRequests = repoDetailResult.fetchRequests.filter(
+    (request) => request.path === "/api/repos/repo-1/refresh"
+  );
+  assertEqual(autoRefreshRequests.length, 1, "repo detail auto-load refreshes once");
+  assertEqual(
+    autoRefreshRequests[0]?.body,
+    JSON.stringify({ force: false }),
+    "repo detail auto-load uses mtime-gated refresh semantics"
+  );
+  findButtonByText(repoDetailResult.container, "Refresh").click();
+  await waitFor(
+    () =>
+      repoDetailResult.fetchRequests.filter(
+        (request) => request.path === "/api/repos/repo-1/refresh"
+      ).length >= 2
+  );
+  const manualRefreshRequests = repoDetailResult.fetchRequests.filter(
+    (request) => request.path === "/api/repos/repo-1/refresh"
+  );
+  assertEqual(manualRefreshRequests.length, 2, "repo detail refresh button calls refresh again");
+  assertEqual(
+    manualRefreshRequests[1]?.body,
+    JSON.stringify({ force: true }),
+    "repo detail manual refresh forces a full re-index"
+  );
+  await waitFor(() => repoDetailResult.container.textContent.includes("Index refreshed"));
+  repoDetailResult.root.unmount();
+
+  const workflowDetailResult = await renderAppRoute(
+    "/console/workflows/workflow-1",
+    (path) => {
+      if (path === "/console/api/repos") {
+        return {
+          body: {
+            items: [
+              {
+                id: "repo-1",
+                name: "Registered Repo",
+                local_path: "/registered/repo",
+                default_branch: "main",
+                current_commit: "abc123",
+                dirty_state: "clean",
+                project_config_status: "valid",
+                created_at: null,
+                updated_at: null,
+                last_indexed_at: null
+              }
+            ]
+          }
+        };
+      }
+      if (path === "/console/api/repos/repo-1/workflows") {
+        return {
+          body: [
+            {
+              id: "workflow-1",
+              repo_id: "repo-1",
+              name: "Large Workflow",
+              status: "valid",
+              dot_path: "flows/large.dot",
+              toml_path: "flows/large.toml",
+              diagnostics: { items: [] }
+            }
+          ]
+        };
+      }
+      if (path === "/console/api/repos/repo-1/project-config") {
+        return {
+          body: {
+            repo_id: "repo-1",
+            status: "valid",
+            config: {
+              default_environment: "local",
+              allowed_execution_modes: ["local"],
+              environments: {
+                local: {
+                  mode: "local"
+                }
+              }
+            }
+          }
+        };
+      }
+      if (path === "/console/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    4
+  );
+  assertIncludes(
+    workflowDetailResult.markup,
+    "<h2>Workflow Graph</h2>",
+    "workflow detail renders the workflow graph panel before launch"
+  );
+  assertEqual(
+    workflowDetailResult.fetchCalls.includes("/console/api/workflows/workflow-1/graph"),
+    true,
+    "workflow detail loads workflow graph data on mount"
+  );
+  assertIncludes(
+    workflowDetailResult.markup,
+    '<a class="back-link" href="/console/repos/repo-1">← Back to Registered Repo</a>',
+    "workflow detail links back to the parent repo with the app base path"
+  );
+  const workflowGraphIndex = workflowDetailResult.markup.indexOf("<h2>Workflow Graph</h2>");
+  const workflowLaunchIndex = workflowDetailResult.markup.indexOf("<h2>Launch Run</h2>");
+  if (!(workflowGraphIndex >= 0 && workflowGraphIndex < workflowLaunchIndex)) {
+    throw new Error("workflow detail keeps the workflow graph panel before Launch Run");
+  }
+
+  const invalidWorkflowDetailResult = await renderAppRoute(
+    "/workflows/workflow-1",
+    (path) => {
+      if (path === "/api/repos") {
+        return {
+          body: {
+            items: [
+              {
+                id: "repo-1",
+                name: "Registered Repo",
+                local_path: "/registered/repo",
+                default_branch: "main",
+                current_commit: "abc123",
+                dirty_state: "clean",
+                project_config_status: "invalid",
+                created_at: null,
+                updated_at: null,
+                last_indexed_at: null
+              }
+            ]
+          }
+        };
+      }
+      if (path === "/api/repos/repo-1/workflows") {
+        return {
+          body: [
+            {
+              id: "workflow-1",
+              repo_id: "repo-1",
+              name: "Broken Workflow",
+              status: "invalid",
+              dot_path: "flows/broken.dot",
+              toml_path: "flows/broken.toml",
+              diagnostics: {
+                error: {
+                  code: "workflow_package_error",
+                  message: "Unable to parse workflow.dot",
+                  detail: {
+                    error: "Parse error: Line 21, col 16: Unexpected character '\"'"
+                  }
+                },
+                items: []
+              }
+            }
+          ]
+        };
+      }
+      if (path === "/api/repos/repo-1/project-config") {
+        return {
+          body: {
+            repo_id: "repo-1",
+            status: "valid",
+            config: {
+              default_environment: "local",
+              allowed_execution_modes: ["local"],
+              environments: {
+                local: {
+                  mode: "local"
+                }
+              }
+            }
+          }
+        };
+      }
+      if (path === "/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    4
+  );
+  assertIncludes(
+    invalidWorkflowDetailResult.markup,
+    "Parse error: Line 21, col 16",
+    "workflow detail renders nested parse diagnostics for invalid workflows"
+  );
+  assertNotIncludes(
+    invalidWorkflowDetailResult.markup,
+    "Route unavailable",
+    "workflow detail does not trip the route error boundary for invalid workflow diagnostics"
+  );
+
+  const reposRouteResult = await mountAppRoute("/repos", (path, init) => {
+    if (path === "/api/fs/browse?mode=registration") {
+      return {
+        body: {
+          path: "/workspace",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "sample-repo",
+              path: "/workspace/sample-repo",
+              kind: "directory",
+              is_git_repo: true
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/repos" && init?.method === "POST") {
+      return {
+        body: {
+          id: "repo-1",
+          name: "Custom Name",
+          local_path: "/workspace/sample-repo",
+          default_branch: "main",
+          current_commit: "abc123",
+          dirty_state: "clean",
+          project_config_status: "valid",
+          created_at: null,
+          updated_at: null,
+          last_indexed_at: null
+        }
+      };
+    }
+    if (path === "/api/repos") {
+      return { body: { items: [] } };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  assertIncludes(
+    reposRouteResult.container.innerHTML,
+    "Choose a folder to register",
+    "repos route browser hint supports first-time registration"
+  );
+  const nameInput = findInputByLabel(reposRouteResult.container, "Name");
+  setInputValue(nameInput, "Custom Name");
+  findButtonByText(reposRouteResult.container, "Browse").click();
+  await waitFor(() => reposRouteResult.fetchCalls.includes("/api/fs/browse?mode=registration"));
+  await waitFor(() => reposRouteResult.container.textContent.includes("sample-repo"));
+  reposRouteResult.root.unmount();
+
+  const { registrationNameForSelection } = await import("./routes/ReposRoute.js");
+  assertEqual(
+    registrationNameForSelection("Custom Name", {
+      name: "sample-repo",
+      path: "/workspace/sample-repo",
+      kind: "directory",
+      is_git_repo: true
+    }),
+    "Custom Name",
+    "using a repo keeps an existing typed name"
+  );
+  assertEqual(
+    registrationNameForSelection("", {
+      name: "sample-repo",
+      path: "/workspace/sample-repo",
+      kind: "directory",
+      is_git_repo: true
+    }),
+    "sample-repo",
+    "using a repo fills the name when it is empty"
+  );
+
+  const reposRouteNavigationResult = await mountAppRoute("/repos", (path) => {
+    if (path === "/api/repos") {
+      return {
+        body: {
+          items: [
+            {
+              id: "repo-1",
+              name: "Registered Repo",
+              local_path: "/registered/repo",
+              default_branch: "main",
+              current_commit: "abc123",
+              dirty_state: "clean",
+              project_config_status: "valid",
+              created_at: null,
+              updated_at: null,
+              last_indexed_at: null
+            }
+          ]
+        }
+      };
+    }
+    if (path === "/api/fs/browse?mode=registration") {
+      return {
+        body: {
+          path: "/workspace",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "outside",
+              path: "/workspace/outside",
+              kind: "directory",
+              is_git_repo: false
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/fs/browse?path=%2Fworkspace%2Foutside&mode=registration") {
+      return {
+        body: {
+          path: "/workspace/outside",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "inner",
+              path: "/workspace/outside/inner",
+              kind: "directory",
+              is_git_repo: false
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/fs/browse?path=%2Fworkspace%2Fmanual&mode=registration") {
+      return {
+        body: {
+          path: "/workspace/manual",
+          roots: ["/workspace"],
+          items: [],
+          truncated: false
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  findButtonByText(reposRouteNavigationResult.container, "Browse").click();
+  await waitFor(() =>
+    reposRouteNavigationResult.fetchCalls.includes("/api/fs/browse?mode=registration")
+  );
+  await waitFor(() => reposRouteNavigationResult.container.textContent.includes("outside"));
+  findButtonByText(reposRouteNavigationResult.container, "Open").click();
+  await waitFor(() =>
+    reposRouteNavigationResult.fetchCalls.includes(
+      "/api/fs/browse?path=%2Fworkspace%2Foutside&mode=registration"
+    )
+  );
+  reposRouteNavigationResult.root.unmount();
+
+  const helperFetchCalls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    helperFetchCalls.push(String(input));
+    return {
+      ok: true,
+      status: 200,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            path: "/workspace/manual",
+            roots: ["/workspace"],
+            items: [],
+            truncated: false
+          })
+        )
+    } as Response;
+  }) as typeof fetch;
+  const { browseRegistrationFilesystem } = await import("./routes/ReposRoute.js");
+  await browseRegistrationFilesystem("/workspace/manual");
+  assertEqual(
+    helperFetchCalls.includes("/api/fs/browse?path=%2Fworkspace%2Fmanual&mode=registration"),
+    true,
+    "typed registration browsing keeps registration mode"
+  );
+
+  let deleteShouldFail = false;
+  const reposDeleteResult = await mountAppRoute("/repos", (path, init) => {
+    if (path === "/api/repos/repo-1" && init?.method === "DELETE") {
+      if (deleteShouldFail) {
+        return {
+          ok: false,
+          status: 500,
+          body: { error: "Unable to remove repo while workflows are active" }
+        };
+      }
+      return { body: { deleted: true } };
+    }
+    if (path === "/api/repos") {
+      return {
+        body: {
+          items: [
+            {
+              id: "repo-1",
+              name: "Registered Repo",
+              local_path: "/registered/repo",
+              default_branch: "main",
+              current_commit: "abc123",
+              dirty_state: "clean",
+              project_config_status: "valid",
+              created_at: null,
+              updated_at: null,
+              last_indexed_at: null
+            }
+          ]
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  assertIncludes(
+    reposDeleteResult.container.innerHTML,
+    'class="repos-table-scroll"',
+    "repos table is wrapped in a horizontal scroll container"
+  );
+  assertIncludes(
+    reposDeleteResult.container.innerHTML,
+    'aria-label="Remove Registered Repo"',
+    "repos remove button has an accessible repo-specific label"
+  );
+  assertNotIncludes(
+    reposDeleteResult.container.innerHTML,
+    "× Remove",
+    "repos remove button stays compact instead of forcing a wide actions column"
+  );
+  const confirmMessages: string[] = [];
+  const windowWithConfirm = globalThis.window as unknown as {
+    __setConfirmHandler(handler: (message?: string) => boolean): void;
+  };
+  windowWithConfirm.__setConfirmHandler((message) => {
+    confirmMessages.push(message ?? "");
+    return false;
+  });
+  findButtonByText(reposDeleteResult.container, "×").click();
+  await waitFor(() => confirmMessages.length === 1);
+  assertEqual(confirmMessages[0], "Remove Registered Repo?", "repos remove asks for confirmation");
+  assertEqual(
+    reposDeleteResult.fetchRequests.some(
+      (request) => request.path === "/api/repos/repo-1" && request.method === "DELETE"
+    ),
+    false,
+    "repos remove cancel does not issue DELETE"
+  );
+  windowWithConfirm.__setConfirmHandler((message) => {
+    confirmMessages.push(message ?? "");
+    return true;
+  });
+  findButtonByText(reposDeleteResult.container, "×").click();
+  await waitFor(() =>
+    reposDeleteResult.fetchRequests.some(
+      (request) => request.path === "/api/repos/repo-1" && request.method === "DELETE"
+    )
+  );
+  assertEqual(
+    confirmMessages.at(-1),
+    "Remove Registered Repo?",
+    "repos remove confirm is shown before DELETE"
+  );
+  await waitFor(
+    () =>
+      reposDeleteResult.fetchRequests.filter((request) => request.path === "/api/repos").length >= 2
+  );
+  deleteShouldFail = true;
+  findButtonByText(reposDeleteResult.container, "×").click();
+  await waitFor(() =>
+    reposDeleteResult.container.textContent.includes("Unable to remove repo while workflows are active")
+  );
+  reposDeleteResult.root.unmount();
 }
 
 void main();
