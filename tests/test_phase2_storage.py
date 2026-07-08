@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest_asyncio
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import select
 
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
-from attractor_platform.storage.models import Base, RunStatus
+from attractor_platform.storage.models import Base, RunStatus, WorkflowPackageModel
 from attractor_platform.storage.repositories import PlatformRepository, _select_run_for_append_lock
 
 
@@ -159,3 +160,68 @@ async def test_run_status_updates(platform_session_factory) -> None:
 
     assert record is not None
     assert record.status == RunStatus.RUNNING.value
+
+
+async def test_delete_workflows_not_in_preserves_historical_run_workflows(platform_session_factory) -> None:
+    repo = PlatformRepository(platform_session_factory)
+    now = dt.datetime.now(dt.UTC)
+
+    await repo.register_repo(
+        repo_id="repo_history",
+        name="demo",
+        local_path="/tmp/demo-history",
+        default_branch="main",
+        current_commit="2" * 40,
+        dirty_state="clean",
+        timestamp=now,
+    )
+    await repo.upsert_workflow(
+        workflow_id="wf_keep",
+        repo_id="repo_history",
+        name="keep",
+        dot_path="/tmp/demo-history/.attractor/workflows/keep/workflow.dot",
+        toml_path=None,
+        status="valid",
+        diagnostics={},
+        timestamp=now,
+    )
+    await repo.upsert_workflow(
+        workflow_id="wf_history",
+        repo_id="repo_history",
+        name="history",
+        dot_path="/tmp/demo-history/.attractor/workflows/history/workflow.dot",
+        toml_path=None,
+        status="valid",
+        diagnostics={},
+        timestamp=now,
+    )
+    await repo.upsert_workflow(
+        workflow_id="wf_orphan",
+        repo_id="repo_history",
+        name="orphan",
+        dot_path="/tmp/demo-history/.attractor/workflows/orphan/workflow.dot",
+        toml_path=None,
+        status="valid",
+        diagnostics={},
+        timestamp=now,
+    )
+    await repo.create_run(
+        run_id="run_history",
+        repo_id="repo_history",
+        workflow_id="wf_history",
+        run_spec={},
+        actor_label="alice",
+        source_commit="2" * 40,
+        source_branch="main",
+        timestamp=now,
+    )
+
+    removed_count = await repo.delete_workflows_not_in("repo_history", {"wf_keep"})
+    async with platform_session_factory() as session:
+        result = await session.scalars(
+            select(WorkflowPackageModel.id).where(WorkflowPackageModel.repo_id == "repo_history")
+        )
+        remaining = set(result)
+
+    assert removed_count == 1
+    assert remaining == {"wf_keep", "wf_history"}

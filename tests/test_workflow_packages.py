@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from attractor_platform.errors import WorkflowPackageError
@@ -243,3 +246,60 @@ def test_discover_records_invalid_project_config_without_raising(tmp_path) -> No
 
 def test_discover_returns_empty_when_workflows_dir_missing(tmp_path) -> None:
     assert discover_workflow_packages(tmp_path) == []
+
+
+def test_workflow_tree_signature_uses_latest_workflow_mtime(tmp_path) -> None:
+    from attractor_platform.indexing import workflow_tree_signature
+
+    workflow_root = tmp_path / ".attractor" / "workflows"
+    workflow_root.mkdir(parents=True)
+    older = workflow_root / "alpha"
+    newer = workflow_root / "beta"
+    older.mkdir()
+    newer.mkdir()
+    older_dot = older / "workflow.dot"
+    newer_dot = newer / "workflow.dot"
+    older_dot.write_text(VALID_DOT, encoding="utf-8")
+    newer_dot.write_text(VALID_DOT, encoding="utf-8")
+
+    older_ns = 1_700_000_000_000_000_000
+    newer_ns = older_ns + 5_000
+    older_seconds = older_ns / 1_000_000_000
+    newer_seconds = newer_ns / 1_000_000_000
+    os.utime(workflow_root, (older_seconds, older_seconds))
+    os.utime(older, (older_seconds, older_seconds))
+    os.utime(newer, (older_seconds, older_seconds))
+    os.utime(older_dot, (older_seconds, older_seconds))
+    os.utime(newer_dot, (newer_seconds, newer_seconds))
+
+    assert workflow_tree_signature(tmp_path) == newer_dot.stat().st_mtime_ns
+    assert workflow_tree_signature(Path(tmp_path)) == newer_dot.stat().st_mtime_ns
+
+
+def test_workflow_tree_signature_detects_top_level_workflow_delete_via_root_mtime(tmp_path) -> None:
+    from attractor_platform.indexing import workflow_tree_signature
+
+    workflow_root = tmp_path / ".attractor" / "workflows"
+    workflow_root.mkdir(parents=True)
+    alpha = workflow_root / "alpha"
+    beta = workflow_root / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    (alpha / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+    (beta / "workflow.dot").write_text(VALID_DOT, encoding="utf-8")
+
+    older_ns = 1_700_000_000_000_000_000
+    newer_ns = older_ns + 9_000
+    older_seconds = older_ns / 1_000_000_000
+    newer_seconds = newer_ns / 1_000_000_000
+    os.utime(workflow_root, (older_seconds, older_seconds))
+    os.utime(alpha, (older_seconds, older_seconds))
+    os.utime(beta, (older_seconds, older_seconds))
+    os.utime(alpha / "workflow.dot", (older_seconds, older_seconds))
+    os.utime(beta / "workflow.dot", (older_seconds, older_seconds))
+
+    (beta / "workflow.dot").unlink()
+    beta.rmdir()
+    os.utime(workflow_root, (newer_seconds, newer_seconds))
+
+    assert workflow_tree_signature(tmp_path) == workflow_root.stat().st_mtime_ns

@@ -49,6 +49,7 @@ from attractor_platform.config import load_project_config
 from attractor_platform.errors import AttractorPlatformError
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.git import GitRunner
+from attractor_platform.indexing import reindex_registered_repo
 from attractor_platform.llm_backend import (
     build_platform_codergen_backend,
     resolve_platform_llm_defaults,
@@ -1795,6 +1796,30 @@ async def get_repo(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_repo(repo))
 
 
+async def refresh_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo_id = request.path_params["repo_id"]
+    repo = await _get_repo(services, repo_id)
+    if repo is None:
+        return _json_error(f"Repository {repo_id} not found", 404)
+
+    try:
+        result = await reindex_registered_repo(services, repo, force=True)
+    except AttractorPlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(str(exc), 500)
+
+    return JSONResponse(
+        {
+            "repo": _serialize_repo(result.repo),
+            "workflow_count": len(result.packages),
+            "removed_workflow_count": result.removed_workflow_count,
+            "changed": result.changed,
+        }
+    )
+
+
 async def get_project_config(request: Request) -> JSONResponse:
     services = _services(request)
     repo = await _get_repo(services, request.path_params["repo_id"])
@@ -3025,6 +3050,7 @@ def create_platform_app(
         Route("/api/repos", register_repo, methods=["POST"]),
         Route("/api/repos", list_repos, methods=["GET"]),
         Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
+        Route("/api/repos/{repo_id}/refresh", refresh_repo, methods=["POST"]),
         Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
         Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),
         Route("/api/workflows/{workflow_id}/graph", get_workflow_graph, methods=["GET"]),

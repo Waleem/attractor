@@ -113,6 +113,23 @@ class _Repository:
     async def get_repo(self, repo_id: str) -> _Repo | None:
         return self.repos.get(repo_id)
 
+    async def update_repo_index_metadata(
+        self,
+        repo_id: str,
+        *,
+        default_branch: str,
+        current_commit: str,
+        dirty_state: str,
+        timestamp: dt.datetime,
+    ) -> _Repo:
+        repo = self.repos[repo_id]
+        repo.default_branch = default_branch
+        repo.current_commit = current_commit
+        repo.dirty_state = dirty_state
+        repo.updated_at = timestamp
+        repo.last_indexed_at = timestamp
+        return repo
+
     async def upsert_workflow(
         self,
         workflow_id: str,
@@ -142,6 +159,17 @@ class _Repository:
 
     async def get_workflow(self, workflow_id: str) -> _Workflow | None:
         return self.workflows.get(workflow_id)
+
+    async def delete_workflows_not_in(self, repo_id: str, workflow_ids: set[str]) -> int:
+        removed = 0
+        for workflow_id, workflow in list(self.workflows.items()):
+            if workflow.repo_id != repo_id or workflow_id in workflow_ids:
+                continue
+            if any(run.workflow_id == workflow_id for run in self.runs.values()):
+                continue
+            del self.workflows[workflow_id]
+            removed += 1
+        return removed
 
     async def create_run(
         self,
@@ -717,3 +745,170 @@ async def test_get_run_diff_limits_git_diff_work_to_requested_files(
         for call in git.calls
     )
     assert sum(1 for call in git.calls if call[-1] in {"alpha.txt", "beta.txt"}) == 2
+
+
+async def test_refresh_repo_indexes_new_workflow_added_after_registration(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    release_workflow_dir = sample_repo / ".attractor" / "workflows" / "hotfix"
+    release_workflow_dir.mkdir(parents=True)
+    (release_workflow_dir / "workflow.dot").write_text(
+        """
+        digraph Hotfix {
+          graph [goal="ship hotfix"]
+          start [shape=Mdiamond]
+          apply [shape=box, handler="noop"]
+          done [shape=Msquare]
+          start -> apply -> done
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    repo_id = next(iter(platform_harness.repository.repos))
+    response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_count"] == 2
+    assert body["removed_workflow_count"] == 0
+    assert body["changed"] is True
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert workflows_response.status_code == 200
+    assert {workflow["name"] for workflow in workflows_response.json()} == {"release", "hotfix"}
+
+
+async def test_refresh_repo_clears_stale_diagnostics_after_invalid_workflow_is_fixed(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    workflow_dot = sample_repo / ".attractor" / "workflows" / "release" / "workflow.dot"
+    workflow_dot.write_text("not a digraph", encoding="utf-8")
+
+    repo_id = next(iter(platform_harness.repository.repos))
+    broken_response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+    assert broken_response.status_code == 200
+    broken_workflows = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert broken_workflows.status_code == 200
+    broken_release = next(
+        workflow for workflow in broken_workflows.json() if workflow["name"] == "release"
+    )
+    assert broken_release["status"] == "invalid"
+    assert broken_release["diagnostics"]["error"]["message"] == "Unable to parse workflow.dot"
+
+    workflow_dot.write_text(
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          generate [shape=box, handler="noop"]
+          done [shape=Msquare]
+          start -> generate -> done
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    fixed_response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+    assert fixed_response.status_code == 200
+    fixed_workflows = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert fixed_workflows.status_code == 200
+    fixed_release = next(
+        workflow for workflow in fixed_workflows.json() if workflow["name"] == "release"
+    )
+    assert fixed_release["status"] == "valid"
+    assert "error" not in fixed_release["diagnostics"]
+    assert all(
+        "Unable to parse workflow.dot" not in item["message"]
+        for item in fixed_release["diagnostics"]["items"]
+    )
+
+
+async def test_refresh_repo_deletes_stale_workflow_rows_for_removed_workflow(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+    removed_workflow_dir = sample_repo / ".attractor" / "workflows" / "release"
+    for path in sorted(removed_workflow_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+    removed_workflow_dir.rmdir()
+
+    response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_count"] == 0
+    assert body["removed_workflow_count"] == 1
+    assert body["changed"] is True
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert workflows_response.status_code == 200
+    assert workflows_response.json() == []
+
+
+async def test_refresh_repo_keeps_referenced_stale_workflow_for_run_history(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+    historical_workflow_id = "wf_historical"
+    orphan_workflow_id = "wf_orphan"
+    now = dt.datetime.now(dt.UTC)
+
+    await platform_harness.repository.upsert_workflow(
+        workflow_id=historical_workflow_id,
+        repo_id=repo_id,
+        name="historical",
+        dot_path=str(sample_repo / ".attractor" / "workflows" / "historical" / "workflow.dot"),
+        toml_path=None,
+        status="valid",
+        diagnostics={},
+        timestamp=now,
+    )
+    await platform_harness.repository.upsert_workflow(
+        workflow_id=orphan_workflow_id,
+        repo_id=repo_id,
+        name="orphan",
+        dot_path=str(sample_repo / ".attractor" / "workflows" / "orphan" / "workflow.dot"),
+        toml_path=None,
+        status="valid",
+        diagnostics={},
+        timestamp=now,
+    )
+    run = await platform_harness.repository.create_run(
+        run_id="run_historical",
+        repo_id=repo_id,
+        workflow_id=historical_workflow_id,
+        run_spec={},
+        actor_label="alice",
+        source_commit="1" * 40,
+        source_branch="main",
+        timestamp=now,
+    )
+
+    response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_count"] == 1
+    assert body["removed_workflow_count"] == 1
+    assert body["changed"] is True
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert workflows_response.status_code == 200
+    assert {workflow["id"] for workflow in workflows_response.json()} == {
+        "wf_historical",
+        next(
+            workflow["id"]
+            for workflow in workflows_response.json()
+            if workflow["name"] == "release"
+        ),
+    }
+    run_response = await platform_harness.client.get(f"/api/runs/{run.id}")
+    assert run_response.status_code == 200
+    assert run_response.json()["workflow_id"] == historical_workflow_id

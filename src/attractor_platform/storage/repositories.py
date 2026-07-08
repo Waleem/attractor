@@ -121,6 +121,52 @@ class PlatformRepository:
             await session.flush()
             return workflow
 
+    async def update_repo_index_metadata(
+        self,
+        repo_id: str,
+        *,
+        default_branch: str,
+        current_commit: str,
+        dirty_state: str,
+        timestamp: dt.datetime,
+    ) -> RegisteredRepoModel:
+        async with session_scope(self._session_factory) as session:
+            repo = await session.get(RegisteredRepoModel, repo_id)
+            if repo is None:
+                raise KeyError(f"Repository not found: {repo_id}")
+            repo.default_branch = default_branch
+            repo.current_commit = current_commit
+            repo.dirty_state = dirty_state
+            repo.updated_at = timestamp
+            repo.last_indexed_at = timestamp
+            await session.flush()
+            return repo
+
+    async def delete_workflows_not_in(self, repo_id: str, workflow_ids: set[str]) -> int:
+        async with session_scope(self._session_factory) as session:
+            current = await session.scalars(
+                select(WorkflowPackageModel.id).where(WorkflowPackageModel.repo_id == repo_id)
+            )
+            stale_ids = [workflow_id for workflow_id in current if workflow_id not in workflow_ids]
+            if not stale_ids:
+                return 0
+            referenced_ids = set(
+                await session.scalars(
+                    select(RunRecordModel.workflow_id)
+                    .where(RunRecordModel.workflow_id.in_(stale_ids))
+                    .distinct()
+                )
+            )
+            removed_count = 0
+            for workflow_id in stale_ids:
+                if workflow_id in referenced_ids:
+                    continue
+                workflow = await session.get(WorkflowPackageModel, workflow_id)
+                if workflow is not None:
+                    await session.delete(workflow)
+                    removed_count += 1
+            return removed_count
+
     async def create_run(
         self,
         run_id: str,
