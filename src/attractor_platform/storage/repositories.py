@@ -46,6 +46,10 @@ class PlatformRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
+    async def get_repo(self, repo_id: str) -> RegisteredRepoModel | None:
+        async with session_scope(self._session_factory) as session:
+            return await session.get(RegisteredRepoModel, repo_id)
+
     async def register_repo(
         self,
         repo_id: str,

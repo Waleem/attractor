@@ -102,6 +102,41 @@ async function renderAppRoute(
   return { markup, fetchCalls };
 }
 
+async function mountAppRoute(
+  pathname: string,
+  handler: FetchHandler
+): Promise<{
+  container: MiniElement;
+  fetchCalls: string[];
+  root: { unmount(): void };
+}> {
+  const { document } = installMiniDom(pathname);
+  const fetchCalls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    fetchCalls.push(path);
+    const result = await handler(path, init);
+    return {
+      ok: result.ok ?? true,
+      status: result.status ?? (result.ok === false ? 500 : 200),
+      text: () => Promise.resolve(JSON.stringify(result.body))
+    } as Response;
+  }) as typeof fetch;
+
+  const [{ createRoot }, { default: App }] = await Promise.all([
+    import("react-dom/client"),
+    import("./App.js")
+  ]);
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  root.render(<App />);
+
+  await waitFor(() => fetchCalls.length >= 1);
+  await waitFor(() => !container.textContent.includes("Loading"));
+  return { container, fetchCalls, root };
+}
+
 async function waitFor(assertion: () => boolean) {
   const startedAt = Date.now();
   while (!assertion()) {
@@ -448,6 +483,27 @@ function findButtonByText(container: MiniElement, label: string): MiniElement {
   return button;
 }
 
+function findInputByLabel(container: MiniElement, label: string): MiniElement {
+  const field = findElement(
+    container,
+    (element) => element.localName === "label" && element.textContent.includes(label)
+  );
+  if (!field) {
+    throw new Error(`Input label not found: ${label}\nactual: ${container.innerHTML}`);
+  }
+  const input = findElement(field, (element) => element.localName === "input");
+  if (!input) {
+    throw new Error(`Input not found for label: ${label}\nactual: ${container.innerHTML}`);
+  }
+  return input;
+}
+
+function setInputValue(input: MiniElement, value: string) {
+  input.value = value;
+  input.dispatchEvent(new MiniEvent("input", { bubbles: true, cancelable: true }));
+  input.dispatchEvent(new MiniEvent("change", { bubbles: true, cancelable: true }));
+}
+
 function findElement(node: MiniNode, predicate: (element: MiniElement) => boolean): MiniElement | null {
   if (node instanceof MiniElement && predicate(node)) {
     return node;
@@ -698,6 +754,184 @@ async function main() {
     partialResult.markup,
     "No provider credentials are available",
     "missing provider credentials render an empty state"
+  );
+
+  const reposRouteResult = await mountAppRoute("/repos", (path, init) => {
+    if (path === "/api/fs/browse?mode=registration") {
+      return {
+        body: {
+          path: "/workspace",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "sample-repo",
+              path: "/workspace/sample-repo",
+              kind: "directory",
+              is_git_repo: true
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/repos" && init?.method === "POST") {
+      return {
+        body: {
+          id: "repo-1",
+          name: "Custom Name",
+          local_path: "/workspace/sample-repo",
+          default_branch: "main",
+          current_commit: "abc123",
+          dirty_state: "clean",
+          project_config_status: "valid",
+          created_at: null,
+          updated_at: null,
+          last_indexed_at: null
+        }
+      };
+    }
+    if (path === "/api/repos") {
+      return { body: { items: [] } };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  assertIncludes(
+    reposRouteResult.container.innerHTML,
+    "Choose a folder to register",
+    "repos route browser hint supports first-time registration"
+  );
+  const nameInput = findInputByLabel(reposRouteResult.container, "Name");
+  setInputValue(nameInput, "Custom Name");
+  findButtonByText(reposRouteResult.container, "Browse").click();
+  await waitFor(() => reposRouteResult.fetchCalls.includes("/api/fs/browse?mode=registration"));
+  await waitFor(() => reposRouteResult.container.textContent.includes("sample-repo"));
+  reposRouteResult.root.unmount();
+
+  const { registrationNameForSelection } = await import("./routes/ReposRoute.js");
+  assertEqual(
+    registrationNameForSelection("Custom Name", {
+      name: "sample-repo",
+      path: "/workspace/sample-repo",
+      kind: "directory",
+      is_git_repo: true
+    }),
+    "Custom Name",
+    "using a repo keeps an existing typed name"
+  );
+  assertEqual(
+    registrationNameForSelection("", {
+      name: "sample-repo",
+      path: "/workspace/sample-repo",
+      kind: "directory",
+      is_git_repo: true
+    }),
+    "sample-repo",
+    "using a repo fills the name when it is empty"
+  );
+
+  const reposRouteNavigationResult = await mountAppRoute("/repos", (path) => {
+    if (path === "/api/repos") {
+      return {
+        body: {
+          items: [
+            {
+              id: "repo-1",
+              name: "Registered Repo",
+              local_path: "/registered/repo",
+              default_branch: "main",
+              current_commit: "abc123",
+              dirty_state: "clean",
+              project_config_status: "valid",
+              created_at: null,
+              updated_at: null,
+              last_indexed_at: null
+            }
+          ]
+        }
+      };
+    }
+    if (path === "/api/fs/browse?mode=registration") {
+      return {
+        body: {
+          path: "/workspace",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "outside",
+              path: "/workspace/outside",
+              kind: "directory",
+              is_git_repo: false
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/fs/browse?path=%2Fworkspace%2Foutside&mode=registration") {
+      return {
+        body: {
+          path: "/workspace/outside",
+          roots: ["/workspace"],
+          items: [
+            {
+              name: "inner",
+              path: "/workspace/outside/inner",
+              kind: "directory",
+              is_git_repo: false
+            }
+          ],
+          truncated: false
+        }
+      };
+    }
+    if (path === "/api/fs/browse?path=%2Fworkspace%2Fmanual&mode=registration") {
+      return {
+        body: {
+          path: "/workspace/manual",
+          roots: ["/workspace"],
+          items: [],
+          truncated: false
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  findButtonByText(reposRouteNavigationResult.container, "Browse").click();
+  await waitFor(() =>
+    reposRouteNavigationResult.fetchCalls.includes("/api/fs/browse?mode=registration")
+  );
+  await waitFor(() => reposRouteNavigationResult.container.textContent.includes("outside"));
+  findButtonByText(reposRouteNavigationResult.container, "Open").click();
+  await waitFor(() =>
+    reposRouteNavigationResult.fetchCalls.includes(
+      "/api/fs/browse?path=%2Fworkspace%2Foutside&mode=registration"
+    )
+  );
+  reposRouteNavigationResult.root.unmount();
+
+  const helperFetchCalls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    helperFetchCalls.push(String(input));
+    return {
+      ok: true,
+      status: 200,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            path: "/workspace/manual",
+            roots: ["/workspace"],
+            items: [],
+            truncated: false
+          })
+        )
+    } as Response;
+  }) as typeof fetch;
+  const { browseRegistrationFilesystem } = await import("./routes/ReposRoute.js");
+  await browseRegistrationFilesystem("/workspace/manual");
+  assertEqual(
+    helperFetchCalls.includes("/api/fs/browse?path=%2Fworkspace%2Fmanual&mode=registration"),
+    true,
+    "typed registration browsing keeps registration mode"
   );
 }
 

@@ -249,6 +249,17 @@ class _Executor:
         requested_environment: str = "",
     ) -> str:
         repo = next(repo for repo in self.repository.repos.values() if repo.local_path == repo_path)
+        now = dt.datetime.now(dt.UTC)
+        await self.repository.register_repo(
+            repo_id=repo.id,
+            name=repo.name,
+            local_path=repo.local_path,
+            default_branch=repo.default_branch,
+            current_commit=repo.current_commit,
+            dirty_state=repo.dirty_state,
+            timestamp=now,
+            project_config_status=repo.project_config_status,
+        )
         workflow = next(
             workflow
             for workflow in self.repository.workflows.values()
@@ -256,7 +267,6 @@ class _Executor:
         )
         self._run_number += 1
         run_id = f"run_{self._run_number:04d}"
-        now = dt.datetime.now(dt.UTC)
         await self.repository.create_run(
             run_id=run_id,
             repo_id=repo.id,
@@ -519,7 +529,7 @@ async def test_fs_browse_lists_directory_metadata_without_file_contents(
     ]
 
 
-async def test_fs_browse_rejects_missing_non_directory_and_path_escape(
+async def test_fs_browse_defaults_to_allowed_root_when_path_is_omitted_and_rejects_non_directory_and_escape(
     platform_harness: _Harness,
     sample_repo: Path,
     tmp_path: Path,
@@ -531,8 +541,9 @@ async def test_fs_browse_rejects_missing_non_directory_and_path_escape(
     symlink.symlink_to(outside, target_is_directory=True)
 
     missing = await platform_harness.client.get("/api/fs/browse")
-    assert missing.status_code == 400
-    assert "path" in missing.json()["error"]
+    assert missing.status_code == 200
+    assert missing.json()["path"] == str(sample_repo.resolve())
+    assert missing.json()["roots"] == [str(sample_repo.resolve())]
 
     file_response = await platform_harness.client.get(
         "/api/fs/browse",
@@ -556,7 +567,7 @@ async def test_fs_browse_rejects_missing_non_directory_and_path_escape(
     assert "not allowed" in symlink_response.json()["error"]
 
 
-async def test_fs_browse_rejects_home_when_no_repo_or_run_roots_exist(
+async def test_fs_browse_uses_registration_roots_when_no_repo_or_run_roots_exist(
     platform_harness: _Harness,
 ) -> None:
     response = await platform_harness.client.get(
@@ -564,9 +575,108 @@ async def test_fs_browse_rejects_home_when_no_repo_or_run_roots_exist(
         params={"path": str(Path.home())},
     )
 
-    assert response.status_code == 403
-    assert "not allowed" in response.json()["error"]
-    assert "items" not in response.json()
+    assert response.status_code == 200
+    assert response.json()["path"] == str(Path.home().resolve())
+    assert str(Path.home().resolve()) in response.json()["roots"]
+
+
+async def test_fs_browse_registration_mode_lists_configured_roots_without_registered_repos(
+    platform_harness: _Harness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration_root = tmp_path / "registration-root"
+    registration_root.mkdir()
+    (registration_root / "alpha").mkdir()
+    (registration_root / ".hidden").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (registration_root / "escape-link").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("ATTRACTOR_BROWSE_ROOTS", str(registration_root))
+
+    response = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"mode": "registration"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(registration_root.resolve())
+    assert body["roots"][0] == str(registration_root.resolve())
+    assert {
+        "name": "alpha",
+        "path": str((registration_root / "alpha").resolve()),
+        "kind": "directory",
+        "is_git_repo": False,
+    } in body["items"]
+    assert not any(entry["name"] in {".hidden", "escape-link"} for entry in body["items"])
+
+
+async def test_fs_browse_registration_mode_allows_unregistered_roots_even_when_repos_exist(
+    platform_harness: _Harness,
+    sample_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    registration_root = tmp_path / "registration-root"
+    registration_root.mkdir()
+    (registration_root / "alpha").mkdir()
+    monkeypatch.setenv("ATTRACTOR_BROWSE_ROOTS", str(registration_root))
+
+    rejected = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(registration_root)},
+    )
+    assert rejected.status_code == 403
+
+    allowed = await platform_harness.client.get(
+        "/api/fs/browse",
+        params={"path": str(registration_root), "mode": "registration"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["items"] == [
+        {
+            "name": "alpha",
+            "path": str((registration_root / "alpha").resolve()),
+            "kind": "directory",
+            "is_git_repo": False,
+        }
+    ]
+
+
+async def test_register_repo_preserves_custom_name_after_refresh_and_launch(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    register_response = await platform_harness.client.post(
+        "/api/repos",
+        json={"name": "Custom Name", "local_path": str(sample_repo)},
+    )
+    assert register_response.status_code == 201
+    repo_id = register_response.json()["id"]
+
+    refresh_response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+    assert refresh_response.status_code == 200
+    assert refresh_response.json()["repo"]["name"] == "Custom Name"
+
+    create_run_response = await platform_harness.client.post(
+        "/api/runs",
+        json={
+            "repo_path": str(sample_repo),
+            "workflow_name": "release",
+            "actor_label": "alice",
+        },
+    )
+    assert create_run_response.status_code == 201
+
+    list_response = await platform_harness.client.get("/api/repos")
+    assert list_response.status_code == 200
+    assert [repo["name"] for repo in list_response.json()["items"]] == ["Custom Name"]
+
+    detail_response = await platform_harness.client.get(f"/api/repos/{repo_id}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["name"] == "Custom Name"
 
 
 async def test_run_responses_include_run_spec_for_re_run(

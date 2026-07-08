@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import subprocess
 from collections.abc import AsyncIterator
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from attractor_pipeline.engine.runner import HandlerResult, Outcome, PipelineResult, PipelineStatus
 from attractor_platform.checkpoints import GitCheckpoint
-from attractor_platform.executor import DurableRunExecutor
+from attractor_platform.executor import DurableRunExecutor, _repo_identifier
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import Base, RunStatus
 
@@ -302,6 +303,7 @@ async def test_register_and_launch_tracks_active_task_and_removes_it_after_compl
     checkpoints = await repository.list_checkpoints(run_id)
 
     assert result.status == PipelineStatus.COMPLETED
+    assert repository.register_repo_calls[0]["name"] == repo_path.name
     assert run is not None
     assert run.status == RunStatus.COMPLETED.value
     assert run_id not in executor.active_tasks
@@ -1210,3 +1212,59 @@ async def test_executor_runs_workflow_in_worktree_and_persists_events(
     assert "pipeline.started" in [event.event_type for event in events]
     assert checkpoints
     assert run_id not in executor.active_tasks
+
+
+async def test_register_and_launch_with_platform_repository_preserves_existing_repo_name(
+    tmp_path: Path,
+    platform_session_factory,
+) -> None:
+    repo_path = _init_repo_with_workflow(
+        tmp_path,
+        "release",
+        """
+        digraph Release {
+          graph [goal="release"]
+          start [shape=Mdiamond]
+          task [shape=box, handler="noop", prompt="run"]
+          done [shape=Msquare]
+          start -> task -> done
+        }
+        """,
+    )
+
+    executor = DurableRunExecutor.for_tests(
+        session_factory=platform_session_factory,
+        worktree_root=tmp_path / "worktrees",
+        artifact_root=tmp_path / "artifacts",
+    )
+    now = dt.datetime.now(dt.UTC)
+    repo_id = _repo_identifier(repo_path.resolve())
+
+    await executor.repository.register_repo(
+        repo_id=repo_id,
+        name="Custom Name",
+        local_path=str(repo_path),
+        default_branch="main",
+        current_commit=subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip(),
+        dirty_state="clean",
+        timestamp=now,
+        project_config_status="valid",
+    )
+
+    run_id = await executor.register_and_launch(
+        repo_path=repo_path,
+        workflow_name="release",
+        actor_label="tester",
+        inputs={},
+    )
+    await executor.wait(run_id)
+
+    repo = await executor.repository.get_repo(repo_id)
+    assert repo is not None
+    assert repo.name == "Custom Name"

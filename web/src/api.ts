@@ -224,6 +224,7 @@ export interface FsBrowseEntry {
 
 export interface FsBrowseResult {
   path: string;
+  roots: string[];
   items: FsBrowseEntry[];
   truncated: boolean;
 }
@@ -511,8 +512,17 @@ export async function getRunDiff(
   return requestJson<RunDiff>(`/api/runs/${encodeURIComponent(runId)}/diff${suffix}`);
 }
 
-export async function browseFilesystem(path: string): Promise<FsBrowseResult> {
-  const params = new URLSearchParams({ path });
+export async function browseFilesystem(
+  path?: string,
+  options: { mode?: "registration" | string } = {}
+): Promise<FsBrowseResult> {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set("path", path);
+  }
+  if (options.mode) {
+    params.set("mode", options.mode);
+  }
   return requestJson<FsBrowseResult>(`/api/fs/browse?${params.toString()}`);
 }
 

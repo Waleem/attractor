@@ -186,6 +186,13 @@ class DurableRunExecutor:
         requested_environment: str = "",
     ) -> str:
         package = load_workflow_package(repo_path, workflow_name)
+        get_repo = cast(
+            Callable[[str], Awaitable[Any | None]] | None,
+            getattr(self.repository, "get_repo", None),
+        )
+        existing_repo = None
+        if get_repo is not None:
+            existing_repo = await get_repo(_repo_identifier(package.repo_path))
         run_spec = build_run_spec(
             package,
             inputs=inputs,
@@ -207,7 +214,7 @@ class DurableRunExecutor:
 
         register_repo_kwargs: dict[str, Any] = {
             "repo_id": run_spec.repo_id,
-            "name": package.repo_path.name,
+            "name": existing_repo.name if existing_repo is not None else package.repo_path.name,
             "local_path": str(package.repo_path),
             "default_branch": run_spec.source_branch,
             "current_commit": run_spec.source_commit,

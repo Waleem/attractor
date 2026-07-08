@@ -191,6 +191,8 @@ git commit -m "add attractor workflow"
 5. Watch the run from **Runs** or the run detail page.
 
 The run detail page shows graph state, live timeline events, approvals, artifacts, checkpoints, diffs, and write-back actions when available.
+For first-time registration, the folder browser can start from server-side browse roots before any repo is registered.
+Set `ATTRACTOR_BROWSE_ROOTS` to add allowed registration roots; hidden directories and symlink escapes stay blocked.
 
 ### From The CLI
 

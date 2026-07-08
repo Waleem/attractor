@@ -1390,6 +1390,24 @@ def _is_hidden_browse_path(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _unique_existing_dirs(paths: list[Path]) -> list[Path]:
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        path_key = str(path)
+        if path_key not in seen and path.is_dir():
+            seen.add(path_key)
+            unique_paths.append(path)
+    return unique_paths
+
+
+def _registration_browse_roots() -> list[Path]:
+    configured = os.environ.get("ATTRACTOR_BROWSE_ROOTS", "")
+    roots = [Path(item).expanduser().resolve() for item in configured.split(os.pathsep) if item]
+    roots.extend([Path.cwd().resolve(), Path.home().resolve()])
+    return _unique_existing_dirs(roots)
+
+
 async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
     roots: list[Path] = []
     for repo in await _list_repos(services):
@@ -1402,14 +1420,7 @@ async def _browse_allowed_roots(services: _PlatformServices) -> list[Path]:
         if isinstance(worktree_path, str) and worktree_path:
             roots.append(Path(worktree_path).expanduser().resolve())
 
-    unique_roots: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        root_key = str(root)
-        if root_key not in seen and root.is_dir():
-            seen.add(root_key)
-            unique_roots.append(root)
-    return unique_roots
+    return _unique_existing_dirs(roots)
 
 
 def _browse_entry(path: Path) -> dict[str, Any]:
@@ -1422,11 +1433,7 @@ def _browse_entry(path: Path) -> dict[str, Any]:
     }
 
 
-async def _safe_browse_entries(
-    services: _PlatformServices,
-    directory: Path,
-) -> tuple[list[dict[str, Any]], bool]:
-    roots = await _browse_allowed_roots(services)
+async def _safe_browse_entries(directory: Path, roots: list[Path]) -> tuple[list[dict[str, Any]], bool]:
     entries: list[Path] = []
     for child in directory.iterdir():
         if _is_hidden_browse_name(child.name):
@@ -1984,30 +1991,36 @@ async def get_run(request: Request) -> JSONResponse:
 async def browse_filesystem(request: Request) -> JSONResponse:
     services = _services(request)
     path_param = request.query_params.get("path")
-    if not path_param:
-        return _json_error("Missing 'path' query parameter", 400)
+    mode = request.query_params.get("mode", "")
+    browse_roots = await _browse_allowed_roots(services)
+    use_registration_roots = mode == "registration" or not browse_roots
+    allowed_roots = _registration_browse_roots() if use_registration_roots else browse_roots
+    if not allowed_roots:
+        return _json_error("No allowed browse roots are available", 400)
 
-    try:
-        requested_path = Path(path_param).expanduser().resolve()
-    except OSError as exc:
-        return _json_error(f"Path could not be resolved: {exc}", 400)
-
-    allowed_roots = await _browse_allowed_roots(services)
-    if not any(_is_relative_to_path(requested_path, root) for root in allowed_roots):
-        return _json_error(f"Path {requested_path} is not allowed", 403)
+    if path_param:
+        try:
+            requested_path = Path(path_param).expanduser().resolve()
+        except OSError as exc:
+            return _json_error(f"Path could not be resolved: {exc}", 400)
+        if not any(_is_relative_to_path(requested_path, root) for root in allowed_roots):
+            return _json_error(f"Path {requested_path} is not allowed", 403)
+    else:
+        requested_path = allowed_roots[0]
     if not requested_path.is_dir():
         return _json_error(f"Path {requested_path} is not a directory", 400)
     if _is_hidden_browse_path(requested_path, allowed_roots):
         return _json_error(f"Path {requested_path} is not allowed", 403)
 
     try:
-        entries, truncated = await _safe_browse_entries(services, requested_path)
+        entries, truncated = await _safe_browse_entries(requested_path, allowed_roots)
     except OSError as exc:
         return _json_error(f"Path {requested_path} could not be listed: {exc}", 400)
 
     return JSONResponse(
         {
             "path": str(requested_path),
+            "roots": [str(root) for root in allowed_roots],
             "items": entries,
             "truncated": truncated,
         }
