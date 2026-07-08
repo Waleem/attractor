@@ -12,6 +12,8 @@ import httpx
 import pytest
 import pytest_asyncio
 
+import attractor_platform.indexing as indexing_module
+import attractor_server.platform_app as platform_app_module
 from attractor_platform.git import GitResult, GitRunner
 from attractor_platform.storage.models import RunStatus
 from attractor_server.platform_app import (
@@ -908,10 +910,17 @@ async def test_refresh_repo_indexes_new_workflow_added_after_registration(
 async def test_refresh_repo_accepts_force_false_and_keeps_manual_force_default(
     platform_harness: _Harness,
     sample_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _register_repo(platform_harness, sample_repo)
     repo_id = next(iter(platform_harness.repository.repos))
 
+    def fail_discovery(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("unchanged refresh/list should not parse workflow packages")
+
+    monkeypatch.setattr(indexing_module, "discover_workflow_packages", fail_discovery)
+    monkeypatch.setattr(platform_app_module, "discover_workflow_packages", fail_discovery)
     gated_response = await platform_harness.client.post(
         f"/api/repos/{repo_id}/refresh",
         json={"force": False},
@@ -921,7 +930,12 @@ async def test_refresh_repo_accepts_force_false_and_keeps_manual_force_default(
     assert gated_response.json()["workflow_count"] == 1
     assert gated_response.json()["removed_workflow_count"] == 0
     assert gated_response.json()["changed"] is False
+    assert len(gated_response.json()["active_workflow_ids"]) == 1
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert workflows_response.status_code == 200
+    assert [workflow["name"] for workflow in workflows_response.json()] == ["release"]
 
+    monkeypatch.undo()
     forced_response = await platform_harness.client.post(
         f"/api/repos/{repo_id}/refresh",
         json={"force": True},

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from attractor_platform.packages import WorkflowPackage, discover_workflow_packages
 from attractor_platform.runspec import read_git_metadata
@@ -17,6 +18,7 @@ class WorkflowIndexResult:
     changed: bool
     removed_workflow_count: int
     active_workflow_ids: set[str]
+    workflow_count: int
 
 
 def workflow_tree_signature(repo_path: str | Path) -> int:
@@ -38,12 +40,14 @@ async def reindex_registered_repo(services: Any, repo: Any, force: bool) -> Work
     signature = workflow_tree_signature(repo.local_path)
     changed = force or signature > _last_index_signature(getattr(repo, "last_indexed_at", None))
     if not changed:
+        active_workflows = await _indexed_active_workflows(services, repo.id)
         return WorkflowIndexResult(
             repo=repo,
-            packages=discover_workflow_packages(repo.local_path),
+            packages=[],
             changed=False,
             removed_workflow_count=0,
-            active_workflow_ids=set(),
+            active_workflow_ids={workflow.id for workflow in active_workflows},
+            workflow_count=len(active_workflows),
         )
 
     timestamp = dt.datetime.now(dt.UTC)
@@ -80,7 +84,28 @@ async def reindex_registered_repo(services: Any, repo: Any, force: bool) -> Work
         changed=True,
         removed_workflow_count=removed_workflow_count,
         active_workflow_ids=workflow_ids,
+        workflow_count=len(packages),
     )
+
+
+async def _indexed_active_workflows(services: Any, repo_id: str) -> list[Any]:
+    list_workflows = cast(
+        Callable[[str], Awaitable[list[Any]]] | None,
+        getattr(services.repository, "list_workflows", None),
+    )
+    if list_workflows is not None:
+        workflows = list(await list_workflows(repo_id))
+    else:
+        workflows_by_id = getattr(services.repository, "workflows", None)
+        if not isinstance(workflows_by_id, dict):
+            workflows = []
+        else:
+            workflows = [
+                workflow
+                for workflow in workflows_by_id.values()
+                if getattr(workflow, "repo_id", None) == repo_id
+            ]
+    return [workflow for workflow in workflows if Path(workflow.dot_path).is_file()]
 
 
 def _workflow_identifier(repo_id: str, workflow_name: str) -> str:

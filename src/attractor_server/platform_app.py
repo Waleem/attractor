@@ -1324,14 +1324,6 @@ async def _get_repo(services: _PlatformServices, repo_id: str) -> Any | None:
 
 
 async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any]:
-    repo = await _get_repo(services, repo_id)
-    active_ids: set[str] | None = None
-    if repo is not None:
-        active_ids = {
-            _workflow_identifier(repo_id, package.name)
-            for package in discover_workflow_packages(repo.local_path)
-        }
-
     if isinstance(services.repository, PlatformRepository):
         async with session_scope(services.session_factory) as session:
             workflows = list(
@@ -1341,14 +1333,14 @@ async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any
                     .order_by(WorkflowPackageModel.name, WorkflowPackageModel.id)
                 )
             )
-            return _active_workflow_rows(workflows, active_ids)
+            return _active_workflow_rows(workflows)
 
     list_workflows = cast(
         Callable[[str], Awaitable[list[Any]]] | None,
         getattr(services.repository, "list_workflows", None),
     )
     if list_workflows is not None:
-        return _active_workflow_rows(list(await list_workflows(repo_id)), active_ids)
+        return _active_workflow_rows(list(await list_workflows(repo_id)))
 
     workflows = getattr(services.repository, "workflows", None)
     if isinstance(workflows, dict):
@@ -1356,15 +1348,13 @@ async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any
             [workflow for workflow in workflows.values() if workflow.repo_id == repo_id],
             key=lambda workflow: (workflow.name, workflow.id),
         )
-        return _active_workflow_rows(sorted_workflows, active_ids)
+        return _active_workflow_rows(sorted_workflows)
 
     raise RuntimeError("Repository does not support listing workflows")
 
 
-def _active_workflow_rows(workflows: list[Any], active_ids: set[str] | None) -> list[Any]:
-    if active_ids is None:
-        return workflows
-    return [workflow for workflow in workflows if workflow.id in active_ids]
+def _active_workflow_rows(workflows: list[Any]) -> list[Any]:
+    return [workflow for workflow in workflows if Path(workflow.dot_path).is_file()]
 
 
 async def _get_workflow(services: _PlatformServices, workflow_id: str) -> Any | None:
@@ -1887,20 +1877,13 @@ async def refresh_repo(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return _json_error(str(exc), 500)
 
-    active_workflow_ids = result.active_workflow_ids
-    if not result.changed:
-        active_workflow_ids = {
-            _workflow_identifier(repo.id, package.name)
-            for package in result.packages
-        }
-
     return JSONResponse(
         {
             "repo": _serialize_repo(result.repo),
-            "workflow_count": len(result.packages),
+            "workflow_count": result.workflow_count,
             "removed_workflow_count": result.removed_workflow_count,
             "changed": result.changed,
-            "active_workflow_ids": sorted(active_workflow_ids),
+            "active_workflow_ids": sorted(result.active_workflow_ids),
         }
     )
 
