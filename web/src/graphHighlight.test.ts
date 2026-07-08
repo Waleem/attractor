@@ -336,6 +336,21 @@ assertDeepEqual(
   "removes stale Graphviz edge highlight classes"
 );
 
+const transformedSvgRoot = graphvizSvgFixture();
+
+applyGraphHighlightsToRenderedSvg(transformedSvgRoot as unknown as ParentNode, highlightState);
+for (const group of transformedSvgRoot.groups) {
+  group.classNames.clear();
+  group.classNames.add(group.kind);
+}
+applyGraphHighlightsToRenderedSvg(transformedSvgRoot as unknown as ParentNode, highlightState);
+
+assertDeepEqual(
+  groupClasses(transformedSvgRoot, "deploy"),
+  ["node", "running"],
+  "reapplies node highlights after a transform update rebuilds the rendered graph classes"
+);
+
 const highlightOnlyUpdate: GraphViewerUpdateInput = {
   graph,
   events: [

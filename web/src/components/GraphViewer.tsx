@@ -126,7 +126,7 @@ export function GraphViewer({ workflowId, events }: { workflowId: string; events
       return;
     }
     applyGraphHighlightsToRenderedSvg(graphSceneRef.current, highlightState);
-  }, [highlightState, svgMarkup]);
+  }, [highlightState, svgMarkup, graphTransform.scale, graphTransform.x, graphTransform.y]);
 
   useLayoutEffect(() => {
     if (!svgMarkup) {

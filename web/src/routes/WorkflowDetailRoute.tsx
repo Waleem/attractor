@@ -7,6 +7,7 @@ import {
   type ProjectConfigStatus,
   type Workflow
 } from "../api";
+import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
 import { EmptyState, ErrorBanner, Field, KeyValue, Loading, PageHeader, Panel, StatusBadge } from "../components/ui";
 
@@ -108,6 +109,7 @@ export function WorkflowDetailRoute({
               />
             </dl>
           </Panel>
+          <GraphViewer workflowId={workflowId} events={[]} />
           <Panel title="Launch Run">
             <form className="form-stack" onSubmit={onLaunch}>
               <Field label="Actor">

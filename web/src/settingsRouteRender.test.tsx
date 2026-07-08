@@ -392,6 +392,7 @@ class MiniElement extends MiniNode {
   value = "";
   checked = false;
   disabled = false;
+  selected = false;
 
   constructor(public readonly tagName: string, ownerDocument: MiniDocument) {
     super(1, tagName.toUpperCase(), ownerDocument);
@@ -431,6 +432,17 @@ class MiniElement extends MiniNode {
 
   hasAttribute(name: string): boolean {
     return this.attributes.has(name);
+  }
+
+  get options(): MiniElement[] | undefined {
+    if (this.localName !== "select") {
+      return undefined;
+    }
+    return this.childNodes.filter(
+      (child): child is MiniElement =>
+        child instanceof MiniElement &&
+        (child.localName === "option" || child.localName === "optgroup")
+    );
   }
 
   click() {
@@ -903,6 +915,88 @@ async function main() {
     "run-detail-scroll",
     "run detail leaves checkpoints unwrapped"
   );
+
+  const workflowDetailResult = await renderAppRoute(
+    "/workflows/workflow-1",
+    (path) => {
+      if (path === "/api/repos") {
+        return {
+          body: {
+            items: [
+              {
+                id: "repo-1",
+                name: "Registered Repo",
+                local_path: "/registered/repo",
+                default_branch: "main",
+                current_commit: "abc123",
+                dirty_state: "clean",
+                project_config_status: "valid",
+                created_at: null,
+                updated_at: null,
+                last_indexed_at: null
+              }
+            ]
+          }
+        };
+      }
+      if (path === "/api/repos/repo-1/workflows") {
+        return {
+          body: [
+            {
+              id: "workflow-1",
+              repo_id: "repo-1",
+              name: "Large Workflow",
+              status: "valid",
+              dot_path: "flows/large.dot",
+              toml_path: "flows/large.toml",
+              diagnostics: { items: [] }
+            }
+          ]
+        };
+      }
+      if (path === "/api/repos/repo-1/project-config") {
+        return {
+          body: {
+            repo_id: "repo-1",
+            status: "valid",
+            config: {
+              default_environment: "local",
+              allowed_execution_modes: ["local"],
+              environments: {
+                local: {
+                  mode: "local"
+                }
+              }
+            }
+          }
+        };
+      }
+      if (path === "/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    4
+  );
+  assertIncludes(
+    workflowDetailResult.markup,
+    "<h2>Workflow Graph</h2>",
+    "workflow detail renders the workflow graph panel before launch"
+  );
+  assertEqual(
+    workflowDetailResult.fetchCalls.includes("/api/workflows/workflow-1/graph"),
+    true,
+    "workflow detail loads workflow graph data on mount"
+  );
+  const workflowGraphIndex = workflowDetailResult.markup.indexOf("<h2>Workflow Graph</h2>");
+  const workflowLaunchIndex = workflowDetailResult.markup.indexOf("<h2>Launch Run</h2>");
+  if (!(workflowGraphIndex >= 0 && workflowGraphIndex < workflowLaunchIndex)) {
+    throw new Error("workflow detail keeps the workflow graph panel before Launch Run");
+  }
 
   const reposRouteResult = await mountAppRoute("/repos", (path, init) => {
     if (path === "/api/fs/browse?mode=registration") {
