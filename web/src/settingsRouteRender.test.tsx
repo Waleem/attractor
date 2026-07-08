@@ -13,6 +13,21 @@ function assertIncludes(actual: string, expected: string, message: string) {
   }
 }
 
+function assertNotIncludes(actual: string, unexpected: string, message: string) {
+  if (actual.includes(unexpected)) {
+    throw new Error(`${message}\nexpected not to include: ${unexpected}\nactual: ${actual}`);
+  }
+}
+
+function getSectionMarkup(markup: string, heading: string) {
+  const sectionStart = markup.indexOf(`<h2>${heading}</h2>`);
+  if (sectionStart < 0) {
+    throw new Error(`Missing section heading: ${heading}`);
+  }
+  const nextHeading = markup.indexOf("<h2>", sectionStart + heading.length + 9);
+  return markup.slice(sectionStart, nextHeading < 0 ? undefined : nextHeading);
+}
+
 function assertEqual(actual: unknown, expected: unknown, message: string) {
   if (actual !== expected) {
     throw new Error(`${message}\nexpected: ${String(expected)}\nactual:   ${String(actual)}`);
@@ -150,6 +165,15 @@ async function waitFor(assertion: () => boolean) {
 function installMiniDom(pathname = "/settings") {
   const document = new MiniDocument();
   const location = { pathname };
+  class MiniEventSource {
+    onerror: (() => void) | null = null;
+
+    constructor(public readonly url: string) {}
+
+    addEventListener() {}
+    removeEventListener() {}
+    close() {}
+  }
   const window = {
     document,
     location,
@@ -164,12 +188,15 @@ function installMiniDom(pathname = "/settings") {
     getComputedStyle() {
       return {};
     },
+    setTimeout,
+    clearTimeout,
     HTMLIFrameElement: MiniElement,
     HTMLElement: MiniElement,
     HTMLInputElement: MiniElement,
     Node: MiniNode,
     Text: MiniText,
-    Event: MiniEvent
+    Event: MiniEvent,
+    EventSource: MiniEventSource
   };
   document.defaultView = window;
   for (const [name, value] of Object.entries({
@@ -181,7 +208,8 @@ function installMiniDom(pathname = "/settings") {
     HTMLIFrameElement: MiniElement,
     Node: MiniNode,
     Text: MiniText,
-    Event: MiniEvent
+    Event: MiniEvent,
+    EventSource: MiniEventSource
   })) {
     Object.defineProperty(globalThis, name, {
       configurable: true,
@@ -754,6 +782,126 @@ async function main() {
     partialResult.markup,
     "No provider credentials are available",
     "missing provider credentials render an empty state"
+  );
+
+  const runDetailResult = await renderAppRoute(
+    "/runs/run-1",
+    (path) => {
+      if (path === "/api/runs/run-1") {
+        return {
+          body: {
+            id: "run-1",
+            status: "running",
+            repo_id: "repo-1",
+            workflow_id: "workflow-1",
+            run_spec: {
+              repo_path: "/workspace/sample-repo",
+              workflow_name: "Large Workflow",
+              actor_label: "operator",
+              inputs: {}
+            },
+            actor_label: "operator",
+            source_commit: "1234567890abcdef",
+            source_branch: "main",
+            worktree_path: "/tmp/run-1",
+            managed_branch: "attractor/run-1",
+            error_category: null,
+            error_message: null,
+            created_at: "2026-07-07T12:00:00Z",
+            updated_at: "2026-07-07T12:05:00Z",
+            started_at: "2026-07-07T12:01:00Z",
+            completed_at: null
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/events") {
+        return {
+          body: {
+            items: Array.from({ length: 12 }, (_, index) => ({
+              sequence: index + 1,
+              event_type: index % 2 === 0 ? "stage.completed" : "pipeline.event",
+              payload: {
+                node_id: `node-${index + 1}`,
+                output: `event ${index + 1}`
+              },
+              actor_label: "operator",
+              created_at: `2026-07-07T12:${String(index).padStart(2, "0")}:00Z`
+            }))
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/approvals") {
+        return { body: { items: [] } };
+      }
+      if (path === "/api/runs/run-1/artifacts") {
+        return {
+          body: {
+            items: Array.from({ length: 8 }, (_, index) => ({
+              id: `artifact-${index + 1}`,
+              run_id: "run-1",
+              kind: "file",
+              name: `artifact-${index + 1}.txt`,
+              uri: `file:///tmp/artifact-${index + 1}.txt`,
+              media_type: "text/plain",
+              size_bytes: 1024 + index,
+              sha256: `sha-${index + 1}`,
+              created_at: "2026-07-07T12:02:00Z"
+            }))
+          }
+        };
+      }
+      if (path === "/api/runs/run-1/checkpoints") {
+        return { body: { items: [] } };
+      }
+      if (path === "/api/runs/run-1/diff?include_patch=true") {
+        return {
+          body: {
+            run_id: "run-1",
+            base_commit: "1234567890abcdef",
+            head_commit: "fedcba0987654321",
+            truncated: false,
+            files: Array.from({ length: 9 }, (_, index) => ({
+              path: `src/file-${index + 1}.ts`,
+              status: "modified",
+              additions: index + 1,
+              deletions: index,
+              patch: `@@ -1 +1 @@\n-old-${index + 1}\n+new-${index + 1}`,
+              patch_truncated: false
+            }))
+          }
+        };
+      }
+      if (path === "/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    7
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-diff"',
+    "run detail wraps branch diff in a bounded scroll container"
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-events"',
+    "run detail wraps event timeline in a bounded scroll container"
+  );
+  assertIncludes(
+    runDetailResult.markup,
+    'class="run-detail-scroll run-detail-scroll-artifacts"',
+    "run detail wraps artifacts in a bounded scroll container"
+  );
+  assertIncludes(runDetailResult.markup, "<h2>Checkpoints</h2>", "run detail renders the checkpoints section");
+  assertNotIncludes(
+    getSectionMarkup(runDetailResult.markup, "Checkpoints"),
+    "run-detail-scroll",
+    "run detail leaves checkpoints unwrapped"
   );
 
   const reposRouteResult = await mountAppRoute("/repos", (path, init) => {

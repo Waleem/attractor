@@ -1595,6 +1595,16 @@ td {
   cursor: grabbing;
 }
 
+.run-detail-scroll {
+  max-height: min(32rem, 58vh);
+  overflow: auto;
+  padding-right: var(--space-0-5);
+}
+
+.run-detail-scroll-diff {
+  max-height: min(34rem, 62vh);
+}
+
 .graph-scene {
   position: absolute;
   top: 0;
