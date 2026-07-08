@@ -41,6 +41,7 @@ async def sync_provider_models(provider: str, api_key: str) -> list[ModelInfo]:
             display_name=row.display_name,
             context_window=SYNCED_CONTEXT_WINDOW_FALLBACK,
             max_output=None,
+            source="provider",
         )
         for row in rows
     ]

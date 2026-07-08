@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 _CAPABILITY_FIELDS: dict[str, str] = {
     "tools": "supports_tools",
@@ -27,6 +26,7 @@ class ModelInfo:
     output_cost_per_million: float | None = None
     aliases: tuple[str, ...] = ()
     knowledge_cutoff: str | None = None
+    source: str = "curated"
 
 
 MODEL_CATALOG: list[ModelInfo] = [
@@ -204,7 +204,10 @@ _DEFAULT_MODELS: dict[str, str] = {
 }
 
 
-def merge_model_catalog(curated: Sequence[ModelInfo], synced: Sequence[ModelInfo]) -> list[ModelInfo]:
+def merge_model_catalog(
+    curated: Sequence[ModelInfo],
+    synced: Sequence[ModelInfo],
+) -> list[ModelInfo]:
     """Merge provider-synced rows onto curated catalog metadata.
 
     Curated entries remain authoritative for overlapping model ids. Synced
@@ -225,10 +228,11 @@ def replace_synced_catalog(rows_by_provider: Mapping[str, Iterable[ModelInfo]]) 
     for provider, rows in rows_by_provider.items():
         provider_rows = tuple(rows)
         curated_rows = [model for model in MODEL_CATALOG if model.provider == provider]
+        curated_ids = {curated.id for curated in curated_rows}
         normalized[provider] = tuple(
             model
             for model in merge_model_catalog(curated_rows, list(provider_rows))
-            if model.provider == provider and model.id not in {curated.id for curated in curated_rows}
+            if model.provider == provider and model.id not in curated_ids
         )
     _SYNCED_CATALOG_BY_PROVIDER = normalized
 

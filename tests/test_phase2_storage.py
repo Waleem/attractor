@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy import select
 
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import Base, RunStatus, WorkflowPackageModel
@@ -177,7 +177,7 @@ def test_normalize_utc_converts_naive_and_aware_datetimes() -> None:
     assert normalized_aware == dt.datetime(2026, 7, 3, 12, 0, 0, tzinfo=dt.UTC)
 
 
-async def test_delete_workflows_not_in_preserves_historical_run_workflows(platform_session_factory) -> None:
+async def test_delete_workflows_not_in_preserves_historical_runs(platform_session_factory) -> None:
     repo = PlatformRepository(platform_session_factory)
     now = dt.datetime.now(dt.UTC)
 

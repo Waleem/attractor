@@ -163,7 +163,10 @@ def test_platform_defaults_use_user_data_dir_outside_cwd(monkeypatch: pytest.Mon
     assert default_artifact_root() == Path.home() / ".local" / "share" / "attractor" / "artifacts"
 
 
-def test_platform_defaults_honor_xdg_data_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_platform_defaults_honor_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.delenv("ATTRACTOR_RUNNING_IN_DOCKER", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 

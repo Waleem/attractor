@@ -14,7 +14,11 @@ import pytest_asyncio
 
 from attractor_platform.git import GitResult, GitRunner
 from attractor_platform.storage.models import RunStatus
-from attractor_server.platform_app import _serialize_settings_timestamp, _serialize_timestamp, create_platform_app
+from attractor_server.platform_app import (
+    _serialize_settings_timestamp,
+    _serialize_timestamp,
+    create_platform_app,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -530,7 +534,7 @@ async def test_fs_browse_lists_directory_metadata_without_file_contents(
     ]
 
 
-async def test_fs_browse_defaults_to_allowed_root_when_path_is_omitted_and_rejects_non_directory_and_escape(
+async def test_fs_browse_default_root_rejects_non_directory_and_escape(
     platform_harness: _Harness,
     sample_repo: Path,
     tmp_path: Path,
@@ -1089,16 +1093,12 @@ async def test_refresh_repo_keeps_referenced_stale_workflow_for_run_history(
     assert body["workflow_count"] == 1
     assert body["removed_workflow_count"] == 1
     assert body["changed"] is True
+    assert historical_workflow_id not in body["active_workflow_ids"]
     workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
     assert workflows_response.status_code == 200
-    assert {workflow["id"] for workflow in workflows_response.json()} == {
-        "wf_historical",
-        next(
-            workflow["id"]
-            for workflow in workflows_response.json()
-            if workflow["name"] == "release"
-        ),
-    }
+    assert {workflow["name"] for workflow in workflows_response.json()} == {"release"}
+    assert historical_workflow_id in platform_harness.repository.workflows
+    assert orphan_workflow_id not in platform_harness.repository.workflows
     run_response = await platform_harness.client.get(f"/api/runs/{run.id}")
     assert run_response.status_code == 200
     assert run_response.json()["workflow_id"] == historical_workflow_id

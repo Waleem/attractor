@@ -9,7 +9,11 @@ import httpx
 import pytest
 
 from attractor_llm.catalog import ModelInfo, replace_synced_catalog
-from attractor_llm.catalog_sync import SYNCED_CONTEXT_WINDOW_FALLBACK, SyncedModelInfo, sync_provider_models
+from attractor_llm.catalog_sync import (
+    SYNCED_CONTEXT_WINDOW_FALLBACK,
+    SyncedModelInfo,
+    sync_provider_models,
+)
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
     DatabaseSettings,
@@ -142,6 +146,7 @@ async def test_model_catalog_returns_operator_metadata(tmp_path: Path) -> None:
             "supports_reasoning": True,
             "is_default": True,
             "is_small": False,
+            "source": "curated",
         }
         assert by_id["gpt-5.4-mini"]["is_default"] is False
         assert by_id["gpt-5.4-mini"]["is_small"] is True
@@ -230,7 +235,7 @@ async def test_model_test_endpoint_skips_missing_provider_keys_without_live_call
         await engine.dispose()
 
 
-async def test_model_sync_endpoint_merges_curated_and_synced_rows_without_live_calls_for_missing_keys(
+async def test_model_sync_merges_curated_and_synced_rows_without_live_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -285,8 +290,10 @@ async def test_model_sync_endpoint_merges_curated_and_synced_rows_without_live_c
         catalog_items = catalog_response.json()["items"]
         catalog_by_id = {item["model"]: item for item in catalog_items}
         assert catalog_by_id["gpt-live-new"]["display_name"] == "GPT Live New"
+        assert catalog_by_id["gpt-live-new"]["source"] == "provider"
         assert catalog_by_id["gpt-5.5"]["display_name"] == "GPT-5.5"
         assert catalog_by_id["gpt-5.5"]["context_window"] == 1_000_000
+        assert catalog_by_id["gpt-5.5"]["source"] == "curated"
     finally:
         await client.aclose()
         await engine.dispose()
@@ -322,6 +329,7 @@ async def test_sync_provider_models_assigns_conservative_context_window_for_sync
             display_name="GPT Live New",
             context_window=SYNCED_CONTEXT_WINDOW_FALLBACK,
             max_output=None,
+            source="provider",
         )
     ]
 

@@ -8,13 +8,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from attractor_llm.retry import RetryPolicy
 from attractor_llm.types import AdapterTimeout, Request, Response, StreamEvent
-
-if TYPE_CHECKING:
-    from attractor_llm.catalog_sync import SyncedModelInfo
 
 
 @dataclass(frozen=True)
@@ -60,10 +57,6 @@ class ProviderAdapter(Protocol):
         The first event should be START with model/provider metadata.
         The last event should be FINISH with the finish reason.
         """
-        ...
-
-    async def list_models(self) -> list[SyncedModelInfo]:
-        """List provider model identifiers for catalog sync."""
         ...
 
     async def close(self) -> None:

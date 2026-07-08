@@ -105,6 +105,7 @@ def test_synced_catalog_overlay_adds_new_rows_without_overwriting_curated_metada
             display_name="GPT Live New",
             context_window=256_000,
             max_output=None,
+            source="provider",
         ),
         ModelInfo(
             id="gpt-5.5",
@@ -123,11 +124,14 @@ def test_synced_catalog_overlay_adds_new_rows_without_overwriting_curated_metada
     assert by_id["gpt-5.5"].display_name == "GPT-5.5"
     assert by_id["gpt-5.5"].context_window == 1_000_000
 
-    replace_synced_catalog({"openai": synced})
-    openai_models = list_models("openai")
-    assert [model.id for model in openai_models[:2]] == ["gpt-5.5", "gpt-5.4"]
-    assert openai_models[-1].id == "gpt-live-new"
-    replace_synced_catalog({})
+    try:
+        replace_synced_catalog({"openai": synced})
+        openai_models = list_models("openai")
+        assert [model.id for model in openai_models[:2]] == ["gpt-5.5", "gpt-5.4"]
+        assert openai_models[-1].id == "gpt-live-new"
+        assert openai_models[-1].source == "provider"
+    finally:
+        replace_synced_catalog({})
 
 
 def test_backend_constructor_defaults_are_catalog_current() -> None:

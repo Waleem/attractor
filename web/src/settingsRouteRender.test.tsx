@@ -659,7 +659,8 @@ const catalogPayload: ModelCatalogRow[] = [
     supports_vision: false,
     supports_reasoning: true,
     is_default: true,
-    is_small: false
+    is_small: false,
+    source: "provider"
   }
 ];
 

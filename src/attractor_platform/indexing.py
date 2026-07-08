@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ class WorkflowIndexResult:
     packages: list[WorkflowPackage]
     changed: bool
     removed_workflow_count: int
+    active_workflow_ids: set[str]
 
 
 def workflow_tree_signature(repo_path: str | Path) -> int:
@@ -42,6 +43,7 @@ async def reindex_registered_repo(services: Any, repo: Any, force: bool) -> Work
             packages=discover_workflow_packages(repo.local_path),
             changed=False,
             removed_workflow_count=0,
+            active_workflow_ids=set(),
         )
 
     timestamp = dt.datetime.now(dt.UTC)
@@ -68,12 +70,16 @@ async def reindex_registered_repo(services: Any, repo: Any, force: bool) -> Work
             diagnostics=_serialize_diagnostics(package),
             timestamp=timestamp,
         )
-    removed_workflow_count = await services.repository.delete_workflows_not_in(repo.id, workflow_ids)
+    removed_workflow_count = await services.repository.delete_workflows_not_in(
+        repo.id,
+        workflow_ids,
+    )
     return WorkflowIndexResult(
         repo=updated_repo,
         packages=packages,
         changed=True,
         removed_workflow_count=removed_workflow_count,
+        active_workflow_ids=workflow_ids,
     )
 
 

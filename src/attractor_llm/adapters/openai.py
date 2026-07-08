@@ -23,8 +23,8 @@ from typing import Any
 
 import httpx
 
-from attractor_llm.errors import InvalidRequestError, ProviderError, classify_http_error
 from attractor_llm.catalog_sync import SyncedModelInfo
+from attractor_llm.errors import InvalidRequestError, ProviderError, classify_http_error
 from attractor_llm.types import (
     ContentPart,
     ContentPartKind,

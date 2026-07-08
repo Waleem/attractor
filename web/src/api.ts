@@ -33,6 +33,7 @@ export interface RepoRefreshResult {
   workflow_count: number;
   removed_workflow_count: number;
   changed: boolean;
+  active_workflow_ids?: string[];
 }
 
 export interface WorkflowDiagnostic {
@@ -286,6 +287,7 @@ export interface ModelCatalogRow {
   supports_reasoning: boolean;
   is_default: boolean;
   is_small: boolean;
+  source: "curated" | "provider" | string;
 }
 
 export interface ModelTestSummary {

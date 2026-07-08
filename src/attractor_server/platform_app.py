@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -523,6 +523,7 @@ def _serialize_model_catalog_row(model: ModelInfo) -> dict[str, Any]:
         "supports_reasoning": model.supports_reasoning,
         "is_default": model.id == default_model.id,
         "is_small": _small_model_badge(model),
+        "source": model.source,
     }
 
 
@@ -1323,31 +1324,47 @@ async def _get_repo(services: _PlatformServices, repo_id: str) -> Any | None:
 
 
 async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any]:
+    repo = await _get_repo(services, repo_id)
+    active_ids: set[str] | None = None
+    if repo is not None:
+        active_ids = {
+            _workflow_identifier(repo_id, package.name)
+            for package in discover_workflow_packages(repo.local_path)
+        }
+
     if isinstance(services.repository, PlatformRepository):
         async with session_scope(services.session_factory) as session:
-            return list(
+            workflows = list(
                 await session.scalars(
                     select(WorkflowPackageModel)
                     .where(WorkflowPackageModel.repo_id == repo_id)
                     .order_by(WorkflowPackageModel.name, WorkflowPackageModel.id)
                 )
             )
+            return _active_workflow_rows(workflows, active_ids)
 
     list_workflows = cast(
         Callable[[str], Awaitable[list[Any]]] | None,
         getattr(services.repository, "list_workflows", None),
     )
     if list_workflows is not None:
-        return list(await list_workflows(repo_id))
+        return _active_workflow_rows(list(await list_workflows(repo_id)), active_ids)
 
     workflows = getattr(services.repository, "workflows", None)
     if isinstance(workflows, dict):
-        return sorted(
+        sorted_workflows = sorted(
             [workflow for workflow in workflows.values() if workflow.repo_id == repo_id],
             key=lambda workflow: (workflow.name, workflow.id),
         )
+        return _active_workflow_rows(sorted_workflows, active_ids)
 
     raise RuntimeError("Repository does not support listing workflows")
+
+
+def _active_workflow_rows(workflows: list[Any], active_ids: set[str] | None) -> list[Any]:
+    if active_ids is None:
+        return workflows
+    return [workflow for workflow in workflows if workflow.id in active_ids]
 
 
 async def _get_workflow(services: _PlatformServices, workflow_id: str) -> Any | None:
@@ -1469,7 +1486,10 @@ def _browse_entry(path: Path) -> dict[str, Any]:
     }
 
 
-async def _safe_browse_entries(directory: Path, roots: list[Path]) -> tuple[list[dict[str, Any]], bool]:
+async def _safe_browse_entries(
+    directory: Path,
+    roots: list[Path],
+) -> tuple[list[dict[str, Any]], bool]:
     entries: list[Path] = []
     for child in directory.iterdir():
         if _is_hidden_browse_name(child.name):
@@ -1867,12 +1887,20 @@ async def refresh_repo(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return _json_error(str(exc), 500)
 
+    active_workflow_ids = result.active_workflow_ids
+    if not result.changed:
+        active_workflow_ids = {
+            _workflow_identifier(repo.id, package.name)
+            for package in result.packages
+        }
+
     return JSONResponse(
         {
             "repo": _serialize_repo(result.repo),
             "workflow_count": len(result.packages),
             "removed_workflow_count": result.removed_workflow_count,
             "changed": result.changed,
+            "active_workflow_ids": sorted(active_workflow_ids),
         }
     )
 
@@ -2914,6 +2942,7 @@ async def sync_models(request: Request) -> JSONResponse:
             )
             continue
 
+        synced_rows = [replace(row, source="provider") for row in synced_rows]
         synced_rows_by_provider[provider] = synced_rows
         synced_count += len(synced_rows)
         items.append(

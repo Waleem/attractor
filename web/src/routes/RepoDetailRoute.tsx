@@ -16,8 +16,9 @@ export function RepoDetailRoute({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [activeWorkflowIds, setActiveWorkflowIds] = useState<string[] | null>(null);
   const repo = repoState.data;
-  const workflows = workflowState.data ?? [];
+  const workflows = filterActiveWorkflows(workflowState.data ?? [], activeWorkflowIds);
 
   useEffect(() => {
     let active = true;
@@ -27,6 +28,7 @@ export function RepoDetailRoute({
           return;
         }
         repoState.setData(result.repo);
+        setActiveWorkflowIds(result.active_workflow_ids ?? null);
         workflowState.refresh();
       })
       .catch((caught: unknown) => {
@@ -46,6 +48,7 @@ export function RepoDetailRoute({
     try {
       const result = await refreshRepo(repoId, { force: true });
       repoState.setData(result.repo);
+      setActiveWorkflowIds(result.active_workflow_ids ?? null);
       workflowState.refresh();
       setRefreshMessage(refreshResultMessage(result));
     } catch (caught) {
@@ -100,6 +103,14 @@ function refreshResultMessage(result: RepoRefreshResult): string {
       : "";
   const state = result.changed ? "Index refreshed." : "Index already current.";
   return `${state} ${result.workflow_count} ${workflowLabel} indexed.${removed}`;
+}
+
+function filterActiveWorkflows(workflows: Workflow[], activeWorkflowIds: string[] | null): Workflow[] {
+  if (!activeWorkflowIds) {
+    return workflows;
+  }
+  const active = new Set(activeWorkflowIds);
+  return workflows.filter((workflow) => active.has(workflow.id));
 }
 
 function WorkflowTable({

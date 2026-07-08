@@ -600,7 +600,8 @@ function SecretsEditor({
 function ModelBadges({ model }: { model: ModelCatalogRow }) {
   const badges = [
     model.is_default ? "default" : null,
-    model.is_small ? "small" : null
+    model.is_small ? "small" : null,
+    model.source === "provider" ? "provider" : null
   ].filter(Boolean);
   if (badges.length === 0) {
     return <span className="subtle">None</span>;
