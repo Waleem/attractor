@@ -1033,9 +1033,9 @@ async function main() {
   repoDetailResult.root.unmount();
 
   const workflowDetailResult = await renderAppRoute(
-    "/workflows/workflow-1",
+    "/console/workflows/workflow-1",
     (path) => {
-      if (path === "/api/repos") {
+      if (path === "/console/api/repos") {
         return {
           body: {
             items: [
@@ -1055,7 +1055,7 @@ async function main() {
           }
         };
       }
-      if (path === "/api/repos/repo-1/workflows") {
+      if (path === "/console/api/repos/repo-1/workflows") {
         return {
           body: [
             {
@@ -1070,7 +1070,7 @@ async function main() {
           ]
         };
       }
-      if (path === "/api/repos/repo-1/project-config") {
+      if (path === "/console/api/repos/repo-1/project-config") {
         return {
           body: {
             repo_id: "repo-1",
@@ -1087,7 +1087,7 @@ async function main() {
           }
         };
       }
-      if (path === "/api/workflows/workflow-1/graph") {
+      if (path === "/console/api/workflows/workflow-1/graph") {
         return {
           ok: false,
           status: 503,
@@ -1104,14 +1104,14 @@ async function main() {
     "workflow detail renders the workflow graph panel before launch"
   );
   assertEqual(
-    workflowDetailResult.fetchCalls.includes("/api/workflows/workflow-1/graph"),
+    workflowDetailResult.fetchCalls.includes("/console/api/workflows/workflow-1/graph"),
     true,
     "workflow detail loads workflow graph data on mount"
   );
   assertIncludes(
     workflowDetailResult.markup,
-    '<a class="back-link" href="/repos/repo-1">← Back to Registered Repo</a>',
-    "workflow detail links back to the parent repo"
+    '<a class="back-link" href="/console/repos/repo-1">← Back to Registered Repo</a>',
+    "workflow detail links back to the parent repo with the app base path"
   );
   const workflowGraphIndex = workflowDetailResult.markup.indexOf("<h2>Workflow Graph</h2>");
   const workflowLaunchIndex = workflowDetailResult.markup.indexOf("<h2>Launch Run</h2>");

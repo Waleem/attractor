@@ -7,6 +7,7 @@ import {
   type ProjectConfigStatus,
   type Workflow
 } from "../api";
+import { getAppBasePath, toAppHref } from "../appBase";
 import { GraphViewer } from "../components/GraphViewer";
 import { useAsync } from "../components/useAsync";
 import { EmptyState, ErrorBanner, Field, KeyValue, Loading, PageHeader, Panel, StatusBadge } from "../components/ui";
@@ -35,6 +36,7 @@ export function WorkflowDetailRoute({
   const repo = workflowState.data?.repo ?? null;
   const workflow = validation ?? workflowState.data?.workflow ?? null;
   const environmentOptions = environmentNames(configState.data?.config);
+  const repoHref = repo ? toAppHref(`/repos/${repo.id}`, getAppBasePath()) : null;
 
   async function runValidation() {
     setSubmitting(true);
@@ -80,7 +82,14 @@ export function WorkflowDetailRoute({
   return (
     <>
       {repo ? (
-        <a className="back-link" href={`/repos/${repo.id}`}>
+        <a
+          className="back-link"
+          href={repoHref ?? `/repos/${repo.id}`}
+          onClick={(event) => {
+            event.preventDefault();
+            navigate(`/repos/${repo.id}`);
+          }}
+        >
           ← Back to {repo.name}
         </a>
       ) : null}
