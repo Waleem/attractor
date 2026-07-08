@@ -16,6 +16,7 @@ from pathlib import Path
 import uvicorn
 
 from attractor_llm.catalog import get_default_model
+from attractor_platform.paths import resolve_platform_roots
 from attractor_server.app import create_app
 from attractor_server.pipeline_manager import PipelineManager
 
@@ -99,12 +100,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--worktree-root",
-        default=os.environ.get("ATTRACTOR_WORKTREE_ROOT", ".attractor-worktrees"),
+        default=None,
         help="Platform managed worktree root",
     )
     parser.add_argument(
         "--artifact-root",
-        default=os.environ.get("ATTRACTOR_ARTIFACT_ROOT", ".attractor-artifacts"),
+        default=None,
         help="Platform artifact root",
     )
     parser.add_argument(
@@ -133,6 +134,10 @@ def main() -> None:
             else DatabaseSettings.from_env()
         )
         session_factory = create_session_factory(engine)
+        worktree_root, artifact_root = resolve_platform_roots(
+            args.worktree_root,
+            args.artifact_root,
+        )
 
         runtime_default_provider = (
             args.provider or os.environ.get("ATTRACTOR_DEFAULT_PROVIDER", "").strip() or None
@@ -146,8 +151,8 @@ def main() -> None:
         )
         executor = DurableRunExecutor(
             session_factory=session_factory,
-            worktree_root=Path(args.worktree_root),
-            artifact_root=Path(args.artifact_root),
+            worktree_root=worktree_root,
+            artifact_root=artifact_root,
             codergen_backend=codergen_backend,
         )
         app = create_platform_app(

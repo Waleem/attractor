@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from attractor_platform.config import (
@@ -12,6 +14,12 @@ from attractor_platform.config import (
     load_workflow_config,
 )
 from attractor_platform.errors import ConfigLoadError
+from attractor_platform.paths import (
+    default_artifact_root,
+    default_platform_data_dir,
+    default_worktree_root,
+    resolve_platform_roots,
+)
 
 
 def test_default_project_config_is_safe_for_phase1() -> None:
@@ -133,3 +141,75 @@ def test_policy_models_accept_explicit_values() -> None:
     assert env.mode == "docker"
     assert retention.keep_artifacts_days == 2
     assert artifacts.max_bytes == 10
+
+
+def test_platform_defaults_use_user_data_dir_outside_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ATTRACTOR_RUNNING_IN_DOCKER", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("ATTRACTOR_WORKTREE_ROOT", raising=False)
+    monkeypatch.delenv("ATTRACTOR_ARTIFACT_ROOT", raising=False)
+
+    original_is_dir = Path.is_dir
+
+    def fake_is_dir(path: Path) -> bool:
+        if path == Path("/data"):
+            return False
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+
+    assert default_platform_data_dir() == Path.home() / ".local" / "share" / "attractor"
+    assert default_worktree_root() == Path.home() / ".local" / "share" / "attractor" / "worktrees"
+    assert default_artifact_root() == Path.home() / ".local" / "share" / "attractor" / "artifacts"
+
+
+def test_platform_defaults_honor_xdg_data_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ATTRACTOR_RUNNING_IN_DOCKER", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    original_is_dir = Path.is_dir
+
+    def fake_is_dir(path: Path) -> bool:
+        if path == Path("/data"):
+            return False
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+
+    expected = tmp_path / "xdg" / "attractor"
+    assert default_platform_data_dir() == expected
+    assert default_worktree_root() == expected / "worktrees"
+    assert default_artifact_root() == expected / "artifacts"
+
+
+def test_platform_defaults_use_docker_data_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ATTRACTOR_RUNNING_IN_DOCKER", "1")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    assert default_platform_data_dir() == Path("/data/attractor")
+    assert default_worktree_root() == Path("/data/attractor/worktrees")
+    assert default_artifact_root() == Path("/data/attractor/artifacts")
+
+
+def test_resolve_platform_roots_honors_explicit_args_and_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    explicit_worktree = tmp_path / "explicit-worktrees"
+    explicit_artifact = tmp_path / "explicit-artifacts"
+    env_worktree = tmp_path / "env-worktrees"
+    env_artifact = tmp_path / "env-artifacts"
+    monkeypatch.setenv("ATTRACTOR_WORKTREE_ROOT", str(env_worktree))
+    monkeypatch.setenv("ATTRACTOR_ARTIFACT_ROOT", str(env_artifact))
+
+    worktree_root, artifact_root = resolve_platform_roots(
+        str(explicit_worktree),
+        str(explicit_artifact),
+    )
+
+    assert worktree_root == explicit_worktree
+    assert artifact_root == explicit_artifact
+
+    env_worktree_root, env_artifact_root = resolve_platform_roots(None, None)
+
+    assert env_worktree_root == env_worktree
+    assert env_artifact_root == env_artifact

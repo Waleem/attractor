@@ -76,9 +76,16 @@ The Vite server listens on <http://127.0.0.1:5173> and proxies `/api` to `http:/
 Local platform defaults:
 
 - database: `.attractor-platform.sqlite3`
-- managed worktrees: `.attractor-worktrees`
-- artifacts: `.attractor-artifacts`
+- managed worktrees: `~/.local/share/attractor/worktrees` or `$XDG_DATA_HOME/attractor/worktrees`
+- artifacts: `~/.local/share/attractor/artifacts` or `$XDG_DATA_HOME/attractor/artifacts`
 - settings secret key: `~/.attractor/platform-secret.key`
+
+When running in Docker, managed worktrees and artifacts default to `/data/attractor/worktrees`
+and `/data/attractor/artifacts`.
+
+Old CWD-relative `.attractor-*` directories are not migrated automatically; pass explicit
+`--worktree-root` / `--artifact-root` flags or `ATTRACTOR_WORKTREE_ROOT` /
+`ATTRACTOR_ARTIFACT_ROOT` to keep using them.
 
 Useful server options:
 
