@@ -1846,8 +1846,22 @@ async def refresh_repo(request: Request) -> JSONResponse:
     if repo is None:
         return _json_error(f"Repository {repo_id} not found", 404)
 
+    force = True
+    raw_body = await request.body()
+    if raw_body:
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return _json_error("Invalid JSON body", 400)
+        if not isinstance(body, dict):
+            return _json_error("JSON body must be an object", 400)
+        body_force = body.get("force", True)
+        if not isinstance(body_force, bool):
+            return _json_error("'force' must be a boolean", 400)
+        force = body_force
+
     try:
-        result = await reindex_registered_repo(services, repo, force=True)
+        result = await reindex_registered_repo(services, repo, force=force)
     except AttractorPlatformError as exc:
         return JSONResponse(exc.to_dict(), status_code=400)
     except Exception as exc:  # noqa: BLE001

@@ -6,6 +6,11 @@ type FetchResult = {
   body: unknown;
 };
 type FetchHandler = (path: string, init?: RequestInit) => FetchResult | Promise<FetchResult>;
+type FetchRequest = {
+  path: string;
+  method: string;
+  body: string | null;
+};
 
 function assertIncludes(actual: string, expected: string, message: string) {
   if (!actual.includes(expected)) {
@@ -83,12 +88,19 @@ async function renderAppRoute(
 ): Promise<{
   markup: string;
   fetchCalls: string[];
+  fetchRequests: FetchRequest[];
 }> {
   const { document } = installMiniDom(pathname);
   const fetchCalls: string[] = [];
+  const fetchRequests: FetchRequest[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     fetchCalls.push(path);
+    fetchRequests.push({
+      path,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : null
+    });
     const result = await handler(path, init);
     return {
       ok: result.ok ?? true,
@@ -114,7 +126,7 @@ async function renderAppRoute(
   }
   const markup = container.innerHTML;
   root.unmount();
-  return { markup, fetchCalls };
+  return { markup, fetchCalls, fetchRequests };
 }
 
 async function mountAppRoute(
@@ -123,13 +135,20 @@ async function mountAppRoute(
 ): Promise<{
   container: MiniElement;
   fetchCalls: string[];
+  fetchRequests: FetchRequest[];
   root: { unmount(): void };
 }> {
   const { document } = installMiniDom(pathname);
   const fetchCalls: string[] = [];
+  const fetchRequests: FetchRequest[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     fetchCalls.push(path);
+    fetchRequests.push({
+      path,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : null
+    });
     const result = await handler(path, init);
     return {
       ok: result.ok ?? true,
@@ -149,7 +168,7 @@ async function mountAppRoute(
 
   await waitFor(() => fetchCalls.length >= 1);
   await waitFor(() => !container.textContent.includes("Loading"));
-  return { container, fetchCalls, root };
+  return { container, fetchCalls, fetchRequests, root };
 }
 
 async function waitFor(assertion: () => boolean) {
@@ -936,6 +955,78 @@ async function main() {
     "run-detail-scroll",
     "run detail leaves checkpoints unwrapped"
   );
+
+  const repoDetailResult = await mountAppRoute("/repos/repo-1", (path, init) => {
+    const repo = {
+      id: "repo-1",
+      name: "Registered Repo",
+      local_path: "/registered/repo",
+      default_branch: "main",
+      current_commit: "abc123",
+      dirty_state: "clean",
+      project_config_status: "valid",
+      created_at: null,
+      updated_at: "2026-07-07T12:05:00Z",
+      last_indexed_at: "2026-07-07T12:05:00Z"
+    };
+    const workflow = {
+      id: "workflow-1",
+      repo_id: "repo-1",
+      name: "Release",
+      status: "valid",
+      dot_path: "flows/release.dot",
+      toml_path: "flows/release.toml",
+      diagnostics: { items: [] },
+      indexed_at: "2026-07-07T12:05:00Z"
+    };
+    if (path === "/api/repos/repo-1") {
+      return { body: repo };
+    }
+    if (path === "/api/repos/repo-1/workflows") {
+      return { body: [workflow] };
+    }
+    if (path === "/api/repos/repo-1/refresh" && init?.method === "POST") {
+      return {
+        body: {
+          repo,
+          workflow_count: 1,
+          removed_workflow_count: 0,
+          changed: JSON.parse(String(init.body ?? "{}")).force === true
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  await waitFor(() =>
+    repoDetailResult.fetchRequests.some((request) => request.path === "/api/repos/repo-1/refresh")
+  );
+  const autoRefreshRequests = repoDetailResult.fetchRequests.filter(
+    (request) => request.path === "/api/repos/repo-1/refresh"
+  );
+  assertEqual(autoRefreshRequests.length, 1, "repo detail auto-load refreshes once");
+  assertEqual(
+    autoRefreshRequests[0]?.body,
+    JSON.stringify({ force: false }),
+    "repo detail auto-load uses mtime-gated refresh semantics"
+  );
+  findButtonByText(repoDetailResult.container, "Refresh").click();
+  await waitFor(
+    () =>
+      repoDetailResult.fetchRequests.filter(
+        (request) => request.path === "/api/repos/repo-1/refresh"
+      ).length >= 2
+  );
+  const manualRefreshRequests = repoDetailResult.fetchRequests.filter(
+    (request) => request.path === "/api/repos/repo-1/refresh"
+  );
+  assertEqual(manualRefreshRequests.length, 2, "repo detail refresh button calls refresh again");
+  assertEqual(
+    manualRefreshRequests[1]?.body,
+    JSON.stringify({ force: true }),
+    "repo detail manual refresh forces a full re-index"
+  );
+  await waitFor(() => repoDetailResult.container.textContent.includes("Index refreshed"));
+  repoDetailResult.root.unmount();
 
   const workflowDetailResult = await renderAppRoute(
     "/workflows/workflow-1",

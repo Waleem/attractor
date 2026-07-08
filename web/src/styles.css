@@ -1414,6 +1414,10 @@ td {
   color: var(--status-completed);
 }
 
+.repo-refresh-notice {
+  font-size: var(--font-size-13);
+}
+
 .error-banner {
   background: var(--status-failed-bg);
   color: var(--status-failed);

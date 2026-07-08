@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -895,6 +896,75 @@ async def test_refresh_repo_indexes_new_workflow_added_after_registration(
     assert body["workflow_count"] == 2
     assert body["removed_workflow_count"] == 0
     assert body["changed"] is True
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+    assert workflows_response.status_code == 200
+    assert {workflow["name"] for workflow in workflows_response.json()} == {"release", "hotfix"}
+
+
+async def test_refresh_repo_accepts_force_false_and_keeps_manual_force_default(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+
+    gated_response = await platform_harness.client.post(
+        f"/api/repos/{repo_id}/refresh",
+        json={"force": False},
+    )
+
+    assert gated_response.status_code == 200
+    assert gated_response.json()["workflow_count"] == 1
+    assert gated_response.json()["removed_workflow_count"] == 0
+    assert gated_response.json()["changed"] is False
+
+    forced_response = await platform_harness.client.post(
+        f"/api/repos/{repo_id}/refresh",
+        json={"force": True},
+    )
+    default_response = await platform_harness.client.post(f"/api/repos/{repo_id}/refresh")
+
+    assert forced_response.status_code == 200
+    assert forced_response.json()["changed"] is True
+    assert default_response.status_code == 200
+    assert default_response.json()["changed"] is True
+
+
+async def test_refresh_repo_force_false_reindexes_when_workflow_tree_changes(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+    hotfix_workflow_dir = sample_repo / ".attractor" / "workflows" / "hotfix"
+    hotfix_workflow_dir.mkdir(parents=True)
+    hotfix_dot = hotfix_workflow_dir / "workflow.dot"
+    hotfix_dot.write_text(
+        """
+        digraph Hotfix {
+          graph [goal="ship hotfix"]
+          start [shape=Mdiamond]
+          apply [shape=box, handler="noop"]
+          done [shape=Msquare]
+          start -> apply -> done
+        }
+        """,
+        encoding="utf-8",
+    )
+    future_ns = int((dt.datetime.now(dt.UTC) + dt.timedelta(seconds=5)).timestamp() * 1_000_000_000)
+    os.utime(sample_repo / ".attractor" / "workflows", ns=(future_ns, future_ns))
+    os.utime(hotfix_workflow_dir, ns=(future_ns, future_ns))
+    os.utime(hotfix_dot, ns=(future_ns, future_ns))
+
+    response = await platform_harness.client.post(
+        f"/api/repos/{repo_id}/refresh",
+        json={"force": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is True
+    assert body["workflow_count"] == 2
     workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
     assert workflows_response.status_code == 200
     assert {workflow["name"] for workflow in workflows_response.json()} == {"release", "hotfix"}

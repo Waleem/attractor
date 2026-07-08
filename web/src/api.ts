@@ -28,6 +28,13 @@ export interface Repo {
   project_config?: ProjectConfig;
 }
 
+export interface RepoRefreshResult {
+  repo: Repo;
+  workflow_count: number;
+  removed_workflow_count: number;
+  changed: boolean;
+}
+
 export interface WorkflowDiagnostic {
   rule?: string;
   severity?: string;
@@ -440,6 +447,16 @@ export async function listRepos(): Promise<Repo[]> {
 
 export async function getRepo(repoId: string): Promise<Repo> {
   return requestJson<Repo>(`/api/repos/${encodeURIComponent(repoId)}`);
+}
+
+export async function refreshRepo(
+  repoId: string,
+  options: { force?: boolean } = {}
+): Promise<RepoRefreshResult> {
+  return requestJson<RepoRefreshResult>(`/api/repos/${encodeURIComponent(repoId)}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ force: options.force ?? true })
+  });
 }
 
 export async function getProjectConfig(repoId: string): Promise<ProjectConfigStatus> {
