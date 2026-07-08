@@ -181,8 +181,9 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function Diagnostics({ workflow }: { workflow: Workflow }) {
   const items = workflow.diagnostics.items ?? [];
-  if (workflow.diagnostics.error) {
-    return <div className="error-banner">{workflow.diagnostics.error}</div>;
+  const diagnosticError = diagnosticErrorText(workflow.diagnostics.error);
+  if (diagnosticError) {
+    return <div className="error-banner">{diagnosticError}</div>;
   }
   if (items.length === 0) {
     return <EmptyState>No diagnostics</EmptyState>;
@@ -209,4 +210,24 @@ function Diagnostics({ workflow }: { workflow: Workflow }) {
       </tbody>
     </table>
   );
+}
+
+function diagnosticErrorText(error: unknown): string | null {
+  if (!error) {
+    return null;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const detail = record.detail;
+    if (detail && typeof detail === "object" && typeof (detail as Record<string, unknown>).error === "string") {
+      return (detail as Record<string, unknown>).error as string;
+    }
+    if (typeof record.message === "string") {
+      return record.message;
+    }
+  }
+  return String(error);
 }

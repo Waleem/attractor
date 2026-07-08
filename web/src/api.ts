@@ -45,7 +45,7 @@ export interface Workflow {
   toml_path: string | null;
   status: string;
   diagnostics: {
-    error?: string;
+    error?: unknown;
     items?: WorkflowDiagnostic[];
   };
   indexed_at?: string | null;
@@ -77,7 +77,7 @@ export interface WorkflowGraph {
   nodes: WorkflowGraphNode[];
   edges: WorkflowGraphEdge[];
   diagnostics: {
-    error?: string;
+    error?: unknown;
     items?: WorkflowDiagnostic[];
   };
 }
@@ -367,15 +367,31 @@ function apiUrl(path: string): string {
   return apiPath(path);
 }
 
+export function apiErrorMessage(data: unknown, status: number): string {
+  if (data && typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    const detail = record.detail;
+    if (detail && typeof detail === "object") {
+      const detailError = (detail as Record<string, unknown>).error;
+      if (typeof detailError === "string" && detailError) {
+        return detailError;
+      }
+    }
+    if (typeof record.message === "string" && record.message) {
+      return record.message;
+    }
+    if (typeof record.error === "string" && record.error) {
+      return record.error;
+    }
+  }
+  return `Request failed with ${status}`;
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const message =
-      data && typeof data === "object" && "error" in data
-        ? String((data as { error: unknown }).error)
-        : `Request failed with ${response.status}`;
-    throw new Error(message);
+    throw new Error(apiErrorMessage(data, response.status));
   }
   return data as T;
 }

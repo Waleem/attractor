@@ -998,6 +998,92 @@ async function main() {
     throw new Error("workflow detail keeps the workflow graph panel before Launch Run");
   }
 
+  const invalidWorkflowDetailResult = await renderAppRoute(
+    "/workflows/workflow-1",
+    (path) => {
+      if (path === "/api/repos") {
+        return {
+          body: {
+            items: [
+              {
+                id: "repo-1",
+                name: "Registered Repo",
+                local_path: "/registered/repo",
+                default_branch: "main",
+                current_commit: "abc123",
+                dirty_state: "clean",
+                project_config_status: "invalid",
+                created_at: null,
+                updated_at: null,
+                last_indexed_at: null
+              }
+            ]
+          }
+        };
+      }
+      if (path === "/api/repos/repo-1/workflows") {
+        return {
+          body: [
+            {
+              id: "workflow-1",
+              repo_id: "repo-1",
+              name: "Broken Workflow",
+              status: "invalid",
+              dot_path: "flows/broken.dot",
+              toml_path: "flows/broken.toml",
+              diagnostics: {
+                error: {
+                  code: "workflow_package_error",
+                  message: "Unable to parse workflow.dot",
+                  detail: {
+                    error: "Parse error: Line 21, col 16: Unexpected character '\"'"
+                  }
+                },
+                items: []
+              }
+            }
+          ]
+        };
+      }
+      if (path === "/api/repos/repo-1/project-config") {
+        return {
+          body: {
+            repo_id: "repo-1",
+            status: "valid",
+            config: {
+              default_environment: "local",
+              allowed_execution_modes: ["local"],
+              environments: {
+                local: {
+                  mode: "local"
+                }
+              }
+            }
+          }
+        };
+      }
+      if (path === "/api/workflows/workflow-1/graph") {
+        return {
+          ok: false,
+          status: 503,
+          body: { error: "graph unavailable in test" }
+        };
+      }
+      throw new Error(`Unexpected fetch ${path}`);
+    },
+    4
+  );
+  assertIncludes(
+    invalidWorkflowDetailResult.markup,
+    "Parse error: Line 21, col 16",
+    "workflow detail renders nested parse diagnostics for invalid workflows"
+  );
+  assertNotIncludes(
+    invalidWorkflowDetailResult.markup,
+    "Route unavailable",
+    "workflow detail does not trip the route error boundary for invalid workflow diagnostics"
+  );
+
   const reposRouteResult = await mountAppRoute("/repos", (path, init) => {
     if (path === "/api/fs/browse?mode=registration") {
       return {
