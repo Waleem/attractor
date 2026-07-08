@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from attractor_llm.catalog import ModelInfo
+from attractor_llm.catalog import ModelInfo, replace_synced_catalog
 from attractor_llm.catalog_sync import SYNCED_CONTEXT_WINDOW_FALLBACK, SyncedModelInfo, sync_provider_models
 from attractor_platform.executor import DurableRunExecutor
 from attractor_platform.storage.db import (
@@ -29,6 +30,13 @@ _LLM_ENV_NAMES = (
     "ATTRACTOR_DEFAULT_PROVIDER",
     "ATTRACTOR_DEFAULT_MODEL",
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_synced_model_catalog() -> Iterator[None]:
+    replace_synced_catalog({})
+    yield
+    replace_synced_catalog({})
 
 
 class FakeModelTester:
