@@ -201,8 +201,20 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def _normalize_utc(timestamp: dt.datetime) -> dt.datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.UTC)
+    return timestamp.astimezone(dt.UTC)
+
+
 def _serialize_timestamp(timestamp: dt.datetime | None) -> str | None:
-    return timestamp.isoformat() if timestamp is not None else None
+    if timestamp is None:
+        return None
+    return _normalize_utc(timestamp).isoformat().replace("+00:00", "Z")
 
 
 def _serialize_run(run: RunRecordModel) -> dict[str, Any]:
@@ -627,9 +639,7 @@ async def _upsert_setting_variable(
 def _serialize_settings_timestamp(timestamp: dt.datetime | None) -> str | None:
     if timestamp is None:
         return None
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=dt.UTC)
-    return timestamp.isoformat()
+    return _normalize_utc(timestamp).isoformat().replace("+00:00", "Z")
 
 
 def _settings_row(
@@ -834,7 +844,7 @@ def _build_settings_pages(
     worktree_bytes = _directory_size_bytes(worktree_root) or 0
     artifact_bytes = _directory_size_bytes(artifact_root) or 0
     managed_bytes = worktree_bytes + artifact_bytes
-    uptime_seconds = int((dt.datetime.now(dt.UTC) - services.started_at).total_seconds())
+    uptime_seconds = int((_utc_now() - services.started_at).total_seconds())
     configured_providers = sum(
         1 for credential in provider_credentials.values() if credential["configured"]
     )
@@ -1777,7 +1787,7 @@ async def register_repo(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return _json_error(str(exc), 500)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     repo_id = _repo_identifier(repo_path)
     register_repo_kwargs = {
         "repo_id": repo_id,
@@ -1904,7 +1914,7 @@ async def validate_workflow(request: Request) -> JSONResponse:
             toml_path=str(package.toml_path) if package.toml_path is not None else None,
             status=package.status.value,
             diagnostics=_serialize_diagnostics(package),
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     return JSONResponse(_serialize_workflow_package(workflow_id, repo.id, package))
 
@@ -2381,7 +2391,7 @@ async def decide_approval(request: Request) -> JSONResponse:
             400,
         )
 
-    decided_at = dt.datetime.now(dt.UTC)
+    decided_at = _utc_now()
     decision_status, decided = await _decide_pending_approval(
         services,
         run_id=run_id,
@@ -2536,7 +2546,7 @@ async def _record_writeback_failure(
             status="failed",
             commit_sha=None,
             error_message=error_message,
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     except Exception as exc:  # noqa: BLE001
         return _json_error(
@@ -2652,7 +2662,7 @@ async def request_writeback(request: Request) -> JSONResponse:
             status="applied",
             commit_sha=commit_sha,
             error_message=None,
-            timestamp=dt.datetime.now(dt.UTC),
+            timestamp=_utc_now(),
         )
     except Exception as exc:  # noqa: BLE001
         return _json_error(f"Write-back applied but persistence failed: {exc}", 500)
@@ -2693,7 +2703,7 @@ async def put_settings_secret(request: Request) -> JSONResponse:
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     async with session_scope(services.session_factory) as session:
         await _upsert_setting_secret(
             session,
@@ -2758,7 +2768,7 @@ async def put_settings_variable(request: Request) -> JSONResponse:
     if not isinstance(value, str):
         return _json_error("Missing 'value' field", 400)
 
-    now = dt.datetime.now(dt.UTC)
+    now = _utc_now()
     async with session_scope(services.session_factory) as session:
         await _upsert_setting_variable(
             session,
@@ -2795,7 +2805,7 @@ async def test_models(request: Request) -> JSONResponse:
     services = _services(request)
     provider_api_keys = await _configured_provider_api_keys(services)
     secrets = list(provider_api_keys.values())
-    tested_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    tested_at = _serialize_settings_timestamp(_utc_now())
     items: list[dict[str, Any]] = []
     ok_count = 0
     failed_count = 0
@@ -2855,7 +2865,7 @@ async def sync_models(request: Request) -> JSONResponse:
     services = _services(request)
     provider_api_keys = await _configured_provider_api_keys(services)
     secrets = list(provider_api_keys.values())
-    synced_at = _serialize_settings_timestamp(dt.datetime.now(dt.UTC))
+    synced_at = _serialize_settings_timestamp(_utc_now())
     items: list[dict[str, Any]] = []
     synced_count = 0
     failed_count = 0
@@ -3211,7 +3221,7 @@ def create_platform_app(
         model_tester=model_tester or LivePlatformModelTester(),
         model_syncer=model_syncer or LivePlatformModelSyncer(),
         codergen_backend_refresh_lock=asyncio.Lock(),
-        started_at=dt.datetime.now(dt.UTC),
+        started_at=_utc_now(),
         database_url=engine.url.render_as_string(hide_password=True)
         if engine is not None
         else None,

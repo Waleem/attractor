@@ -592,7 +592,9 @@ function eventSummary(event: RunEvent): string {
     case "approval.decided":
       return `Approval ${stringPayload(event.payload, "answer") ?? "decided"}`;
     case "checkpoint.saved":
-      return node ? `Checkpoint saved for ${node} at ${commit}` : `Checkpoint saved ${commit}`;
+      if (node && commit !== "None") return `Checkpoint saved for ${node} at ${commit}`;
+      if (node) return `Checkpoint saved for ${node}`;
+      return commit !== "None" ? `Checkpoint saved ${commit}` : "Checkpoint saved";
     case "writeback.applied":
       return `Write-back applied to ${stringPayload(event.payload, "target_branch") ?? "target branch"}`;
     case "pipeline.event":

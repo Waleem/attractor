@@ -24,6 +24,16 @@ from attractor_platform.storage.models import (
 )
 
 
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def _normalize_utc(timestamp: dt.datetime) -> dt.datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.UTC)
+    return timestamp.astimezone(dt.UTC)
+
+
 def _select_run_for_append_lock(run_id: str) -> Select[tuple[RunRecordModel]]:
     return select(RunRecordModel).where(RunRecordModel.id == run_id).with_for_update()
 
@@ -61,6 +71,7 @@ class PlatformRepository:
         timestamp: dt.datetime,
         project_config_status: str = "unknown",
     ) -> RegisteredRepoModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             repo = await session.get(RegisteredRepoModel, repo_id)
             if repo is None:
@@ -100,6 +111,7 @@ class PlatformRepository:
         diagnostics: dict[str, Any],
         timestamp: dt.datetime,
     ) -> WorkflowPackageModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             workflow = await session.get(WorkflowPackageModel, workflow_id)
             if workflow is None:
@@ -134,6 +146,7 @@ class PlatformRepository:
         dirty_state: str,
         timestamp: dt.datetime,
     ) -> RegisteredRepoModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             repo = await session.get(RegisteredRepoModel, repo_id)
             if repo is None:
@@ -182,6 +195,7 @@ class PlatformRepository:
         source_branch: str,
         timestamp: dt.datetime,
     ) -> RunRecordModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             run = RunRecordModel(
                 id=run_id,
@@ -213,7 +227,7 @@ class PlatformRepository:
             run.status = status.value if isinstance(status, RunStatus) else status
             run.error_category = error_category
             run.error_message = error_message
-            run.updated_at = dt.datetime.now(dt.UTC)
+            run.updated_at = _utc_now()
             await session.flush()
             return run
 
@@ -254,6 +268,7 @@ class PlatformRepository:
         actor_label: str = "",
         timestamp: dt.datetime | None = None,
     ) -> RunEventModel:
+        timestamp = _normalize_utc(timestamp) if timestamp is not None else None
         async with session_scope(self._session_factory) as session:
             locked_run = await session.scalar(_select_run_for_append_lock(run_id))
             if locked_run is None:
@@ -267,7 +282,7 @@ class PlatformRepository:
                 event_type=event_type,
                 payload=redact_mapping(payload),
                 actor_label=actor_label,
-                created_at=timestamp or dt.datetime.now(dt.UTC),
+                created_at=timestamp or _utc_now(),
             )
             session.add(event)
             await session.flush()
@@ -303,6 +318,7 @@ class PlatformRepository:
         question: str,
         timestamp: dt.datetime,
     ) -> ApprovalDecisionModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             approval = ApprovalDecisionModel(
                 id=approval_id,
@@ -325,6 +341,7 @@ class PlatformRepository:
         actor_label: str,
         timestamp: dt.datetime,
     ) -> ApprovalDecisionModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             approval = await session.get(ApprovalDecisionModel, approval_id)
             if approval is None:
@@ -348,6 +365,7 @@ class PlatformRepository:
         sha256: str,
         timestamp: dt.datetime,
     ) -> ArtifactModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             artifact = ArtifactModel(
                 id=artifact_id,
@@ -383,6 +401,7 @@ class PlatformRepository:
         ref_name: str,
         timestamp: dt.datetime,
     ) -> CheckpointModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             checkpoint = CheckpointModel(
                 id=checkpoint_id,
@@ -418,6 +437,7 @@ class PlatformRepository:
         error_message: str | None,
         timestamp: dt.datetime,
     ) -> WriteBackModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             writeback = WriteBackModel(
                 id=writeback_id,
@@ -447,6 +467,7 @@ class PlatformRepository:
         error_message: str | None,
         timestamp: dt.datetime,
     ) -> WriteBackModel:
+        timestamp = _normalize_utc(timestamp)
         async with session_scope(self._session_factory) as session:
             locked_run = await session.scalar(_select_run_for_append_lock(run_id))
             if locked_run is None:
@@ -491,6 +512,6 @@ class PlatformRepository:
             )
             locked_run.error_category = None if status == "applied" else "writeback_failed"
             locked_run.error_message = error_message if status != "applied" else None
-            locked_run.updated_at = dt.datetime.now(dt.UTC)
+            locked_run.updated_at = _utc_now()
             await session.flush()
             return writeback

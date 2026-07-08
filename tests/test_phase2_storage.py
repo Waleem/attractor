@@ -13,7 +13,11 @@ from sqlalchemy import select
 
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
 from attractor_platform.storage.models import Base, RunStatus, WorkflowPackageModel
-from attractor_platform.storage.repositories import PlatformRepository, _select_run_for_append_lock
+from attractor_platform.storage.repositories import (
+    PlatformRepository,
+    _normalize_utc,
+    _select_run_for_append_lock,
+)
 
 
 @pytest_asyncio.fixture
@@ -160,6 +164,17 @@ async def test_run_status_updates(platform_session_factory) -> None:
 
     assert record is not None
     assert record.status == RunStatus.RUNNING.value
+
+
+def test_normalize_utc_converts_naive_and_aware_datetimes() -> None:
+    naive = dt.datetime(2026, 7, 3, 12, 0, 0)
+    aware = dt.datetime(2026, 7, 3, 5, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=-7)))
+
+    normalized_naive = _normalize_utc(naive)
+    normalized_aware = _normalize_utc(aware)
+
+    assert normalized_naive == dt.datetime(2026, 7, 3, 12, 0, 0, tzinfo=dt.UTC)
+    assert normalized_aware == dt.datetime(2026, 7, 3, 12, 0, 0, tzinfo=dt.UTC)
 
 
 async def test_delete_workflows_not_in_preserves_historical_run_workflows(platform_session_factory) -> None:

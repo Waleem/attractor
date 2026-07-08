@@ -13,7 +13,7 @@ import pytest_asyncio
 
 from attractor_platform.git import GitResult, GitRunner
 from attractor_platform.storage.models import RunStatus
-from attractor_server.platform_app import create_platform_app
+from attractor_server.platform_app import _serialize_settings_timestamp, _serialize_timestamp, create_platform_app
 
 pytestmark = pytest.mark.asyncio
 
@@ -712,6 +712,16 @@ async def test_run_responses_include_run_spec_for_re_run(
             "image": "",
         },
     }
+
+
+async def test_timestamp_serializers_emit_explicit_utc_z_suffix() -> None:
+    naive = dt.datetime(2026, 7, 3, 12, 0, 0)
+    aware = dt.datetime(2026, 7, 3, 5, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=-7)))
+
+    assert _serialize_timestamp(naive) == "2026-07-03T12:00:00Z"
+    assert _serialize_timestamp(aware) == "2026-07-03T12:00:00Z"
+    assert _serialize_settings_timestamp(naive) == "2026-07-03T12:00:00Z"
+    assert _serialize_settings_timestamp(aware) == "2026-07-03T12:00:00Z"
 
 
 async def test_list_runs_filters_by_status_and_repo_id(
