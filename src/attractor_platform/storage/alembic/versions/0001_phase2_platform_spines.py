@@ -45,8 +45,8 @@ def upgrade() -> None:
     op.create_table(
         "run_records",
         sa.Column("id", sa.String(length=64), nullable=False),
-        sa.Column("repo_id", sa.String(length=64), nullable=False),
-        sa.Column("workflow_id", sa.String(length=64), nullable=False),
+        sa.Column("repo_id", sa.String(length=64), nullable=True),
+        sa.Column("workflow_id", sa.String(length=64), nullable=True),
         sa.Column("status", sa.String(length=40), nullable=False),
         sa.Column("run_spec", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("actor_label", sa.String(length=200), nullable=False),
@@ -60,8 +60,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["repo_id"], ["registered_repos.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["workflow_id"], ["workflow_packages.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["repo_id"], ["registered_repos.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["workflow_id"], ["workflow_packages.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_run_records_status"), "run_records", ["status"], unique=False)

@@ -13,7 +13,7 @@ interface RunSpecLike {
 interface RunLike {
   id?: string;
   status: string;
-  workflow_id: string;
+  workflow_id: string | null;
   run_spec: RunSpecLike | null;
   actor_label?: string;
   source_commit?: string | null;

@@ -79,6 +79,11 @@ export function WorkflowDetailRoute({
 
   return (
     <>
+      {repo ? (
+        <a className="back-link" href={`/repos/${repo.id}`}>
+          ← Back to {repo.name}
+        </a>
+      ) : null}
       <PageHeader title={workflow?.name ?? "Workflow"} eyebrow={workflowId} />
       <ErrorBanner message={workflowState.error ?? configState.error ?? actionError} />
       {workflowState.loading ? <Loading /> : null}

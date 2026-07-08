@@ -12,7 +12,13 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from attractor_platform.storage.db import create_session_factory, default_test_database_url
-from attractor_platform.storage.models import Base, RunStatus, WorkflowPackageModel
+from attractor_platform.storage.models import (
+    Base,
+    RegisteredRepoModel,
+    RunRecordModel,
+    RunStatus,
+    WorkflowPackageModel,
+)
 from attractor_platform.storage.repositories import (
     PlatformRepository,
     _normalize_utc,
@@ -153,6 +159,41 @@ async def test_concurrent_run_events_receive_distinct_sequences(platform_session
     events = await repo.list_events("run_concurrent", after_sequence=0, limit=100)
 
     assert [event.sequence for event in events] == list(range(1, 21))
+
+
+async def test_delete_repo_removes_registration_and_workflows_without_deleting_runs(
+    platform_session_factory,
+) -> None:
+    repo = PlatformRepository(platform_session_factory)
+    await _create_minimal_run_for_test(repo, "run_unregister")
+
+    deleted = await repo.delete_repo("run_unregister_repo")
+
+    assert deleted is True
+    async with platform_session_factory() as session:
+        registered_repo = await session.get(RegisteredRepoModel, "run_unregister_repo")
+        workflows = list(
+            await session.scalars(
+                select(WorkflowPackageModel).where(
+                    WorkflowPackageModel.repo_id == "run_unregister_repo"
+                )
+            )
+        )
+        run = await session.get(RunRecordModel, "run_unregister")
+
+    assert registered_repo is None
+    assert workflows == []
+    assert run is not None
+    assert run.repo_id is None
+    assert run.workflow_id is None
+
+
+async def test_delete_repo_reports_false_for_missing_repo(platform_session_factory) -> None:
+    repo = PlatformRepository(platform_session_factory)
+
+    deleted = await repo.delete_repo("missing_repo")
+
+    assert deleted is False
 
 
 async def test_run_status_updates(platform_session_factory) -> None:

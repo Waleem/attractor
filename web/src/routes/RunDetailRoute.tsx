@@ -180,7 +180,13 @@ export function RunDetailRoute({ runId }: { runId: string }) {
               <BranchDiffPanel diff={diffState.data} loading={diffState.loading} error={diffState.error} />
             </div>
           </Panel>
-          <GraphViewer workflowId={run.workflow_id} events={events} />
+          {run.workflow_id ? (
+            <GraphViewer workflowId={run.workflow_id} events={events} />
+          ) : (
+            <Panel title="Workflow Graph">
+              <EmptyState>Workflow index was removed when the repo was unregistered.</EmptyState>
+            </Panel>
+          )}
           <PendingApprovals
             runId={runId}
             runStatus={run.status}
@@ -201,7 +207,9 @@ export function RunDetailRoute({ runId }: { runId: string }) {
             </div>
           </Panel>
           <Panel title="Checkpoints">
-            <CheckpointTable checkpoints={related?.checkpoints ?? []} loading={relatedState.loading} />
+            <div className="run-detail-scroll run-detail-scroll-checkpoints">
+              <CheckpointTable checkpoints={related?.checkpoints ?? []} loading={relatedState.loading} />
+            </div>
           </Panel>
         </>
       ) : null}

@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import Select
@@ -158,6 +158,34 @@ class PlatformRepository:
             repo.last_indexed_at = timestamp
             await session.flush()
             return repo
+
+    async def delete_repo(self, repo_id: str) -> bool:
+        async with session_scope(self._session_factory) as session:
+            repo = await session.get(RegisteredRepoModel, repo_id)
+            if repo is None:
+                return False
+            workflow_ids = list(
+                await session.scalars(
+                    select(WorkflowPackageModel.id).where(WorkflowPackageModel.repo_id == repo_id)
+                )
+            )
+            if workflow_ids:
+                await session.execute(
+                    update(RunRecordModel)
+                    .where(RunRecordModel.workflow_id.in_(workflow_ids))
+                    .values(workflow_id=None)
+                )
+            await session.execute(
+                update(RunRecordModel)
+                .where(RunRecordModel.repo_id == repo_id)
+                .values(repo_id=None)
+            )
+            for workflow_id in workflow_ids:
+                workflow = await session.get(WorkflowPackageModel, workflow_id)
+                if workflow is not None:
+                    await session.delete(workflow)
+            await session.delete(repo)
+            return True
 
     async def delete_workflows_not_in(self, repo_id: str, workflow_ids: set[str]) -> int:
         async with session_scope(self._session_factory) as session:

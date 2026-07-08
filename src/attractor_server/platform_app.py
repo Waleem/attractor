@@ -1323,6 +1323,38 @@ async def _get_repo(services: _PlatformServices, repo_id: str) -> Any | None:
     raise RuntimeError("Repository does not support loading repositories")
 
 
+async def _delete_repo(services: _PlatformServices, repo_id: str) -> bool:
+    delete_repo = cast(
+        Callable[[str], Awaitable[bool]] | None,
+        getattr(services.repository, "delete_repo", None),
+    )
+    if delete_repo is not None:
+        return bool(await delete_repo(repo_id))
+
+    repos = getattr(services.repository, "repos", None)
+    workflows = getattr(services.repository, "workflows", None)
+    runs = getattr(services.repository, "runs", None)
+    if isinstance(repos, dict) and isinstance(workflows, dict):
+        if repo_id not in repos:
+            return False
+        workflow_ids = {
+            workflow.id for workflow in workflows.values() if workflow.repo_id == repo_id
+        }
+        if isinstance(runs, dict):
+            for run in runs.values():
+                if getattr(run, "repo_id", None) == repo_id:
+                    run.repo_id = None
+                if getattr(run, "workflow_id", None) in workflow_ids:
+                    run.workflow_id = None
+        for workflow_id, workflow in list(workflows.items()):
+            if workflow.repo_id == repo_id:
+                del workflows[workflow_id]
+        del repos[repo_id]
+        return True
+
+    raise RuntimeError("Repository does not support deleting repositories")
+
+
 async def _list_workflows(services: _PlatformServices, repo_id: str) -> list[Any]:
     if isinstance(services.repository, PlatformRepository):
         async with session_scope(services.session_factory) as session:
@@ -1849,6 +1881,15 @@ async def get_repo(request: Request) -> JSONResponse:
     return JSONResponse(_serialize_repo(repo))
 
 
+async def delete_repo(request: Request) -> JSONResponse:
+    services = _services(request)
+    repo_id = request.path_params["repo_id"]
+    deleted = await _delete_repo(services, repo_id)
+    if not deleted:
+        return _json_error(f"Repository {repo_id} not found", 404)
+    return JSONResponse({"id": repo_id, "deleted": True})
+
+
 async def refresh_repo(request: Request) -> JSONResponse:
     services = _services(request)
     repo_id = request.path_params["repo_id"]
@@ -2148,6 +2189,8 @@ async def get_run_diff(request: Request) -> JSONResponse:
     if isinstance(run, JSONResponse):
         return run
 
+    if run.repo_id is None:
+        return _json_error(f"Run {run_id} is no longer linked to a registered repository", 409)
     repo = await _get_repo(services, run.repo_id)
     if repo is None:
         return _json_error(f"Repository {run.repo_id} not found", 404)
@@ -2620,6 +2663,14 @@ async def request_writeback(request: Request) -> JSONResponse:
             409,
         )
 
+    if run.repo_id is None:
+        return await _record_writeback_failure(
+            services,
+            run=run,
+            target_branch=target_branch,
+            actor_label=actor_label,
+            error_message="Run is no longer linked to a registered repository",
+        )
     repo = await _get_repo(services, run.repo_id)
     if repo is None:
         return await _record_writeback_failure(
@@ -3189,6 +3240,7 @@ def create_platform_app(
         Route("/api/repos", register_repo, methods=["POST"]),
         Route("/api/repos", list_repos, methods=["GET"]),
         Route("/api/repos/{repo_id}", get_repo, methods=["GET"]),
+        Route("/api/repos/{repo_id}", delete_repo, methods=["DELETE"]),
         Route("/api/repos/{repo_id}/refresh", refresh_repo, methods=["POST"]),
         Route("/api/repos/{repo_id}/project-config", get_project_config, methods=["GET"]),
         Route("/api/repos/{repo_id}/workflows", list_workflows, methods=["GET"]),

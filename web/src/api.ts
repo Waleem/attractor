@@ -140,8 +140,8 @@ export interface SerializedRunSpec {
 export interface RunRecord {
   id: string;
   status: RunStatus;
-  repo_id: string;
-  workflow_id: string;
+  repo_id: string | null;
+  workflow_id: string | null;
   run_spec: SerializedRunSpec | null;
   actor_label: string;
   source_commit?: string;
@@ -449,6 +449,12 @@ export async function listRepos(): Promise<Repo[]> {
 
 export async function getRepo(repoId: string): Promise<Repo> {
   return requestJson<Repo>(`/api/repos/${encodeURIComponent(repoId)}`);
+}
+
+export async function deleteRepo(repoId: string): Promise<{ deleted?: boolean }> {
+  return requestJson<{ deleted?: boolean }>(`/api/repos/${encodeURIComponent(repoId)}`, {
+    method: "DELETE"
+  });
 }
 
 export async function refreshRepo(

@@ -168,6 +168,12 @@ button.secondary {
   border-color: var(--border-subtle);
 }
 
+.button-danger {
+  background: var(--status-failed);
+  border-color: var(--status-failed-border);
+  color: var(--text-inverse);
+}
+
 .button-link {
   min-height: 36px;
   border: var(--border-width) solid var(--border-strong);
@@ -703,6 +709,15 @@ td {
   gap: var(--space-1);
   flex-wrap: wrap;
   align-items: center;
+}
+
+.repo-row-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.repo-remove-button {
+  min-width: 96px;
 }
 
 .run-launch-form {
@@ -1607,6 +1622,10 @@ td {
 
 .run-detail-scroll-diff {
   max-height: min(34rem, 62vh);
+}
+
+.run-detail-scroll-checkpoints {
+  max-height: min(32rem, 58vh);
 }
 
 .graph-scene {

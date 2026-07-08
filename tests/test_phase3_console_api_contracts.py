@@ -54,8 +54,8 @@ class _Workflow:
 @dataclass
 class _Run:
     id: str
-    repo_id: str
-    workflow_id: str
+    repo_id: str | None
+    workflow_id: str | None
     run_spec: dict[str, Any]
     actor_label: str
     source_commit: str
@@ -119,6 +119,22 @@ class _Repository:
 
     async def get_repo(self, repo_id: str) -> _Repo | None:
         return self.repos.get(repo_id)
+
+    async def delete_repo(self, repo_id: str) -> bool:
+        if repo_id not in self.repos:
+            return False
+        for run in self.runs.values():
+            if run.repo_id == repo_id:
+                run.repo_id = None
+            if run.workflow_id in {
+                workflow.id for workflow in self.workflows.values() if workflow.repo_id == repo_id
+            }:
+                run.workflow_id = None
+        for workflow_id, workflow in list(self.workflows.items()):
+            if workflow.repo_id == repo_id:
+                del self.workflows[workflow_id]
+        del self.repos[repo_id]
+        return True
 
     async def update_repo_index_metadata(
         self,
@@ -425,6 +441,54 @@ async def test_create_run_preserves_typed_launch_metadata_and_queues_event(
     events_response = await platform_harness.client.get(f"/api/runs/{run_id}/events")
     assert events_response.status_code == 200
     assert events_response.json()["items"][0]["event_type"] == "run.queued"
+
+
+async def test_unregister_repo_removes_registration_and_workflow_index(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+
+    response = await platform_harness.client.delete(f"/api/repos/{repo_id}")
+    repos_response = await platform_harness.client.get("/api/repos")
+    workflows_response = await platform_harness.client.get(f"/api/repos/{repo_id}/workflows")
+
+    assert response.status_code == 200
+    assert response.json() == {"id": repo_id, "deleted": True}
+    assert repos_response.status_code == 200
+    assert repos_response.json()["items"] == []
+    assert workflows_response.status_code == 404
+    assert platform_harness.repository.workflows == {}
+
+
+async def test_unregister_repo_preserves_runs_by_clearing_repo_and_workflow_links(
+    platform_harness: _Harness,
+    sample_repo: Path,
+) -> None:
+    await _register_repo(platform_harness, sample_repo)
+    repo_id = next(iter(platform_harness.repository.repos))
+
+    run_response = await platform_harness.client.post(
+        "/api/runs",
+        json={
+            "repo_path": str(sample_repo),
+            "workflow_name": "release",
+            "actor_label": "alice",
+            "inputs": {},
+        },
+    )
+    assert run_response.status_code == 201
+    run_id = run_response.json()["id"]
+
+    delete_response = await platform_harness.client.delete(f"/api/repos/{repo_id}")
+    run_detail_response = await platform_harness.client.get(f"/api/runs/{run_id}")
+
+    assert delete_response.status_code == 200
+    assert run_detail_response.status_code == 200
+    assert run_detail_response.json()["repo_id"] is None
+    assert run_detail_response.json()["workflow_id"] is None
+    assert run_id in platform_harness.repository.runs
 
 
 async def test_create_run_rejects_non_string_input_values(

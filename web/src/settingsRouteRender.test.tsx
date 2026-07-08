@@ -184,6 +184,7 @@ async function waitFor(assertion: () => boolean) {
 function installMiniDom(pathname = "/settings") {
   const document = new MiniDocument();
   const location = { pathname };
+  const confirm = () => true;
   class MiniEventSource {
     onerror: (() => void) | null = null;
 
@@ -202,6 +203,7 @@ function installMiniDom(pathname = "/settings") {
       }
     },
     navigator: { userAgent: "node" },
+    confirm,
     addEventListener() {},
     removeEventListener() {},
     getComputedStyle() {
@@ -222,6 +224,7 @@ function installMiniDom(pathname = "/settings") {
     window,
     document,
     navigator: window.navigator,
+    confirm,
     HTMLElement: MiniElement,
     HTMLInputElement: MiniElement,
     HTMLIFrameElement: MiniElement,
@@ -951,10 +954,10 @@ async function main() {
     "run detail wraps artifacts in a bounded scroll container"
   );
   assertIncludes(runDetailResult.markup, "<h2>Checkpoints</h2>", "run detail renders the checkpoints section");
-  assertNotIncludes(
+  assertIncludes(
     getSectionMarkup(runDetailResult.markup, "Checkpoints"),
-    "run-detail-scroll",
-    "run detail leaves checkpoints unwrapped"
+    'class="run-detail-scroll run-detail-scroll-checkpoints"',
+    "run detail wraps checkpoints in a bounded scroll container"
   );
 
   const repoDetailResult = await mountAppRoute("/repos/repo-1", (path, init) => {
@@ -1104,6 +1107,11 @@ async function main() {
     workflowDetailResult.fetchCalls.includes("/api/workflows/workflow-1/graph"),
     true,
     "workflow detail loads workflow graph data on mount"
+  );
+  assertIncludes(
+    workflowDetailResult.markup,
+    '<a class="back-link" href="/repos/repo-1">← Back to Registered Repo</a>',
+    "workflow detail links back to the parent repo"
   );
   const workflowGraphIndex = workflowDetailResult.markup.indexOf("<h2>Workflow Graph</h2>");
   const workflowLaunchIndex = workflowDetailResult.markup.indexOf("<h2>Launch Run</h2>");
@@ -1374,6 +1382,57 @@ async function main() {
     true,
     "typed registration browsing keeps registration mode"
   );
+
+  let deleteShouldFail = false;
+  const reposDeleteResult = await mountAppRoute("/repos", (path, init) => {
+    if (path === "/api/repos/repo-1" && init?.method === "DELETE") {
+      if (deleteShouldFail) {
+        return {
+          ok: false,
+          status: 500,
+          body: { error: "Unable to remove repo while workflows are active" }
+        };
+      }
+      return { body: { deleted: true } };
+    }
+    if (path === "/api/repos") {
+      return {
+        body: {
+          items: [
+            {
+              id: "repo-1",
+              name: "Registered Repo",
+              local_path: "/registered/repo",
+              default_branch: "main",
+              current_commit: "abc123",
+              dirty_state: "clean",
+              project_config_status: "valid",
+              created_at: null,
+              updated_at: null,
+              last_indexed_at: null
+            }
+          ]
+        }
+      };
+    }
+    throw new Error(`Unexpected fetch ${path}`);
+  });
+  findButtonByText(reposDeleteResult.container, "× Remove").click();
+  await waitFor(() =>
+    reposDeleteResult.fetchRequests.some(
+      (request) => request.path === "/api/repos/repo-1" && request.method === "DELETE"
+    )
+  );
+  await waitFor(
+    () =>
+      reposDeleteResult.fetchRequests.filter((request) => request.path === "/api/repos").length >= 2
+  );
+  deleteShouldFail = true;
+  findButtonByText(reposDeleteResult.container, "× Remove").click();
+  await waitFor(() =>
+    reposDeleteResult.container.textContent.includes("Unable to remove repo while workflows are active")
+  );
+  reposDeleteResult.root.unmount();
 }
 
 void main();
