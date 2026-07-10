@@ -35,6 +35,7 @@
   --bg-sidebar-active: #324254;
   --text-sidebar: #edf3f8;
   --text-sidebar-muted: #cbd6e2;
+  --text-sidebar-active: #ffffff;
   --text-accent: #13251f;
   --border-subtle: color-mix(in srgb, #98a6b5 50%, transparent);
   --border-strong: color-mix(in srgb, #204f8f 80%, transparent);
@@ -95,6 +96,7 @@
     --bg-sidebar-active: #273341;
     --text-sidebar: #edf3f8;
     --text-sidebar-muted: #cbd6e2;
+    --text-sidebar-active: #ffffff;
     --text-accent: #13251f;
     --border-subtle: color-mix(in srgb, #7f8fa3 45%, transparent);
     --border-strong: color-mix(in srgb, #7aa2e8 70%, transparent);
@@ -136,6 +138,7 @@
   --bg-sidebar-active: color-mix(in srgb, #33d6a6 14%, transparent);
   --text-sidebar: #e7edf4;
   --text-sidebar-muted: #8894a3;
+  --text-sidebar-active: #ffffff;
   --text-accent: #052018;
   --border-subtle: color-mix(in srgb, #ffffff 8%, transparent);
   --border-strong: color-mix(in srgb, #33d6a6 58%, transparent);
@@ -162,6 +165,49 @@
   --border-card: 1px solid transparent;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 26px -16px rgba(0, 0, 0, 0.7);
   --shadow-popover: 0 12px 30px color-mix(in srgb, #000000 48%, transparent);
+}
+
+:root[data-theme="porcelain"] {
+  color-scheme: light;
+  --text-page: #0f1826;
+  --text-secondary: #5c6a7c;
+  --text-muted: #93a0b0;
+  --text-inverse: #ffffff;
+  --bg-page: #f5f7f9;
+  --bg-card: #ffffff;
+  --bg-card-muted: #f7f9fb;
+  --bg-code: #f1f5f9;
+  --bg-sidebar: #ffffff;
+  --bg-sidebar-active: #e7f6f1;
+  --text-sidebar: #0f1826;
+  --text-sidebar-muted: #5c6a7c;
+  --text-sidebar-active: #0b7a62;
+  --text-accent: #ffffff;
+  --border-subtle: #e6eaef;
+  --border-strong: #0d9f80;
+  --focus-ring: #0d9f80;
+  --primary: #0d9f80;
+  --primary-hover: #0b8a6f;
+  --on-primary: #ffffff;
+  --accent: #0d9f80;
+  --status-queued-fg: #111827;
+  --status-queued-badge-bg: #f3f4f6;
+  --status-queued-border: #9ca3af;
+  --status-running-fg: #1e3a8a;
+  --status-running-badge-bg: #dbeafe;
+  --status-running-border: #60a5fa;
+  --status-waiting-fg: #78350f;
+  --status-waiting-badge-bg: #fef3c7;
+  --status-waiting-border: #f59e0b;
+  --status-completed-fg: #14532d;
+  --status-completed-badge-bg: #dcfce7;
+  --status-completed-border: #22c55e;
+  --status-failed-fg: #7f1d1d;
+  --status-failed-badge-bg: #fee2e2;
+  --status-failed-border: #ef4444;
+  --border-card: 1px solid var(--border-subtle);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --shadow-popover: 0 12px 30px color-mix(in srgb, #0f172a 18%, transparent);
 }
 
 * {
@@ -310,6 +356,8 @@ td {
   color: var(--text-sidebar);
   padding: var(--space-2);
   border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -348,7 +396,22 @@ td {
 .sidebar nav a.active,
 .sidebar nav a:hover {
   background: var(--bg-sidebar-active);
-  color: var(--text-inverse);
+  color: var(--text-sidebar-active);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: var(--space-2);
+}
+
+.theme-toggle {
+  width: 100%;
+}
+
+.theme-toggle button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: var(--space-1);
 }
 
 .content {
@@ -856,7 +919,7 @@ td {
 
 .segmented-control button.active {
   background: var(--bg-sidebar-active);
-  color: var(--text-inverse);
+  color: var(--text-sidebar-active);
 }
 
 .status-chip-row {
@@ -874,7 +937,7 @@ td {
 
 .status-chip.active {
   background: var(--bg-sidebar-active);
-  color: var(--text-inverse);
+  color: var(--text-sidebar-active);
   border-color: var(--bg-sidebar-active);
 }
 
@@ -1192,7 +1255,7 @@ td {
 .settings-subnav button.active,
 .settings-subnav button:hover:not(:disabled) {
   background: var(--bg-sidebar-active);
-  color: var(--text-inverse);
+  color: var(--text-sidebar-active);
 }
 
 .settings-subnav button:disabled {
