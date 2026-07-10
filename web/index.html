@@ -1,9 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="slate">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("attractor-theme");
+          if (theme === "slate" || theme === "porcelain") {
+            document.documentElement.dataset.theme = theme;
+          }
+        } catch {
+          document.documentElement.dataset.theme = "slate";
+        }
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Attractor Operations</title>
+    <title>Attractor Studio</title>
   </head>
   <body>
     <div id="root"></div>

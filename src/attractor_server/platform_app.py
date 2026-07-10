@@ -112,6 +112,7 @@ class PlatformModelSyncer(Protocol):
         *,
         provider: str,
         api_key: str,
+        limit: int | None,
     ) -> list[ModelInfo]: ...
 
 
@@ -169,8 +170,9 @@ class LivePlatformModelSyncer:
         *,
         provider: str,
         api_key: str,
+        limit: int | None,
     ) -> list[ModelInfo]:
-        return await sync_provider_models(provider, api_key)
+        return await sync_provider_models(provider, api_key, limit=limit)
 
 
 @dataclass(frozen=True)
@@ -2939,6 +2941,7 @@ async def test_models(request: Request) -> JSONResponse:
 
 async def sync_models(request: Request) -> JSONResponse:
     services = _services(request)
+    model_limit = await _model_sync_limit(request)
     provider_api_keys = await _configured_provider_api_keys(services)
     secrets = list(provider_api_keys.values())
     synced_at = _serialize_settings_timestamp(_utc_now())
@@ -2965,6 +2968,7 @@ async def sync_models(request: Request) -> JSONResponse:
             synced_rows = await services.model_syncer.sync_models(
                 provider=provider,
                 api_key=provider_key,
+                limit=model_limit,
             )
         except Exception as exc:  # noqa: BLE001
             failed_count += 1
@@ -2999,6 +3003,21 @@ async def sync_models(request: Request) -> JSONResponse:
             "items": items,
         }
     )
+
+
+async def _model_sync_limit(request: Request) -> int | None:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        return 10
+    value = payload.get("limit", 10)
+    if value is None or value == "all":
+        return None
+    if value in (5, "5"):
+        return 5
+    return 10
 
 
 async def get_settings(request: Request) -> JSONResponse:

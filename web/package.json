@@ -9,7 +9,7 @@
     "test:run-view-model": "tsc --jsx react-jsx --types vite/client --module ES2022 --moduleResolution Bundler --target ES2022 --strict --outDir dist-test src/runViewModel.test.ts src/runViewModel.ts && node dist-test/runViewModel.test.js",
     "test:graph": "tsc -p tsconfig.test.json && esbuild src/settingsRouteRender.test.tsx --bundle --platform=node --format=cjs --define:import.meta.env={} --outfile=dist-test/settingsRouteRender.bundle.cjs && tsc --jsx react-jsx --types vite/client --module ES2022 --moduleResolution Bundler --target ES2022 --strict --outDir dist-test src/runViewModel.test.ts src/runViewModel.ts && node dist-test/graphHighlight.test.js && node dist-test/settingsRouteRender.bundle.cjs && node dist-test/runViewModel.test.js",
     "test:settings-render": "tsc -p tsconfig.test.json && esbuild src/settingsRouteRender.test.tsx --bundle --platform=node --format=cjs --define:import.meta.env={} --outfile=dist-test/settingsRouteRender.bundle.cjs && node dist-test/settingsRouteRender.bundle.cjs",
-    "test:app-base": "tsc -p tsconfig.test.json && node dist-test/appBase.test.js",
+    "test:app-base": "tsc -p tsconfig.test.json && node dist-test/appBase.test.js && node dist-test/theme.test.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

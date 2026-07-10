@@ -9,6 +9,7 @@ import {
   syncModels,
   testModels,
   type ModelCatalogRow,
+  type ModelSyncLimit,
   type ModelSyncResponse,
   type ModelTestResponse,
   type ModelTestResult,
@@ -233,6 +234,7 @@ function ModelCatalogSection({
 }) {
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncLimit, setSyncLimit] = useState<ModelSyncLimit>(10);
   const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
   const [syncResult, setSyncResult] = useState<ModelSyncResponse | null>(null);
   const [query, setQuery] = useState("");
@@ -267,7 +269,7 @@ function ModelCatalogSection({
     setSyncing(true);
     setError(null);
     try {
-      const result = await syncModels();
+      const result = await syncModels(syncLimit);
       setSyncResult(result);
       catalogState.refresh();
     } catch (caught) {
@@ -285,6 +287,18 @@ function ModelCatalogSection({
         <div className="models-test-actions">
           {syncResult ? <span className="models-test-summary">{formatModelSyncSummary(syncResult)}</span> : null}
           {testResult ? <span className="models-test-summary">{formatModelTestSummary(testResult)}</span> : null}
+          <label className="sync-limit-control">
+            <span>Sync</span>
+            <select
+              value={String(syncLimit)}
+              disabled={syncing}
+              onChange={(event) => setSyncLimit(parseModelSyncLimit(event.target.value))}
+            >
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="all">All</option>
+            </select>
+          </label>
           <button type="button" className="secondary" disabled={syncing} onClick={() => void runModelSync()}>
             {syncing ? "Syncing…" : "Sync from provider"}
           </button>
@@ -373,6 +387,16 @@ function ModelCatalogSection({
       )}
     </SectionCard>
   );
+}
+
+function parseModelSyncLimit(value: string): ModelSyncLimit {
+  if (value === "5") {
+    return 5;
+  }
+  if (value === "all") {
+    return "all";
+  }
+  return 10;
 }
 
 function VariablesEditor({

@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { getAppBasePath, toAppHref } from "../appBase";
+import { getInitialTheme, setTheme, type Theme } from "../theme";
 
 const navItems = [
   { href: "/", label: "Dashboard" },
@@ -21,6 +22,12 @@ export function Layout({
   basePath: string;
   children: ReactNode;
 }) {
+  const [activeTheme, setActiveTheme] = useState<Theme>(() => getInitialTheme());
+  const chooseTheme = (theme: Theme) => {
+    setTheme(theme);
+    setActiveTheme(theme);
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -33,7 +40,7 @@ export function Layout({
           }}
         >
           <span className="brand-mark">A</span>
-          <span>Attractor Ops</span>
+          <span>Attractor Studio</span>
         </a>
         <nav>
           {navItems.map((item) => (
@@ -50,6 +57,26 @@ export function Layout({
             </a>
           ))}
         </nav>
+        <footer className="sidebar-footer">
+          <div className="segmented-control theme-toggle" aria-label="Theme">
+            <button
+              type="button"
+              className={activeTheme === "slate" ? "active" : ""}
+              aria-pressed={activeTheme === "slate"}
+              onClick={() => chooseTheme("slate")}
+            >
+              Slate
+            </button>
+            <button
+              type="button"
+              className={activeTheme === "porcelain" ? "active" : ""}
+              aria-pressed={activeTheme === "porcelain"}
+              onClick={() => chooseTheme("porcelain")}
+            >
+              Porcelain
+            </button>
+          </div>
+        </footer>
       </aside>
       <main className="content">{children}</main>
     </div>

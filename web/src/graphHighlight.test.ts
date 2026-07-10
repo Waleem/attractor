@@ -429,6 +429,10 @@ if (!themedGraphDot.includes('edge [color="#8fa0b3", fontcolor="#8fa0b3"];')) {
   throw new Error("keeps muted edge defaults");
 }
 
+if (!themedGraphDot.includes('node [color="#7f8fa3", fontcolor="#eef2f7", fontsize="10.5", width="0.56", height="0.38"];')) {
+  throw new Error("shrinks default graph nodes by roughly 25 percent");
+}
+
 const tallGraphFit = calculateGraphFitTransform({
   containerWidth: 784,
   containerHeight: 400,

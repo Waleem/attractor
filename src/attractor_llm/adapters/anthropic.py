@@ -736,6 +736,9 @@ class AnthropicAdapter:
                 provider=self.provider_name,
                 id=item["id"],
                 display_name=item.get("display_name") or item["id"].replace("-", " ").title(),
+                created_at=(
+                    item.get("created_at") if isinstance(item.get("created_at"), str) else None
+                ),
             )
             for item in items
             if isinstance(item, dict) and isinstance(item.get("id"), str)
