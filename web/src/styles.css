@@ -1462,9 +1462,24 @@ td {
   flex: 1 1 320px;
 }
 
+.sync-limit-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  color: var(--text-secondary);
+  font-size: var(--font-size-13);
+  font-weight: var(--font-weight-medium);
+}
+
+.sync-limit-control select {
+  min-width: 72px;
+}
+
 .models-catalog-scroll {
   width: 100%;
+  max-height: min(32rem, 58vh);
   overflow-x: auto;
+  overflow-y: auto;
   padding-right: var(--space-3);
 }
 

@@ -8,6 +8,9 @@ import {
 const GRAPH_EDGE_COLOR = "#8fa0b3";
 const GRAPH_LABEL_COLOR = "#eef2f7";
 const GRAPH_NODE_BORDER_COLOR = "#7f8fa3";
+const GRAPH_NODE_FONT_SIZE = "10.5";
+const GRAPH_NODE_WIDTH = "0.56";
+const GRAPH_NODE_HEIGHT = "0.38";
 const DEFAULT_GRAPH_FIT_PADDING = 24;
 const DEFAULT_GRAPH_MAX_FIT_SCALE = 1.5;
 
@@ -44,7 +47,7 @@ export function buildThemedGraphDot(dot: string): string {
   const themeStatements = [
     '  graph [bgcolor="transparent", rankdir="LR"];',
     `  edge [color="${GRAPH_EDGE_COLOR}", fontcolor="${GRAPH_EDGE_COLOR}"];`,
-    `  node [color="${GRAPH_NODE_BORDER_COLOR}", fontcolor="${GRAPH_LABEL_COLOR}"];`
+    `  node [color="${GRAPH_NODE_BORDER_COLOR}", fontcolor="${GRAPH_LABEL_COLOR}", fontsize="${GRAPH_NODE_FONT_SIZE}", width="${GRAPH_NODE_WIDTH}", height="${GRAPH_NODE_HEIGHT}"];`
   ].join("\n");
 
   return `${dot.slice(0, openingBraceIndex + 1)}\n${themeStatements}\n${dot.slice(openingBraceIndex + 1)}`;

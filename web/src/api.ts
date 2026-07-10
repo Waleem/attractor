@@ -330,6 +330,8 @@ export interface ModelSyncResponse {
   items: ModelSyncItem[];
 }
 
+export type ModelSyncLimit = 5 | 10 | "all";
+
 export type SettingsEditability = "editable" | "restart-required" | "read-only" | "reserved";
 
 export interface SettingsPageRow {
@@ -670,10 +672,10 @@ export async function testModels(): Promise<ModelTestResponse> {
   });
 }
 
-export async function syncModels(): Promise<ModelSyncResponse> {
+export async function syncModels(limit: ModelSyncLimit = 10): Promise<ModelSyncResponse> {
   return requestJson<ModelSyncResponse>("/api/settings/models/sync", {
     method: "POST",
-    body: JSON.stringify({})
+    body: JSON.stringify({ limit: limit === "all" ? null : limit })
   });
 }
 

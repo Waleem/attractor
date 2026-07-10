@@ -72,12 +72,18 @@ class FakeModelSyncer:
         provider_rows: dict[str, list[ModelInfo]] | None = None,
         failures: dict[str, str] | None = None,
     ) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, int | None]] = []
         self.provider_rows = provider_rows or {}
         self.failures = failures or {}
 
-    async def sync_models(self, *, provider: str, api_key: str) -> list[ModelInfo]:
-        self.calls.append((provider, api_key))
+    async def sync_models(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        limit: int | None,
+    ) -> list[ModelInfo]:
+        self.calls.append((provider, api_key, limit))
         failure = self.failures.get(provider)
         if failure is not None:
             raise RuntimeError(f"{api_key} {failure}")
@@ -279,7 +285,7 @@ async def test_model_sync_merges_curated_and_synced_rows_without_live_calls(
         assert payload["summary"]["failed"] == 0
         assert payload["summary"]["skipped"] == 2
         assert payload["summary"]["synced_at"]
-        assert fake_syncer.calls == [("openai", raw_secret)]
+        assert fake_syncer.calls == [("openai", raw_secret, 10)]
 
         items_by_provider = {item["provider"]: item for item in payload["items"]}
         assert items_by_provider["openai"]["ok"] is True
@@ -331,6 +337,103 @@ async def test_sync_provider_models_assigns_conservative_context_window_for_sync
             max_output=None,
             source="provider",
         )
+    ]
+
+
+async def test_sync_provider_models_defaults_to_ten_newest_date_ranked_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def __init__(self, config) -> None:  # noqa: ANN001
+            del config
+
+        async def list_models(self) -> list[SyncedModelInfo]:
+            return [
+                SyncedModelInfo(
+                    provider="openai",
+                    id=f"gpt-live-{index:02d}",
+                    display_name=f"GPT Live {index:02d}",
+                    created=1_700_000_000 + index,
+                )
+                for index in range(12)
+            ]
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("attractor_llm.adapters.openai.OpenAIAdapter", FakeAdapter)
+
+    models = await sync_provider_models("openai", "sk-test")
+
+    assert [model.id for model in models] == [
+        "gpt-live-11",
+        "gpt-live-10",
+        "gpt-live-09",
+        "gpt-live-08",
+        "gpt-live-07",
+        "gpt-live-06",
+        "gpt-live-05",
+        "gpt-live-04",
+        "gpt-live-03",
+        "gpt-live-02",
+    ]
+
+
+async def test_sync_provider_models_can_use_fallback_version_ranking_and_all_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def __init__(self, config) -> None:  # noqa: ANN001
+            del config
+
+        async def list_models(self) -> list[SyncedModelInfo]:
+            return [
+                SyncedModelInfo(
+                    provider="gemini",
+                    id="gemini-2.0-flash",
+                    display_name="Gemini 2.0 Flash",
+                ),
+                SyncedModelInfo(
+                    provider="gemini",
+                    id="gemini-3.5-pro",
+                    display_name="Gemini 3.5 Pro",
+                ),
+                SyncedModelInfo(
+                    provider="gemini",
+                    id="gemini-3.1-flash",
+                    display_name="Gemini 3.1 Flash",
+                ),
+                SyncedModelInfo(
+                    provider="gemini",
+                    id="gemini-1.5-pro",
+                    display_name="Gemini 1.5 Pro",
+                ),
+                SyncedModelInfo(
+                    provider="gemini",
+                    id="gemini-3.5-flash",
+                    display_name="Gemini 3.5 Flash",
+                ),
+            ]
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("attractor_llm.adapters.gemini.GeminiAdapter", FakeAdapter)
+
+    capped_models = await sync_provider_models("gemini", "sk-test", limit=3)
+    all_models = await sync_provider_models("gemini", "sk-test", limit=None)
+
+    assert [model.id for model in capped_models] == [
+        "gemini-3.5-flash",
+        "gemini-3.5-pro",
+        "gemini-3.1-flash",
+    ]
+    assert [model.id for model in all_models] == [
+        "gemini-3.5-flash",
+        "gemini-3.5-pro",
+        "gemini-3.1-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
     ]
 
 

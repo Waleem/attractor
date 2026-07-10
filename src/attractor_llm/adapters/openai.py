@@ -688,6 +688,9 @@ class OpenAIAdapter:
                 provider=self.provider_name,
                 id=item["id"],
                 display_name=item["id"].replace("-", " ").title(),
+                created=(
+                    item.get("created") if isinstance(item.get("created"), int | float) else None
+                ),
             )
             for item in items
             if isinstance(item, dict) and isinstance(item.get("id"), str)
