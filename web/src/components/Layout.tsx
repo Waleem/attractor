@@ -33,7 +33,7 @@ export function Layout({
           }}
         >
           <span className="brand-mark">A</span>
-          <span>Attractor Ops</span>
+          <span>Attractor Studio</span>
         </a>
         <nav>
           {navItems.map((item) => (
